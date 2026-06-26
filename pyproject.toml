@@ -115,8 +115,8 @@ forbidden_modules = ["nautilus.cluster"]
 [[tool.importlinter.contracts]]
 name = "Per-record data path must not import the telemetry report (boundary) layer"
 type = "forbidden"
-# The runner (nautilus.runtime.local) is the boundary and MAY import the report layer; the per-record
-# actors/channels/mailbox/core may not.
+# The runners (nautilus.runtime.local and nautilus.runtime.parallel) are the boundary and MAY import
+# the report layer; the per-record actors/channels/mailbox/partition/core may not.
 source_modules = [
   "nautilus.core",
   "nautilus.runtime.actor",

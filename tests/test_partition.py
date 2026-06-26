@@ -1,0 +1,217 @@
+"""Stage 1.5a: the keyed-shuffle hash and the partitioners, isolated from any runtime wiring.
+
+These tests pin the three traps the shuffle has to survive: a process-stable hash (never builtin
+``hash()``), a type-distinguishing encoder, and row-conserving routing that keeps every key co-located
+on one instance.
+"""
+
+from __future__ import annotations
+
+import os
+import random
+import subprocess
+import sys
+from decimal import Decimal
+
+import msgpack
+import numpy as np
+import pyarrow as pa
+import pytest
+
+from nautilus.runtime.partition import (
+    Forward,
+    HashPartitioner,
+    RoundRobin,
+    stable_bucket,
+)
+from nautilus.tensors import is_tensor, to_numpy
+from nautilus.testing import batch
+
+# A prime fan-out so the few type-distinctness keys are extremely unlikely to collide mod Q. The hash
+# is deterministic, so any collision would be a permanent (non-flaky) failure caught once here.
+_BIG_Q = 65521
+
+
+# --- the mandated process-stable hash ----------------------------------------------------------
+
+_SEED_PROBE = """
+import os, sys
+sys.path.insert(0, os.environ["NAUT_SRC"])
+from nautilus.runtime.partition import stable_bucket
+keys = [("the",), ("cat",), (1,), (2,), (True,), (b"x",), ("a", "bc"), (42, "z")]
+stable = [stable_bucket(k, 7) for k in keys]
+builtin = [hash(k[0]) % 7 for k in keys if isinstance(k[0], str)]  # salted per-process
+print(",".join(map(str, stable)))
+print(",".join(map(str, builtin)))
+"""
+
+
+def _probe(seed: str) -> tuple[str, str]:
+    src = os.path.join(os.path.dirname(__file__), "..", "src")
+    env = {**os.environ, "PYTHONHASHSEED": seed, "NAUT_SRC": os.path.abspath(src)}
+    out = subprocess.run(
+        [sys.executable, "-c", _SEED_PROBE], env=env, capture_output=True, text=True, check=True
+    )
+    stable, builtin = out.stdout.splitlines()
+    return stable, builtin
+
+
+def test_stable_bucket_is_seed_and_process_stable() -> None:
+    # Two child processes with different PYTHONHASHSEED. stable_bucket must agree; builtin hash() must
+    # not (which both proves the seeds really differ and that we never fell back to hash()).
+    stable_a, builtin_a = _probe("0")
+    stable_b, builtin_b = _probe("123456789")
+    assert (
+        stable_a == stable_b
+    ), "stable_bucket changed across PYTHONHASHSEED — builtin hash() leaked in"
+    assert builtin_a != builtin_b, "PYTHONHASHSEED did not vary builtin hash() — test is vacuous"
+
+
+# --- the type-distinguishing encoder -----------------------------------------------------------
+
+
+def test_encoder_distinguishes_scalar_types() -> None:
+    # int 1 / str "1" / bool True / bytes b"1" are four different keys.
+    buckets = {
+        "int": stable_bucket((1,), _BIG_Q),
+        "str": stable_bucket(("1",), _BIG_Q),
+        "bool": stable_bucket((True,), _BIG_Q),
+        "bytes": stable_bucket((b"1",), _BIG_Q),
+    }
+    assert len(set(buckets.values())) == 4, buckets
+
+
+def test_encoder_is_length_prefixed() -> None:
+    # length-prefixing keeps ("a","bc") and ("ab","c") apart even though they concatenate the same.
+    assert stable_bucket(("a", "bc"), _BIG_Q) != stable_bucket(("ab", "c"), _BIG_Q)
+
+
+def test_encoder_separates_one_tuple_from_scalar() -> None:
+    # A 1-element key array encodes differently from a bare scalar (array tag + length vs the value).
+    assert msgpack.packb(["x"], use_bin_type=True) != msgpack.packb("x", use_bin_type=True)
+    assert msgpack.packb([1], use_bin_type=True) != msgpack.packb(1, use_bin_type=True)
+
+
+# --- Forward / RoundRobin ----------------------------------------------------------------------
+
+
+def test_forward_requires_single_downstream() -> None:
+    b = batch(x=[1, 2, 3])
+    assert Forward().route(b, 1) == [(0, b)]
+    with pytest.raises(ValueError):
+        Forward().route(b, 2)
+
+
+def test_roundrobin_rotates_whole_batches() -> None:
+    rr = RoundRobin()
+    b = batch(x=[1])
+    assert [rr.route(b, 3)[0][0] for _ in range(5)] == [0, 1, 2, 0, 1]
+
+
+def test_roundrobin_cursor_is_per_instance() -> None:
+    a, b = RoundRobin(), RoundRobin()
+    rb = batch(x=[1])
+    a.route(rb, 3)
+    a.route(rb, 3)
+    assert b.route(rb, 3)[0][0] == 0  # a's cursor advancing did not move b's
+
+
+# --- HashPartitioner: routing, conservation, co-location ---------------------------------------
+
+
+def test_hash_q1_short_circuits_without_keying() -> None:
+    # Q == 1 returns the whole batch untouched and never inspects the key column (a float column here
+    # would otherwise raise).
+    b = batch(key=[1.0, 2.0])
+    assert HashPartitioner(["key"]).route(b, 1) == [(0, b)]
+
+
+def test_hash_routes_disjoint_covering_subbatches() -> None:
+    p = HashPartitioner(["key"])
+    b = batch(rid=list(range(20)), key=[i % 4 for i in range(20)])
+    routed = p.route(b, 3)
+    assert all(0 <= idx < 3 for idx, _ in routed)
+    assert all(sub.num_rows > 0 for _, sub in routed)  # no zero-row frame emitted
+    rids = [r for _, sub in routed for r in sub.column("rid").to_pylist()]
+    assert sorted(rids) == list(range(20))  # disjoint AND covers every row exactly once
+
+
+def test_hash_co_locates_every_key() -> None:
+    keys = ["a", "b", "c", "d", "alpha", "beta", "x", "y", "z"]
+    for q in (2, 3, 5, 7):
+        b = batch(key=[keys[i % len(keys)] for i in range(50)])
+        where: dict[object, set[int]] = {}
+        for idx, sub in HashPartitioner(["key"]).route(b, q):
+            for k in sub.column("key").to_pylist():
+                where.setdefault(k, set()).add(idx)
+        for k, idxs in where.items():
+            assert idxs == {stable_bucket((k,), q)}, (k, q, idxs)
+
+
+def test_hash_multi_column_key_co_locates() -> None:
+    b = batch(a=["x", "x", "y", "y", "x"], c=[1, 2, 1, 2, 1])
+    where: dict[tuple, set[int]] = {}
+    for idx, sub in HashPartitioner(["a", "c"]).route(b, 4):
+        for a, c in zip(sub.column("a").to_pylist(), sub.column("c").to_pylist(), strict=True):
+            where.setdefault((a, c), set()).add(idx)
+    for key, idxs in where.items():
+        assert idxs == {stable_bucket(key, 4)}, (key, idxs)
+
+
+def test_hash_conserves_rows_and_tensors_under_fuzz() -> None:
+    rng = random.Random(1234)
+    for _ in range(200):
+        n = rng.randint(1, 40)
+        cardinality = rng.randint(1, 8)
+        q = rng.choice([2, 3, 4, 5, 7])
+        use_str = rng.random() < 0.5
+        if use_str:
+            keys = [f"k{rng.randrange(cardinality)}" for _ in range(n)]
+        else:
+            keys = [rng.randrange(cardinality) for _ in range(n)]
+        imgs = [[[rng.randrange(256) for _ in range(2)] for _ in range(2)] for _ in range(n)]
+        b = batch(rid=list(range(n)), key=keys, img=np.array(imgs, dtype=np.uint8))
+        routed = HashPartitioner(["key"]).route(b, q)
+
+        rids = [r for _, sub in routed for r in sub.column("rid").to_pylist()]
+        assert sorted(rids) == list(range(n))  # exact partition: disjoint + covering
+        assert sum(sub.num_rows for _, sub in routed) == n
+        assert all(sub.num_rows > 0 for _, sub in routed)
+        for _, sub in routed:
+            assert is_tensor(sub.column("img").type)  # fixed_shape_tensor survives take()
+            assert to_numpy(sub.column("img")).shape == (sub.num_rows, 2, 2)
+
+
+def test_hash_routes_and_co_locates_null_keys() -> None:
+    # A null key cell is a real key the keyed operators count (via value_counts / to_pylist), so the
+    # shuffle must route it — not raise — and keep it co-located, like any other key.
+    b = batch(key=["a", None, "b", None, "a", None])
+    where: dict[object, set[int]] = {}
+    for idx, sub in HashPartitioner(["key"]).route(b, 3):
+        for k in sub.column("key").to_pylist():
+            where.setdefault(k, set()).add(idx)
+    assert None in where
+    for k, idxs in where.items():
+        assert idxs == {stable_bucket((k,), 3)}, (k, idxs)
+
+
+# --- rejected key types ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "col",
+    [
+        pa.array([1.0, 2.0], pa.float64()),
+        pa.array([1, 2], pa.timestamp("us")),
+        pa.array([Decimal("1.5"), Decimal("2.5")], pa.decimal128(5, 2)),
+    ],
+)
+def test_hash_rejects_unsupported_key_scalars(col: pa.Array) -> None:
+    b = batch(key=col)
+    with pytest.raises(TypeError):
+        HashPartitioner(["key"]).route(b, 2)
+
+
+def test_hash_requires_a_key_column() -> None:
+    with pytest.raises(ValueError):
+        HashPartitioner([])

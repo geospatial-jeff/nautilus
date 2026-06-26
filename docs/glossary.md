@@ -40,12 +40,20 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   (`SocketChannel`), which uses credit-based flow control (below).
 - **Instance (subtask)** — One parallel copy of an operator. An operator with parallelism *N* runs
   as *N* independent instances, each handling a subset of the data, numbered by `subtask_index`
-  (0…*N*−1). Stage 0 runs a single instance per operator.
+  (0…*N*−1).
 - **Parallelism** — The number of instances an operator is split into.
 - **Partitioner** — A pure function on the sending side that decides which downstream instance each
   row of a batch goes to. The kinds are `Forward` (1:1), `Broadcast` (every instance gets a copy),
-  and key-hash (a keyed shuffle, **planned**). Control frames skip the partitioner and are always
-  broadcast.
+  `HashPartitioner` (the keyed shuffle: routes each row by `hash(key) mod Q`), and `RoundRobin`
+  (rotates whole batches for keyless rebalancing). Control frames skip the partitioner and are
+  always broadcast.
+- **Keyed shuffle** — The `HashPartitioner` routing that sends every row with a given key to the same
+  downstream instance, so a key's rows and state are never split across instances. The hash
+  (`stable_bucket`) is process-, seed-, and platform-stable, so the same key maps to the same instance
+  in any process.
+- **Key range** — The set of keys one instance owns under the keyed shuffle: instance *i* of a stage
+  with parallelism *Q* handles every key *k* where `hash(k) mod Q == i`. Each key belongs to exactly
+  one instance.
 
 ## Frames — what moves on a channel
 

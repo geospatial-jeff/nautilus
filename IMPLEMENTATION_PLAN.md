@@ -23,11 +23,13 @@ control frames stay credit-exempt; a fast producer stalls with bounded memory, a
 loses no in-flight data. `run_two_process` joins two processes over one TCP edge — the channel a
 cluster will use between nodes. It does not yet exercise operator parallelism or the keyed shuffle.
 
-### Stage 1.5 — Parallel topology and the keyed shuffle · Next
+### Stage 1.5 — Parallel topology and the keyed shuffle · **Done**
 
-Run an operator as N instances, each owning a key range, with a hash partitioner routing each batch to
-the owning instance and `Mailbox` fan-in conserving rows — the same graph running unchanged whether an
-edge is in-process or a TCP `SocketChannel`.
+An operator runs as N instances, each owning a key range, with a `HashPartitioner` routing each batch
+to the owning instance and `Mailbox` fan-in conserving rows. `run_parallel_chain` wires the P×Q channel
+mesh from a `ChannelFactory`, so the same graph runs unchanged over in-process channels or a TCP
+`SocketChannel` (`SocketPairFactory`), and the per-instance report groups by `subtask_index`. A
+`nautilus run --parallelism` CLI surface is deferred to Stage 2.
 
 ### Stage 2 — Compile, deploy, decentralized control plane · Planned
 
