@@ -1,4 +1,4 @@
-"""The ``Frame`` model: the sealed set of things that flow on a channel.
+"""The ``Frame`` model: the sealed set of frame types that flow on a channel.
 
 Every edge in a Nautilus dataflow carries two kinds of frame:
 
@@ -106,7 +106,7 @@ class StatusIdle(Frame):
     """Marks a channel as temporarily idle so it is excluded from the watermark minimum.
 
     Without this, a silent input would pin the combined watermark at ``WATERMARK_MIN`` forever and
-    freeze all event-time progress downstream.
+    stop all event-time progress downstream.
     """
 
     is_control: ClassVar[bool] = True

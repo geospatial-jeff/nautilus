@@ -30,8 +30,8 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   `KeyedTumblingSum`).
 - **Two-input operator** — An operator that combines two input streams, such as a join. Its
   watermark is the minimum of the two inputs. **(reserved — `TwoInputOperator`.)**
-- **Sink** — The end of the graph. It consumes the final stream and does something external with it.
-  Stage 0 ships `CollectSink`, which gathers the output batches into a list.
+- **Sink** — The end of the graph: it consumes the final stream. Stage 0's sink collects the output
+  batches into a list (it appears as `CollectSink` in the topology and telemetry).
 - **Edge** — A directed connection from one operator to the next. Every edge carries both data and
   control frames and has a partitioner that decides how data is routed to the downstream instances.
 - **Channel** — The concrete one-directional, in-order (FIFO) transport behind an edge between two
@@ -184,5 +184,3 @@ metrics is in [`telemetry-reference.md`](telemetry-reference.md).
   these `off`/`counters`/`events`/`full`.
 - **RunReport** — The structured telemetry a run produces, with a JSON form and a markdown digest
   meant to be read by a coding agent (`result.telemetry`).
-</content>
-</invoke>

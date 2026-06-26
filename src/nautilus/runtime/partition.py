@@ -1,8 +1,8 @@
 """Partitioners: pure, local routing of a data batch to downstream instances.
 
 A partitioner decides, on the *sender*, which downstream instance(s) each row goes to. It is a pure
-function of the batch and the downstream fan-out — no central entity is consulted. This is exactly
-where "no central scheduler" lives on the data path.
+function of the batch and the downstream fan-out — no central entity is consulted. Routing each batch
+is therefore a local decision, which is what "no central scheduler on the data path" means here.
 
 Stage 0 ships :class:`Forward` (1:1) and :class:`Broadcast`. Key-group hashing (the keyed shuffle)
 and round-robin rebalancing arrive with multi-instance parallelism in Stage 2.

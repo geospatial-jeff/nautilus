@@ -1,4 +1,4 @@
-"""The geospatial example doubles as a custom-operator reference, so its operators get a sanity check.
+"""The geospatial example also serves as a custom-operator reference, so its operators are tested here.
 The example module is loaded by file path (examples/ is not an installed package)."""
 
 import importlib.util

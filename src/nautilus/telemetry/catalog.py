@@ -2,10 +2,10 @@
 
 Every metric and event nautilus emits is declared here exactly once. Instruments are created *by
 catalog key*, so an undeclared metric cannot be emitted and the report schema can never drift from the
-data. For each number it states WHAT it measures (a fact) and which OTHER metrics relate to it — never
+data. For each number it states what it measures (a fact) and which other metrics relate to it — never
 what a value indicates, never a cause, never a remedy. A unit test checks every catalog string against
-:data:`BANNED_ANALYSIS_WORDS` so analysis cannot regress in: nautilus records the data; the analysis is
-done separately.
+:data:`BANNED_ANALYSIS_WORDS`, so analysis language cannot creep into the catalog: nautilus records the
+data; the analysis is done separately.
 """
 
 from __future__ import annotations

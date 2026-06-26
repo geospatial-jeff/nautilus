@@ -122,8 +122,8 @@ class WatermarkTracker:
     """Combines the watermarks of several input channels into one operator watermark.
 
     The combined watermark is the **minimum over non-idle inputs**, and only ever moves forward.
-    Idle inputs are excluded so a silent partition cannot freeze event-time progress; an idle input
-    that becomes active again never causes the combined watermark to regress.
+    Idle inputs are excluded so a silent partition cannot stop event-time progress; an idle input
+    that becomes active again never causes the combined watermark to move backward.
     """
 
     def __init__(self, num_inputs: int) -> None:

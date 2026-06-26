@@ -1,26 +1,26 @@
 # Nautilus — Implementation Plan
 
 Staged build of a decentralized, entirely-streaming compute framework. See `DESIGN.md` for the
-architecture and the approved plan for full rationale. Each stage compiles, runs, and has a demo
-plus a property/fuzz-test gate.
+architecture and rationale. Each stage compiles, runs, and has a demo plus a property/fuzz-test gate.
 
 ## Stage 0: Skeleton + semantics core, single process (no IPC)
 **Goal**: Frame model + operator contracts running in one process with in-memory channels, proving
 unified bounded/unbounded semantics deterministically.
 **Success Criteria**: bounded word-count returns a deterministic result; keyed tumbling windows fire
-on watermark advance and flush at EOS; an idle input does not freeze event-time progress; all gates
+on watermark advance and flush at EOS; an idle input does not stop event-time progress; all gates
 (ruff/black/mypy/import-linter) clean.
 **Tests**: `test_records`, `test_watermark_tracker`, `test_mailbox`, `test_wordcount`,
 `test_windowing`.
-**Status**: **Complete** — 21 tests passing; gates green.
+**Status**: **Complete**. Gates green.
 
-Delivered: `core.records` (sealed Frame union, Arrow-first `Batch`), `core.time`
-(Clock/TestClock, watermark generation, `WatermarkTracker` with idle exclusion), `state`
-(KeyContext-threaded handles, `InMemoryStateBackend` with snapshot/restore ABC), `core.operator`
-(Source/OneInput/TwoInput families, synchronous `Collector`), `windows` (TimeWindow, tumbling
-assigner), `runtime` (`InProcChannel`, non-reordering `Mailbox`, `Forward`/`Broadcast` partitioners,
-`run_source`/`run_transform` actors, `run_local_chain`), `operators` (built-ins), `testing` helpers,
-and the import-linter "no central scheduler on the data path" contract.
+Delivered: `core.records` (the sealed Frame union and Arrow-first `Batch`); `core.time`
+(`Clock`/`TestClock`, watermark generation, and `WatermarkTracker` with idle exclusion); `state`
+(`KeyContext`-threaded handles and `InMemoryStateBackend` with a snapshot/restore ABC); `core.operator`
+(the source, one-input, and two-input families and the synchronous `Collector`); `windows`
+(`TimeWindow` and the tumbling assigner); `runtime` (`InProcChannel`, the non-reordering `Mailbox`, the
+`Forward`/`Broadcast` partitioners, the `run_source`/`run_transform` actors, and `run_local_chain`);
+the built-in `operators`; `testing` helpers; and the import-linter contract that keeps the control
+plane off the data path.
 
 ## Stage 0.5: Tensor columns (imagery + embeddings)
 **Goal**: numpy-array columns for N-D imagery and 1-D embeddings, carried as Arrow
@@ -40,22 +40,19 @@ invariant holds); control frames (watermark/EOS) delivered while the data channe
 progress; stray/duplicate credit cannot exceed the window; shutdown drops no in-flight data.
 **Tests**: framing round-trip; credit conservation fuzz test; control-during-saturation;
 diamond no-deadlock; graceful-shutdown no-loss over TCP; 2-process row conservation at high capacity.
-**Status**: **Complete** — `nautilus.transport` (`framing`, `socket_channel`, `process`): a
-`SocketChannel` (drop-in `Channel`) with a credit window for data frames and a credit-exempt path for
-control frames; framed Arrow-IPC data + msgpack control over a TCP connection (loopback between two
-local processes — the same channel a cluster uses node-to-node). The producer ends a stream with
-`finish()`: half-close the write side and drain the returning credits to the consumer's end before
-`close()`, so teardown never RSTs away in-flight data. `run_two_process` runs the source and the
-transforms + sink in two processes joined by one TCP edge. 16 tests (framing incl. tensor columns,
-credit conservation, control-not-blocked-by-saturation, diamond no-deadlock, stray-credit rejected,
-peer-death robustness, graceful-shutdown no-loss over real TCP, 2-process word-count matches
-single-process, 2-process row conservation at capacity 16). Import-linter contract extended to
-`nautilus.transport`.
+**Status**: **Complete** — `nautilus.transport` (`framing`, `socket_channel`, `process`). A
+`SocketChannel` is a drop-in `Channel` with a credit window for data frames and a credit-exempt path
+for control frames, carrying framed Arrow-IPC data and msgpack control over a TCP connection (loopback
+between two local processes, the same channel a cluster uses between nodes). The producer ends a stream
+with `finish()`, which half-closes the write side and drains the returning credits to the consumer
+before `close()`, so teardown does not discard in-flight data with a TCP reset. `run_two_process` runs
+the source in one process and the transforms plus sink in another, joined by a single TCP edge. The
+import-linter contract is extended to `nautilus.transport`.
 
-The transport began as a Unix-domain-socket proof of one process boundary; it now runs over TCP
-because TCP is what a cluster uses between nodes, so this channel ports to multi-node unchanged (only
-the connect address differs). A single linear edge does not exercise the topology a real deployment
-runs — operator parallelism and the keyed shuffle — which is Stage 1.5.
+The transport began over a Unix-domain socket to prove one process boundary; it now runs over TCP,
+which is what a cluster uses between nodes, so the channel ports to multi-node unchanged (only the
+connect address differs). A single linear edge does not exercise the topology a real deployment runs —
+operator parallelism and the keyed shuffle — which is Stage 1.5.
 
 ## Stage 1.5: Parallel topology over TCP (the shape a cluster runs)
 **Goal**: prove operator parallelism and the keyed shuffle (all-to-all repartition by key) behind the
@@ -88,36 +85,35 @@ addressing, connection setup/retry, and security).
 
 ---
 
-# Telemetry workstream (core principle: nautilus ships the data agents use to develop it)
+# Telemetry workstream
 
-Decoupled, self-describing telemetry — analysis lives outside the system. See `DESIGN.md` and the
-approved plan for the architecture. Threads into Stages 1–4 (which populate reserved catalog keys).
+Decoupled, self-describing telemetry: the analysis happens outside nautilus. See `DESIGN.md` for the
+architecture. Threads into Stages 1–4, which populate the reserved catalog keys.
 
 ## Telemetry S1: model + catalog + recorder + sink + report skeleton + contracts
 **Goal**: data-path model + boundary report types, with the data-path/cluster and report firewalls
 enforced.
-**Status**: **Complete** — `nautilus.telemetry` (`model`, `catalog`, `recorder`, `registry`) +
-`nautilus.telemetry.report` (`report`, `serialize`, `sink`); `REPORT_SCHEMA_VERSION=1`; 3 import-linter
-contracts KEPT; 19 telemetry tests (banned-word lint, name↔unit, histogram bucketing, tier gating,
-pickle round-trip, build_report, structural-digest stability). All gates green.
+**Status**: **Complete** — `nautilus.telemetry` (`model`, `catalog`, `recorder`, `registry`) and
+`nautilus.telemetry.report` (`report`, `serialize`, `sink`), with a versioned `RunReport` schema and
+the three import-linter firewalls (data path vs. cluster, data path vs. report, telemetry data path vs.
+report) in place. Gates green.
 
 ## Telemetry S2: instrument the data path + boundary assembly + `RunResult`
 **Goal**: every run ships telemetry end-to-end, no behavior change, no broken callers.
-**Status**: **Complete** — `run_source`/`run_transform`/`Output` instrumented (throughput, per-op
-timing histograms, backpressure/input-wait, watermark/EOS accounting, lifecycle/error events);
-`run_local_chain` builds the `RecorderRegistry`, assembles the `RunReport`, and returns `RunResult`
-(a `Sequence[RecordBatch]` subclass, so existing callers are unchanged). `bytes_*` gated FULL-only
-behind a no-op-counter guard (no buffer-size walk otherwise). 7 new tests: rows-conserved-across-edges,
-topology-edges-resolve, 50×-stable structural digest, OFF-tier zero-catalog-lookup guard, bytes FULL-only.
-All 47 tests + gates green.
+**Status**: **Complete** — `run_source`, `run_transform`, and `Output` are instrumented (throughput,
+per-operator timing histograms, backpressure and input-wait, watermark/EOS accounting, and
+lifecycle/error events). `run_local_chain` builds the `RecorderRegistry`, assembles the `RunReport`,
+and returns a `RunResult` that wraps the output batches and adds `.telemetry`, so existing callers are
+unchanged. The `bytes_*` metrics are gated to the FULL tier behind a no-op-counter guard, so a run does
+no buffer-size walk otherwise.
 
 ## Telemetry S3: agent-facing serialization + Python API + author-metric API
 **Goal**: make the telemetry readable by an agent and extensible by operator authors.
-**Status**: **Complete** — `to_markdown(token_budget)` (RunSummary first, axis-explicit rankings by
-self-time / send-wait, errors never dropped); query helpers `.operator()/.edge()/.ranked_by()/
-.by_self_time()/.by_send_wait()/.by_rows_per_sec()` (project/sort only, no diagnosis); `build_report`
-merges multiple snapshots per `(operator_id, subtask)`; `ctx.metrics` wired so `KeyedCount`/
-`KeyedTumblingSum` emit `window.fires`. 5 tests incl. markdown-numbers ⊆ JSON.
+**Status**: **Complete** — `to_markdown(token_budget)` leads with the run summary, then axis-explicit
+rankings by self-time and send-wait, and never drops errors. Query helpers (`.operator()`, `.edge()`,
+`.ranked_by()`, `.by_self_time()`, `.by_send_wait()`, `.by_rows_per_sec()`) sort and project but do not
+diagnose. `build_report` merges multiple snapshots per `(operator_id, subtask)`, and `ctx.metrics` is
+wired so `KeyedCount` and `KeyedTumblingSum` emit `window.fires`.
 
 ## Telemetry S4: generated self-describing reference + docs
 **Goal**: ship the offline self-description an agent reads, locked against drift.
@@ -130,8 +126,9 @@ regenerates it; a no-drift test asserts the committed file matches; DESIGN.md te
 # CLI (`nautilus`)
 
 **Status**: **Complete** — a Typer + Rich CLI (`nautilus.cli`, console script `nautilus`, also
-`python -m nautilus`). Commands: `run` (run a pipeline → output preview + telemetry summary/markdown/
-json, `--save`), `examples`, `catalog` (telemetry cheat-sheet, `--md`), `reference` (`--write`),
-`version`, and `task <desc> --on <pipeline>` — prints a ready-to-paste agent prompt (task + run
-telemetry + per-metric definitions + file pointers). Pipelines resolve by built-in name or
-`module:function`. 9 CLI tests via Typer's `CliRunner`.
+`python -m nautilus`). Commands: `run` (run a pipeline, then show an output preview plus a telemetry
+summary, markdown, or JSON, with `--save`), `examples`, `catalog` (the metric reference, `--md`),
+`reference` (`--write`), `dashboard` and `serve` (a live or saved telemetry dashboard over HTTP),
+`version`, and `task <desc> --on <pipeline>`, which prints a ready-to-paste agent prompt (the task, the
+run's telemetry, the definition of each metric, and the files to read). A pipeline resolves by built-in
+name or `module:function`.

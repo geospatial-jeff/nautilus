@@ -1,4 +1,4 @@
-"""The catalog is the self-describing surface — these tests keep it honest: facts only, never verdicts;
+"""The catalog is the self-describing surface; these tests enforce that: facts only, never verdicts;
 units that match names; and integrity of cross-references."""
 
 import re

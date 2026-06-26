@@ -184,7 +184,7 @@ def examples() -> None:
 def catalog(
     md: bool = typer.Option(False, "--md", help="Print the full markdown reference instead."),
 ) -> None:
-    """Show the telemetry cheat-sheet: every number nautilus records and what it means."""
+    """Show every metric nautilus records, with its unit, tier, and meaning."""
     if md:
         console.print(render_reference())
         return
@@ -301,7 +301,7 @@ def dashboard(
     ),
     open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser."),
 ) -> None:
-    """Run a PIPELINE and serve a LIVE telemetry dashboard in the browser."""
+    """Run a PIPELINE and serve a live telemetry dashboard in the browser."""
     from nautilus.telemetry.live import serve_local_chain
 
     try:

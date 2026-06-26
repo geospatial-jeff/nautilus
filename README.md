@@ -26,9 +26,9 @@ design (swappable transport endpoints, key-group addressing) but not yet built.
 ```bash
 nautilus examples                 # list runnable example pipelines
 nautilus run wordcount            # run one; prints its output and a telemetry summary
-nautilus run wordcount --show markdown   # the agent-readable telemetry digest
+nautilus run wordcount --show markdown   # the telemetry digest formatted for an AI agent
 nautilus run wordcount --save report.json
-nautilus catalog                  # the telemetry cheat-sheet: every number nautilus records and what it means
+nautilus catalog                  # every metric nautilus records, with its meaning
 
 # Print a ready-to-paste prompt for an AI coding agent: your task plus the run's
 # telemetry, what each metric means, and the relevant source files.

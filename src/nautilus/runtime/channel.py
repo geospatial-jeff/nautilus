@@ -34,8 +34,9 @@ class Channel(ABC):
 
     def depth(self) -> int | None:
         """Current queued frame count, or ``None`` if this channel cannot report it. Part of the
-        interface (not a reflection probe) so a future cross-process channel that cannot cheaply
-        report depth returns ``None`` explicitly rather than silently dropping the queue-depth fact.
+        interface (not a reflection probe) so a cross-process channel that cannot cheaply report
+        depth — the ``SocketChannel`` — returns ``None`` explicitly rather than silently dropping
+        the queue-depth fact.
         """
         return None
 

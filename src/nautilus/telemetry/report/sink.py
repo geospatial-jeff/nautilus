@@ -1,8 +1,9 @@
 """A Sink consumes an assembled :class:`RunReport` at the job boundary.
 
-Instrumentation never touches a Sink — it only writes to a recorder — so adding a new surface (e.g. a
-future live scrape endpoint, which would instead pull ``RecorderRegistry.snapshot_all()`` mid-run) is
-purely additive. Stage 0 ships the no-op default and a buffering sink for tests.
+Instrumentation never touches a Sink — it only writes to a recorder — so adding a reader of the
+telemetry is purely additive. The live HTTP dashboard is one such reader, though it pulls
+``RecorderRegistry.snapshot_all()`` mid-run rather than receiving a finished report through a Sink.
+Stage 0 ships the no-op default and a buffering sink for tests.
 """
 
 from __future__ import annotations
