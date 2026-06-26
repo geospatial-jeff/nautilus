@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nautilus telemetry</title>
+<style>
+  :root { --fg:#e6e6e6; --dim:#8a8f98; --bg:#0e1116; --panel:#171b22; --line:#262b33;
+          --live:#3fb950; --done:#8a8f98; --accent:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex;
+           align-items:center; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+  .badge.live { background:rgba(63,185,80,.15); color:var(--live); }
+  .badge.completed { background:rgba(138,143,152,.18); color:var(--done); }
+  .meta { color:var(--dim); }
+  main { padding:18px; display:grid; gap:18px; max-width:1100px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);
+              margin:0 0 10px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:right; padding:5px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align:left; }
+  th { color:var(--dim); font-weight:600; cursor:help; }
+  td.dim { color:var(--dim); }
+  .hw { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .hw .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
+  .hw .num { font-size:20px; font-weight:600; }
+  .hw .lbl { color:var(--dim); font-size:11px; }
+  .hw.stale { opacity:.4; }
+  .topo { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--dim); }
+  .node { background:#1f2630; border:1px solid var(--line); border-radius:6px; padding:5px 10px; color:var(--fg); }
+  .errors td { color:#f0a; text-align:left; white-space:normal; }
+  svg { display:block; }
+  .foot { color:var(--dim); padding:0 18px 18px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>nautilus</h1>
+  <span id="status" class="badge live">live</span>
+  <span class="meta" id="run">—</span>
+  <span class="meta" id="totals"></span>
+</header>
+<main>
+  <section class="panel"><h2>hardware</h2><div id="hw" class="hw"></div></section>
+  <section class="panel"><h2>operators</h2><table id="ops"><thead></thead><tbody></tbody></table></section>
+  <section class="panel"><h2>topology</h2><div id="topo" class="topo"></div></section>
+  <section class="panel errors" id="errpanel" style="display:none"><h2>errors</h2>
+    <table id="errs"><tbody></tbody></table></section>
+</main>
+<p class="foot">facts only — the dashboard shows numbers, not conclusions ·
+  raw data at <a href="/api/telemetry.json">/api/telemetry.json</a></p>
+
+<script>
+// Human labels live in one place so they can be checked to contain no analysis verdicts.
+const LABELS = {
+  operator:"operator", class:"class", rows_in:"rows in", rows_out:"rows out",
+  busy:"busy µs", wait:"wait µs", queue:"queue", p50:"p50 µs", p99:"p99 µs",
+  cpu:"CPU %", rss:"memory (RSS, MB)", lag:"event-loop lag (µs)",
+};
+const CAP = 120;           // rolling history length per series
+const hist = new Map();    // id -> [values]
+let meanings = {};         // metric name -> catalog meaning (for header tooltips)
+
+function push(id, v) {
+  const a = hist.get(id) || [];
+  a.push(v); if (a.length > CAP) a.shift();
+  hist.set(id, a); return a;
+}
+function fmt(n, d=0) { return (n==null) ? "—" : Number(n).toFixed(d); }
+function gauges(op) { const m={}; (op.gauges||[]).forEach(g=>m[g.name]=g.last); return m; }
+function hgram(op, name) { return (op.histograms||[]).find(h=>h.name===name) || null; }
+
+function pct(h, p) {                       // percentile from fixed-bucket histogram (boundary value)
+  if (!h || !h.count) return null;
+  const target = h.count * p; let cum = 0;
+  for (let i=0;i<h.buckets.length;i++){ cum += h.buckets[i];
+    if (cum >= target) return (i < h.boundaries.length) ? h.boundaries[i] : h.max; }
+  return h.max;
+}
+function counter(op, name) {
+  const c = (op.counters||[]).find(x=>x.name===name); return c ? c.value : 0;
+}
+function spark(vals, max) {                 // inline SVG sparkline, no deps
+  const w=140,hh=34,n=vals.length; if(!n) return "";
+  const top = max || Math.max(1, ...vals);
+  const pts = vals.map((v,i)=>`${(i/(Math.max(1,n-1)))*w},${hh-(v/top)*hh}`).join(" ");
+  return `<svg width="${w}" height="${hh}"><polyline fill="none" stroke="var(--accent)"
+    stroke-width="1.5" points="${pts}"/></svg>`;
+}
+
+function render(doc) {
+  meanings = {}; ((doc.catalog&&doc.catalog.metrics)||[]).forEach(m=>meanings[m.name]=m.meaning);
+  const live = doc.status === "live";
+  const badge = document.getElementById("status");
+  badge.textContent = doc.status; badge.className = "badge " + doc.status;
+  document.getElementById("run").textContent =
+    `run ${doc.run_id} · wall ${fmt(doc.meta.wall_micros)} µs · ${doc.meta.clock_kind}`;
+  const s = doc.summary;
+  document.getElementById("totals").textContent =
+    `${s.total_rows_in} rows in → ${s.total_rows_out} rows out · ${s.total_errors} errors`;
+
+  const ops = doc.operators.filter(o=>o.kind!=="process");
+  const proc = doc.operators.find(o=>o.kind==="process");
+
+  // hardware
+  const g = proc ? gauges(proc) : {};
+  const lag = proc ? pct(hgram(proc,"runtime.loop_lag_micros"),0.99) : null;
+  const cpu = g["process.cpu_percent"], rss = g["process.rss_bytes"]!=null ? g["process.rss_bytes"]/1e6 : null;
+  if (cpu!=null) push("cpu",cpu); if (rss!=null) push("rss",rss); if (lag!=null) push("lag",lag);
+  const stale = doc.sampled_at_micros==null;
+  document.getElementById("hw").parentElement.classList.toggle("stale", !proc);
+  document.getElementById("hw").innerHTML = [
+    card(LABELS.cpu, fmt(cpu,0), hist.get("cpu"), 100),
+    card(LABELS.rss, fmt(rss,0), hist.get("rss")),
+    card(LABELS.lag, fmt(lag,0), hist.get("lag")),
+  ].join("");
+
+  // operators table
+  const cols = ["operator","class","rows_in","rows_out","busy","wait","queue","p50","p99"];
+  document.querySelector("#ops thead").innerHTML = "<tr>" + cols.map(c=>{
+    const name = headerMetric(c);
+    return `<th title="${name?esc(meanings[name]||""):''}">${LABELS[c]||c}</th>`;
+  }).join("") + "</tr>";
+  const edge = id => (doc.edges||[]).find(e=>e.src_operator_id===id);
+  document.querySelector("#ops tbody").innerHTML = ops.map(o=>{
+    const isSrc = o.kind==="source";
+    const ph = hgram(o,"operator.process_micros");
+    const e = edge(o.operator_id);
+    const cells = [
+      o.operator_id, o.op_class,
+      counter(o,"operator.rows_in")||"—",
+      counter(o,"operator.rows_out"),
+      isSrc?cell("—"):counter(o,"runtime.step_micros"),
+      counter(o,"edge.send_wait_micros"),
+      e?e.max_queue_depth:"—",
+      isSrc?cell("—"):fmt(pct(ph,0.5)),   // omit process-timing for source rows (not idle, just N/A)
+      isSrc?cell("—"):fmt(pct(ph,0.99)),
+    ];
+    return "<tr>" + cells.map((v,i)=>`<td class="${i>=2&&(v==='—')?'dim':''}">${v}</td>`).join("") + "</tr>";
+  }).join("");
+
+  // topology
+  document.getElementById("topo").innerHTML =
+    (doc.topology?doc.topology.nodes:[]).map(n=>`<span class="node">${n.operator_id}</span>`)
+      .join('<span>→</span>');
+
+  // errors
+  const errs = doc.errors||[];
+  document.getElementById("errpanel").style.display = errs.length ? "" : "none";
+  document.querySelector("#errs tbody").innerHTML = errs.map(e=>
+    `<tr><td>${esc(e.operator_id)} · ${esc(e.phase)} · ${esc(e.exc_type)}: ${esc(e.message)}</td></tr>`).join("");
+}
+function headerMetric(c){return {rows_in:"operator.rows_in",rows_out:"operator.rows_out",
+  busy:"runtime.step_micros",wait:"edge.send_wait_micros",queue:"edge.queue_depth",
+  p50:"operator.process_micros",p99:"operator.process_micros"}[c]||null;}
+function card(lbl,num,h,max){return `<div class="card"><div class="num">${num}</div>
+  <div class="lbl">${lbl}</div>${spark(h||[],max)}</div>`;}
+function cell(v){return v;}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/telemetry.json", {cache:"no-store"});
+    if (r.ok) render(await r.json());
+  } catch (e) { /* transient; retry next tick */ }
+}
+tick(); setInterval(tick, 750);
+</script>
+</body>
+</html>

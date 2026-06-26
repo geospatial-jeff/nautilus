@@ -1,0 +1,139 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nautilus"
+version = "0.0.1"
+description = "A decentralized, entirely-streaming parallel compute framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jeff" }]
+dependencies = [
+  "pyarrow>=17",
+  "numpy>=1.26",
+  "msgpack>=1.0",
+  "cloudpickle>=3.0",
+  "typer>=0.12",
+  "rich>=13",
+]
+
+[project.scripts]
+nautilus = "nautilus.cli:main"
+
+[project.optional-dependencies]
+fast = ["uvloop>=0.19; sys_platform != 'win32'"]
+# Hardware/resource telemetry (process CPU, memory, fds). loop-lag works without it.
+system = ["psutil>=5.9"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "black>=24",
+  "mypy>=1.10",
+  "import-linter>=2.0",
+  "psutil>=5.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nautilus"]
+artifacts = ["src/nautilus/telemetry/dashboard.html"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# B027: operator ABCs intentionally provide empty default lifecycle hooks (open/close/on_watermark)
+# that subclasses may override — a deliberate template-method pattern, not a mistake.
+# E501: black owns line length; it deliberately leaves long docstrings/comments unwrapped, so we do
+# not double-enforce a hard column limit on prose (black still wraps code at line-length=100).
+ignore = ["B027", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API intentionally puts typer.Option/Argument(...) calls in argument defaults (B008).
+"src/nautilus/cli.py" = ["B008"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["nautilus"]
+mypy_path = "src"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# pyarrow ships a py.typed marker but its compute functions (pc.max/value_counts/cast) are generated
+# dynamically and absent from the stubs; treat these libraries as untyped rather than fight it.
+module = ["pyarrow.*", "msgpack.*", "cloudpickle.*", "uvloop.*", "typer.*", "rich.*", "click.*", "psutil.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# numpy 2.x ships .pyi stubs using 3.12-only ``type`` aliases that fail to parse under
+# python_version 3.11. follow_imports_for_stubs makes "skip" apply to the stubs, so numpy is treated
+# as untyped instead of erroring at parse time.
+module = ["numpy", "numpy.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
+[[tool.mypy.overrides]]
+# Typer command decorators are untyped from mypy's view (typer is treated as untyped above).
+module = ["nautilus.cli"]
+disallow_untyped_decorators = false
+
+# Mechanically enforces the "no central scheduler on the data path" guarantee:
+# data-path packages may not import the control-plane package.
+[tool.importlinter]
+root_package = "nautilus"
+
+[[tool.importlinter.contracts]]
+name = "Data path must not import the control plane (cluster)"
+type = "forbidden"
+# nautilus.transport landed in Stage 1; expanded further as packages land.
+source_modules = [
+  "nautilus.runtime",
+  "nautilus.core",
+  "nautilus.telemetry",
+  "nautilus.transport",
+]
+forbidden_modules = ["nautilus.cluster"]
+
+[[tool.importlinter.contracts]]
+name = "Per-record data path must not import the telemetry report (boundary) layer"
+type = "forbidden"
+# The runner (nautilus.runtime.local) is the boundary and MAY import the report layer; the per-record
+# actors/channels/mailbox/core may not.
+source_modules = [
+  "nautilus.core",
+  "nautilus.runtime.actor",
+  "nautilus.runtime.channel",
+  "nautilus.runtime.mailbox",
+  "nautilus.runtime.partition",
+]
+forbidden_modules = ["nautilus.telemetry.report", "nautilus.telemetry.live"]
+
+[[tool.importlinter.contracts]]
+name = "Telemetry data-path layer must not import the report (boundary) layer"
+type = "forbidden"
+source_modules = [
+  "nautilus.telemetry.model",
+  "nautilus.telemetry.catalog",
+  "nautilus.telemetry.recorder",
+  "nautilus.telemetry.registry",
+  "nautilus.telemetry.system",
+]
+forbidden_modules = ["nautilus.telemetry.report"]
