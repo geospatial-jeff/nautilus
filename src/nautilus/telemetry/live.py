@@ -1,15 +1,12 @@
-"""A live telemetry endpoint: each process serves its own telemetry over HTTP (no central aggregator).
+"""A live telemetry endpoint: this process serves its own telemetry over HTTP.
 
-This process serves its own telemetry: a stdlib HTTP server on a daemon thread exposes the live
-:class:`~nautilus.telemetry.report.RunReport` as JSON, plus the dashboard HTML. There is no aggregator
-and no heartbeat — a future multi-process deployment has each worker serve its own endpoint and a
-separate UI scrapes them (Prometheus-style).
+A stdlib HTTP server on a daemon thread exposes the live
+:class:`~nautilus.telemetry.report.RunReport` as JSON, plus the dashboard HTML.
 
-The HTTP thread never touches a recorder directly (that would race the single-writer asyncio loop,
-which inserts new label keys mid-run → "dict changed size during iteration"). Instead each request is
-scheduled onto the loop via :func:`asyncio.run_coroutine_threadsafe`, so ``snapshot_all`` runs on the
-writer thread between actor steps — the lock-free invariant is preserved with no recorder change and no
-new lock. Each response is a point-in-time snapshot.
+The HTTP thread must not read a recorder directly — that races the single-writer asyncio loop, which
+adds label keys mid-run ("dict changed size during iteration"). Each request is instead scheduled onto
+the loop with :func:`asyncio.run_coroutine_threadsafe`, so ``snapshot_all`` runs between actor steps.
+Each response is a point-in-time snapshot.
 """
 
 from __future__ import annotations

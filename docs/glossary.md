@@ -65,7 +65,7 @@ the set of frame types is fixed.
   the column length is the batch dimension. `nautilus.tensors` builds these from numpy and reads them
   back (`tensor_array` / `embedding_array` / `to_numpy`).
 - **Embedding** — A 1-D float vector per row, held as a tensor column of shape `(dim,)`. Its
-  `.storage` is `fixed_size_list<float32, dim>`, the layout vector indexes use.
+  `.storage` is `fixed_size_list<float32, dim>` — the layout vector-search indexes operate on.
 - **Control frame** — A frame that carries a coordination signal rather than data. Control frames are
   broadcast to every downstream instance.
 - **Watermark** — A control frame carrying an event-time value `t`, meaning "no later record on this
@@ -145,9 +145,9 @@ the set of frame types is fixed.
 - **Collector** — The in-memory buffer an operator emits into during a single `process` /
   `on_watermark` call (`Collector`). The actor drains it and performs the (awaiting) sends
   afterward, so operator code stays synchronous and each step is a self-contained critical section.
-- **Operator context** — The object handed to an operator at `open` time with its collaborators: its
+- **Operator context** — The object handed to an operator at `open` time holding its dependencies: its
   id, subtask index and count, state backend, clock, config, and a metrics recorder
-  (`OperatorContext`). This is dependency injection — it makes operators testable.
+  (`OperatorContext`).
 - **Runner (runtime)** — The component that executes a graph. Stage 0's runner is `run_local_chain`
   (single process, in-memory channels); `run()` is the synchronous one-line wrapper around it.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report

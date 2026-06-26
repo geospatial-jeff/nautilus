@@ -1,21 +1,18 @@
 """The per-actor recorder — the single, lock-free writer of one instance's telemetry.
 
-Each actor loop owns exactly one :class:`InstanceRecorder`; it is the *sole* writer, so increments are
-plain ``int += `` with no locks (the GIL plus the synchronous per-record critical section make this
-safe). A metric/event whose ``min_tier`` exceeds the configured tier resolves to a shared no-op
-instrument, so disabled telemetry costs nothing.
+Each actor loop owns one :class:`InstanceRecorder` and is its sole writer, so increments are a plain
+``int +=`` with no lock (the GIL and the synchronous per-record step make that safe). A metric whose
+``min_tier`` exceeds the configured tier resolves to a shared no-op instrument, so disabled telemetry
+costs nothing.
 
-Resolution cost: every ``counter``/``gauge``/``histogram`` call re-runs ``metric_spec`` (a catalog
-lookup) and ``make_labels`` (a sorted-tuple allocation) before the instrument-cache lookup — it returns
-the *same* mutable instrument after the first call but is not free. So per-record callers **hoist the
-instrument once** outside the loop (see ``run_source``/``run_transform``: ``rows_out =
-recorder.counter(...)`` then ``rows_out.add(...)`` in the loop). The convenience verbs
-``incr``/``observe``/``set_gauge`` resolve-and-act in one call and re-run the full resolution every
-time — use them only off the per-record hot path.
+Resolving an instrument is not free: ``counter``/``gauge``/``histogram`` re-run a catalog lookup and a
+label-tuple allocation on every call (they return the cached instrument, but only after that work). So
+per-record callers hoist the instrument once outside the loop — ``rows_out = recorder.counter(...)``,
+then ``rows_out.add(...)`` per row. The ``incr``/``observe``/``set_gauge`` verbs resolve and act in one
+call; use them only off the hot path.
 
-The recorder is handed to ``run_source``/``run_transform`` as an explicit parameter (never shared with
-operator code — operator-author metrics get a *separate* recorder via ``ctx.metrics``), preserving the
-single-writer invariant that the decentralized design depends on.
+Operator-author metrics get a *separate* recorder via ``ctx.metrics``, so operator code never shares
+the actor's recorder and the single-writer invariant holds.
 """
 
 from __future__ import annotations

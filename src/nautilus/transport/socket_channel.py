@@ -1,27 +1,22 @@
 """``SocketChannel``: a credit-limited :class:`~nautilus.runtime.channel.Channel` across a socket.
 
-The two ends share one full-duplex connection. Data frames flow producer to consumer and are limited
-by a credit window: the producer may send a data frame only while it holds a credit, and the consumer
-returns one credit for each data frame it receives (in :meth:`recv`). Control frames are sent without
-a credit, so a full data window never delays a watermark or end-of-stream.
+The two ends share one full-duplex connection. Data frames are limited by a credit window — the
+producer sends only while it holds a credit, the consumer returns one per data frame in :meth:`recv` —
+so a fast producer cannot outrun a slow consumer. Control frames are sent without a credit, so a full
+data window never delays a watermark or end-of-stream. A background task reads the socket: credit
+returns on the producer end, data and control frames (queued for :meth:`recv`) on the consumer end.
 
-A background reader task drains the socket. On the producer end the incoming messages are credit
-returns; on the consumer end they are data and control frames, which it queues for :meth:`recv`.
+Termination is explicit. When the reader stops — clean end-of-stream, an early disconnect, or a
+malformed message — the channel goes terminal and wakes any blocked `send`/`recv`, which then raise
+:class:`TransportClosed` instead of hanging. A disconnect before end-of-stream is an error; after it,
+clean.
 
-Termination is explicit and observable. When the reader stops for any reason — a clean
-end-of-stream, the peer disconnecting early, or a malformed message — the channel enters a terminal
-state: it wakes any `send` blocked on credit and any `recv` blocked on the queue, which then raise
-:class:`TransportClosed` (or the underlying decode error) instead of hanging. A peer that disconnects
-before sending end-of-stream is an error; a disconnect after end-of-stream is clean.
+After its last frame the producer calls :meth:`finish`, which half-closes the write side and drains the
+returning credits until the consumer has read everything and closed. Closing while the consumer still
+has unread bytes would reset the connection and could drop them; draining first avoids that.
 
-After its last frame the producer calls :meth:`finish`: it half-closes the write side and drains the
-returning credits until the consumer has read everything and closed. Tearing a socket down while its
-receive buffer still holds unread bytes makes the OS send an RST, which can discard data the consumer
-has not read yet; draining to the consumer's end first avoids that.
-
-Each channel instance has a single writer task (the producer's actor, or the consumer's `recv`), so
-writes need no lock; the credit decrement and the synchronous `writer.write` happen under one lock
-with no await between them, so a cancelled `send` can neither lose a credit nor split a frame.
+One writer per end means writes need no lock; the credit decrement and the `writer.write` happen under
+one lock with no await between, so a cancelled `send` cannot lose a credit or split a frame.
 """
 
 from __future__ import annotations
@@ -105,14 +100,12 @@ class SocketChannel(Channel):
         return None
 
     async def finish(self) -> None:
-        """Producer-side graceful end of stream. Call after the last frame (the EOS) has been sent,
-        before :meth:`close`.
+        """Producer-side graceful end of stream: call after the last frame (the EOS), before
+        :meth:`close`.
 
-        Half-closes the write side (sends EOF after flushing), then waits for the consumer to read
-        everything and close, draining the returning credits in the meantime. This keeps the
-        following :meth:`close` from tearing the socket down while the consumer still has unread data,
-        which would RST and could drop it. A consumer that does not close within ``_DRAIN_TIMEOUT``
-        is abandoned to the abortive :meth:`close`."""
+        Half-closes the write side, then waits for the consumer to drain and close (returning credits
+        meanwhile) so :meth:`close` does not reset the connection on unread data. A consumer that does
+        not close within ``_DRAIN_TIMEOUT`` is left to the abortive :meth:`close`."""
         self._closing = True
         with contextlib.suppress(ConnectionError, OSError, RuntimeError):
             if self._writer.can_write_eof():

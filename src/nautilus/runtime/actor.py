@@ -13,10 +13,9 @@ core streaming semantics:
 The operator's ``process``/``on_watermark`` are synchronous; this loop performs every ``await``
 (backpressured send) *between* those calls, so each operator step is a race-free critical section.
 
-Telemetry: each actor is handed an explicit :class:`~nautilus.telemetry.recorder.Recorder` (the sole
-writer of built-in metrics). Durations use ``perf_counter_ns`` (wall, not event time); backpressure is
-timed inside :class:`Output`; lifecycle/error events and EOS accounting are recorded in-line. When the
-recorder is the no-op, the hot path skips timing entirely.
+Telemetry: each actor holds one :class:`~nautilus.telemetry.recorder.Recorder`, the sole writer of its
+built-in metrics, with backpressure timed inside :class:`Output`. A no-op recorder skips timing
+entirely.
 """
 
 from __future__ import annotations

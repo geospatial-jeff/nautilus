@@ -1,9 +1,9 @@
-"""Deterministic serialization of a :class:`RunReport` to dict/JSON.
+"""Deterministic serialization of a :class:`RunReport` to dict, JSON, and a token-budgeted markdown
+digest.
 
-The JSON is the complete, machine-readable surface (sorted keys, stable shapes). The report embeds the
-catalog *slice* for the metrics/events actually present in the run plus a ``catalog_version``, so an
-agent reading one report in isolation is self-contained while the payload stays lean. The token-budgeted
-markdown digest is added in S3.
+The JSON is the complete machine-readable surface (sorted keys, stable shapes). A report embeds the
+catalog slice for the metrics and events it actually used, plus a ``catalog_version``, so an agent can
+read one report on its own — without the rest of the catalog — while the payload stays lean.
 """
 
 from __future__ import annotations

@@ -1,14 +1,13 @@
 """Run a pipeline across two processes connected by a TCP socket on the loopback interface.
 
-Stage 1 minimal split: the source runs in the parent process; the transforms and sink run in a
-spawned child. The single edge between them is a :class:`SocketChannel` over TCP, so credit-based
-flow control is exercised across a real process boundary using the same transport that connects nodes
-in a cluster. Placement and a general launcher are Stage 2 (``nautilus.cluster``); this function is
-the local two-process harness, not the cluster control plane.
+The source runs in the parent process; the transforms and sink run in a spawned child. Their single
+edge is a :class:`SocketChannel` over TCP, so credit-based flow control is exercised across a real
+process boundary using the same transport a cluster uses between nodes. This is the local two-process
+harness, not the cluster control plane (placement and a launcher are Stage 2).
 
-Failure handling is explicit: the child always reports an outcome (``ok`` with batches+telemetry, or
-``error`` with a traceback) back to the parent, so a failing operator raises in the caller instead of
-hanging; and the parent always reaps the child.
+Failure handling is explicit: the child always reports an outcome (``ok`` with batches and telemetry,
+or ``error`` with a traceback) to the parent, so a failing operator raises in the caller instead of
+hanging, and the parent always reaps the child.
 """
 
 from __future__ import annotations

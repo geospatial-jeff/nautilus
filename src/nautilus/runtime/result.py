@@ -1,12 +1,11 @@
 """The value a run returns: the emitted batches, plus the telemetry report.
 
-``RunResult`` is a thin, explicit wrapper over the list of emitted :class:`pyarrow.RecordBatch` es: it
-iterates and indexes (``for b in result``, ``result[0]``, ``len(result)``) and exposes ``.batches`` and
-``.telemetry``. It is deliberately NOT a ``Sequence`` subclass — slicing one would return a bare list
-that silently drops ``.telemetry``, and the inherited value-equality mixins are misleading on
-RecordBatches. The Arrow-first readers (``to_table``/``to_pylist``/``to_pydict``) collapse the per-batch
-zip every consumer would otherwise repeat. The ``RunReport`` type is referenced only for annotations
-(under ``TYPE_CHECKING``), so this data-path module never imports the boundary report layer at runtime.
+``RunResult`` wraps the list of emitted :class:`pyarrow.RecordBatch` es — it iterates, indexes, and
+exposes ``.batches`` and ``.telemetry``. It is deliberately NOT a ``Sequence`` subclass: slicing one
+would return a bare list that drops ``.telemetry``, and the inherited equality is misleading on
+RecordBatches. ``to_table``/``to_pylist``/``to_pydict`` are the Arrow-first readers. ``RunReport`` is
+imported only under ``TYPE_CHECKING``, so this data-path module never pulls in the report layer at
+runtime.
 """
 
 from __future__ import annotations

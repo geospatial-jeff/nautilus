@@ -3,23 +3,24 @@
 A decentralized, entirely-streaming parallel compute framework. Comparable to Dask, but with no
 central scheduler.
 
-- **You define the computation as a dataflow graph.** Build an immutable graph with a fluent DSL; a
-  one-time compile-and-deploy step turns it into a physical plan and starts one worker process per
-  core. After startup, no central component is on the data path.
-- **Entirely streaming.** Bounded data is a finite stream that terminates. The same operators handle
+- **Decentralized.** The computation is a dataflow graph of operators that run as actors and route
+  data to each other locally — no central component sits on the data path.
+- **Entirely streaming.** Bounded data is just a finite stream that ends, so the same operators handle
   bounded and unbounded inputs.
-- **Backpressure.** Operators are actors connected by channels with credit-based flow control; a
-  slow sink propagates backpressure upstream to the source.
-- **Arrow-first.** Records flow as Arrow `RecordBatch`es, micro-batched and zero-copy across
-  processes.
+- **Backpressure end to end.** Operators are joined by bounded channels with credit-based flow
+  control, so a slow sink slows the source instead of growing memory without bound.
+- **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar, micro-batched, and zero-copy
+  across processes.
 
-For the core terms and data model (operators, frames, watermarks, …), see `docs/glossary.md`. See
-`DESIGN.md` for the architecture and `IMPLEMENTATION_PLAN.md` for staged progress.
+For the vocabulary and data model (operators, frames, watermarks, …) see `docs/glossary.md`; for the
+architecture and the reasons behind it, `DESIGN.md`; for what's built and what's next,
+`IMPLEMENTATION_PLAN.md`.
 
 ## Status
 
-Early development. Single-node multicore is the current target; multi-node is accounted for in the
-design (swappable transport endpoints, key-group addressing) but not yet built.
+Early development. A single-process streaming engine runs today, along with a two-process credit
+transport; multicore deploy and multi-node are designed but not yet built. See
+`IMPLEMENTATION_PLAN.md`.
 
 ## CLI
 

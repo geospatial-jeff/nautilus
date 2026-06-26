@@ -1,4 +1,4 @@
-"""Stage 0 demo: keyed tumbling windows fire on watermark advance; an idle input does not freeze
+"""Stage 0 demo: keyed tumbling windows fire on watermark advance; an idle input does not stall
 event-time progress."""
 
 import asyncio

@@ -82,16 +82,16 @@ class SourceOperator(ABC):
     """Generates the frame sequence for a stream. Has no inputs.
 
     ``frames()`` is an async generator, so a source can ``await`` (network I/O, ``asyncio.sleep``)
-    between batches without freezing the event loop — the basis for long-running / unbounded streams.
-    A purely in-memory source simply never awaits::
+    between batches without blocking the event loop — the basis for unbounded streams. An in-memory
+    source simply never awaits::
 
         async def frames(self):
             for frame in self._frames:
                 yield frame
 
-    ``frames()`` must not *block* the loop. A source doing blocking work offloads it itself, e.g.
-    ``rows = await asyncio.to_thread(blocking_read)`` — nautilus does not wrap source code in a hidden
-    thread pool, which would break the single-writer-per-actor, deterministic-step model.
+    It must not *block* the loop, though: offload blocking work yourself (e.g.
+    ``await asyncio.to_thread(read)``). nautilus does not wrap sources in a hidden thread pool, which
+    would break the single-writer-per-actor model.
     """
 
     def open(self, ctx: OperatorContext) -> None:

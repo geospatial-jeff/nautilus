@@ -71,32 +71,23 @@ real event times are kept strictly below that sentinel so they can never collide
 
 ## Telemetry
 
-Telemetry is a primary output: every run emits self-describing data so an external agent can read
-it, find performance problems or bugs, change the code, re-run, and compare. nautilus reports *facts*
-and draws no conclusions — there is no built-in diagnostics engine. Two layers:
+nautilus reports facts, never verdicts: every run emits self-describing measurements so an external
+agent can read a run, find a problem, change the code, re-run, and compare. There is no built-in
+diagnosis — deliberately, so the analysis can evolve outside the engine.
 
-- **`nautilus.telemetry`** (data path): `model` (Counter, Gauge, fixed-bucket Histogram, Event,
-  Snapshot), `catalog` (the frozen `MetricSpec`/`EventSpec` source of truth — each metric carries a
-  unit, labels, `meaning`, `relates_to`, and `derivation`; a lint forbids causal language),
-  `recorder` (single-writer, lock-free, tier-gated, zero-cost when off), and `registry`.
-- **`nautilus.telemetry.report`** (boundary, kept off the data path by import-linter): the versioned
-  `RunReport` tree, a deterministic `to_json` and a token-budgeted `to_markdown` digest for agents,
-  query helpers that sort, filter, and project (but never diagnose), and the generated
-  `docs/telemetry-reference.md` (run `python -m nautilus.telemetry.report.reference`).
+Telemetry is split in two, with a firewall between. Instrumentation on the hot path only records raw
+numbers; it never assembles a report, so a run pays as little as possible for it. Building the report
+is a separate, boundary-time concern, and import-linter forbids the per-record code from importing the
+report layer, so report-building can never creep onto the hot path. Every reader sits downstream of the
+recorders, which makes new readers additive: the returned `RunResult` and the live `nautilus dashboard`
+read the same recordings, and neither required any change to instrumentation.
 
-Instrumentation only ever writes to a recorder; every reader sits downstream of that. The in-process
-`RunReport` is one reader; the live HTTP dashboard (`nautilus.telemetry.live`, served by `nautilus
-dashboard`) is another, pulling `RecorderRegistry.snapshot_all()` between actor steps — neither needed
-a change to instrumentation. A run returns a `RunResult`: the output batches plus an additive
-`.telemetry` report. `structural_digest()` covers only provably-deterministic facts, so report tests
-are stable and a future benchmark/diff tool has a fixed schema. See `docs/telemetry-reference.md`.
+Every metric is declared once in a catalog — its name, unit, and a plain-language meaning — so a report
+describes itself and its schema cannot drift from the code; a lint rejects any meaning written as
+cause-and-effect. See `docs/telemetry-reference.md`.
 
 ## Status
 
-Complete: the Stage 0 semantics core (single process, in-memory channels, deterministic word-count,
-tumbling windows, and idle handling), Stage 0.5 tensor columns, and the Stage 1 credit transport
-(framed Arrow-IPC over TCP between two processes). The telemetry subsystem is complete and on by
-default: every run ships a self-describing `RunReport` (`result.telemetry`) with a JSON surface, a
-markdown digest for agents, and a generated reference. The remaining engine stages — parallel topology
-and the keyed shuffle, compile-and-deploy across worker processes, the full DSL, and multi-node
-validation — populate the telemetry catalog's reserved keys. See `IMPLEMENTATION_PLAN.md`.
+The single-process semantics core, tensor columns, the credit transport, and the telemetry subsystem
+run today; the cluster control plane, the full DSL, and multi-node validation are designed but not
+built. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.

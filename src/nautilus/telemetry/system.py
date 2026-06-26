@@ -1,14 +1,12 @@
-"""Process/host resource sampling: each process samples its own resource usage.
+"""Process and host resource sampling: each process samples itself.
 
-Each process samples *itself*: a :class:`SystemSampler` periodically writes process CPU/memory/fd/thread
-gauges and an event-loop-lag histogram into one dedicated process-level recorder (``operator_id="process"``,
-``kind="process"``), registered in the same :class:`~nautilus.telemetry.registry.RecorderRegistry` as
-every other recorder. So the readings flow through ``snapshot_all`` → ``build_report`` → JSON with no
-special-casing, and per-record instrumentation is untouched.
+A :class:`SystemSampler` periodically writes process CPU/memory/fd/thread gauges and an event-loop-lag
+histogram into one dedicated recorder (``operator_id="process"``), which the registry snapshots like any
+other — so the readings reach the report with no special-casing.
 
-``psutil`` is imported lazily and every call is individually guarded: if psutil is absent or a reading is
-denied, that gauge is omitted (not zeroed) and sampling continues — event-loop lag needs no psutil and is
-always recorded. This module is on the data-path side and must not import the report (boundary) layer.
+``psutil`` is imported lazily and every call is guarded: if it is absent or a reading is denied, that
+gauge is omitted (not zeroed) and sampling continues. Event-loop lag needs no psutil and is always
+recorded. This module is on the data path and must not import the report layer.
 """
 
 from __future__ import annotations
