@@ -36,6 +36,10 @@ nautilus catalog                  # every metric nautilus records, with its mean
 # Print a ready-to-paste prompt for an AI coding agent: your task plus the run's
 # telemetry, what each metric means, and the relevant source files.
 nautilus task "make Tokenize faster" --on wordcount
+
+# Performance work: the bench-* pipelines generate millions of rows (the examples above are tiny).
+# Scale them from the environment; vary --parallelism / --workers to stress the shuffle and transport.
+NAUTILUS_BENCH_ROWS=2000000 nautilus run bench-keyed --save report.json
 ```
 
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns
