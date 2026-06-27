@@ -52,29 +52,31 @@ def _route_keyed(
     batch: pa.RecordBatch,
     num_downstream: int,
     key_columns: tuple[str, ...],
-    assign: Callable[[tuple[object, ...]], int],
+    bucket_of: Callable[[tuple[object, ...]], int],
 ) -> list[tuple[int, pa.RecordBatch]]:
-    """The shared core of the keyed partitioners: send each row to ``assign(key)``, then ``take`` the
+    """The shared core of the keyed partitioners: send each row to ``bucket_of(key)``, then ``take`` the
     rows owned by each instance into one sub-batch.
 
     The key is extracted per row with ``to_pylist`` (Python scalars — never ``.to_numpy()``, whose
     numpy scalars msgpack cannot pack), matching the keyed operators' own ``to_pylist`` keying so the
-    shuffle and the operator agree on every key exactly; a scalar the state backend cannot key on is
-    rejected here rather than splitting silently. Per-row Python hashing is the accepted MVP cost; the
-    Arrow-vectorized hot path is Stage 3.
+    shuffle and the operator agree on every key exactly. ``bucket_of`` validates the key and computes its
+    owning instance once per *distinct* key (a per-partitioner cache); repeats are a dict lookup, so a
+    high-rate stream of few keys hashes each key once for the run, not once per row.
     """
     cols = [batch.column(c).to_pylist() for c in key_columns]
     buckets: list[list[int]] = [[] for _ in range(num_downstream)]
     for r in range(batch.num_rows):
-        key = tuple(col[r] for col in cols)
-        for scalar in key:
-            if not isinstance(scalar, _ALLOWED_KEY_SCALARS):
-                raise TypeError(
-                    f"cannot route on key scalar {scalar!r} of type {type(scalar).__name__}; "
-                    "allowed key scalars are str/int/bool/bytes/null"
-                )
-        buckets[assign(key)].append(r)
+        buckets[bucket_of(tuple(col[r] for col in cols))].append(r)
     return [(i, batch.take(pa.array(rows, pa.int64()))) for i, rows in enumerate(buckets) if rows]
+
+
+def _validate_key(key: tuple[object, ...]) -> None:
+    for scalar in key:
+        if not isinstance(scalar, _ALLOWED_KEY_SCALARS):
+            raise TypeError(
+                f"cannot route on key scalar {scalar!r} of type {type(scalar).__name__}; "
+                "allowed key scalars are str/int/bool/bytes/null"
+            )
 
 
 class Partitioner(ABC):
@@ -84,6 +86,34 @@ class Partitioner(ABC):
     def route(
         self, batch: pa.RecordBatch, num_downstream: int
     ) -> list[tuple[int, pa.RecordBatch]]: ...
+
+
+class _KeyedPartitioner(Partitioner):
+    """Shared machinery for the keyed shuffles: a per-instance cache from key tuple to owning downstream
+    index. ``_bucket(key)`` is the subclass's pure mapping; the cache means it (and the per-key
+    validation) runs once per distinct key for the life of the partitioner, not once per row. The cache
+    is bounded by the key cardinality — the same order as the keyed state it routes to."""
+
+    _key_columns: tuple[str, ...]
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[object, ...], int] = {}
+
+    def _bucket(self, key: tuple[object, ...], num_downstream: int) -> int:
+        raise NotImplementedError
+
+    def _bucket_of(self, num_downstream: int) -> Callable[[tuple[object, ...]], int]:
+        cache = self._cache
+
+        def bucket_of(key: tuple[object, ...]) -> int:
+            idx = cache.get(key)
+            if idx is None:  # a key never seen: validate and compute its owner once, then memoize
+                _validate_key(key)
+                idx = self._bucket(key, num_downstream)
+                cache[key] = idx
+            return idx
+
+        return bucket_of
 
 
 class Forward(Partitioner):
@@ -103,7 +133,7 @@ class Broadcast(Partitioner):
         return [(i, batch) for i in range(num_downstream)]
 
 
-class HashPartitioner(Partitioner):
+class HashPartitioner(_KeyedPartitioner):
     """The keyed shuffle: route each row to the instance that owns ``hash(key) mod Q``, so every row
     with a given key lands on the same instance (co-location) and that instance owns the whole key
     range ``{k : stable_bucket(k, Q) == i}``. :class:`KeyGroupPartitioner` generalizes it with a
@@ -113,17 +143,19 @@ class HashPartitioner(Partitioner):
     def __init__(self, key_columns: Sequence[str]) -> None:
         if not key_columns:
             raise ValueError("HashPartitioner needs at least one key column")
+        super().__init__()
         self._key_columns = tuple(key_columns)
+
+    def _bucket(self, key: tuple[object, ...], num_downstream: int) -> int:
+        return stable_bucket(key, num_downstream)
 
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
             return [(0, batch)]  # one owner: skip per-row hashing entirely
-        return _route_keyed(
-            batch, num_downstream, self._key_columns, lambda key: stable_bucket(key, num_downstream)
-        )
+        return _route_keyed(batch, num_downstream, self._key_columns, self._bucket_of(num_downstream))
 
 
-class KeyGroupPartitioner(Partitioner):
+class KeyGroupPartitioner(_KeyedPartitioner):
     """The keyed shuffle with group indirection: hash each key to one of ``G`` key groups
     (``stable_bucket(key, G)``), then route by a static ``group → instance`` table. The table is fixed
     for the run — this never migrates live state (a rescale is a new job; see ``DESIGN.md``) — and at
@@ -139,19 +171,20 @@ class KeyGroupPartitioner(Partitioner):
             raise ValueError("KeyGroupPartitioner needs at least one key column")
         if not group_table:
             raise ValueError("KeyGroupPartitioner needs a non-empty group table")
+        super().__init__()
         self._key_columns = tuple(key_columns)
         self._group_table = tuple(group_table)
         self._num_groups = len(self._group_table)
 
+    def _bucket(self, key: tuple[object, ...], num_downstream: int) -> int:
+        # The group's owner comes from the fixed table — independent of num_downstream — so a cached
+        # entry stays valid for the run (num_downstream is constant per edge anyway).
+        return self._group_table[stable_bucket(key, self._num_groups)]
+
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
             return [(0, batch)]  # one owner: skip per-row hashing entirely
-        return _route_keyed(
-            batch,
-            num_downstream,
-            self._key_columns,
-            lambda key: self._group_table[stable_bucket(key, self._num_groups)],
-        )
+        return _route_keyed(batch, num_downstream, self._key_columns, self._bucket_of(num_downstream))
 
 
 class RoundRobin(Partitioner):
