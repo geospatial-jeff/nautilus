@@ -149,6 +149,11 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
         p.name == "edge.credit_wait_micros" for o in rep.operators for p in o.counters
     )
 
+    # Arrow IPC serialization is timed on both ends: encode on the producer's edge, decode on the
+    # receiving instance. Both only appear because data genuinely crossed a socket.
+    assert any(p.name == "transport.encode_micros" for o in rep.operators for p in o.counters)
+    assert any(p.name == "transport.decode_micros" for o in rep.operators for p in o.counters)
+
     # placement.instances_per_worker is recorded once per worker node and sums to the instance count.
     placements = {
         o.node: g.last

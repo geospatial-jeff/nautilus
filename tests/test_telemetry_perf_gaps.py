@@ -37,21 +37,18 @@ def _counter(op, name):
     return sum(p.value for p in op.counters if p.name == name)
 
 
-def _hist_sum(op, name):
-    return sum(h.sum for h in op.histograms if h.name == name)
-
-
 async def test_step_micros_includes_on_watermark_time():
     src, ops = _windowed()
     rep = (await run_local_chain(src, ops, clock=TestClock())).telemetry
     op0 = rep.operator("op0")
     step = _counter(op0, "runtime.step_micros")
-    proc = _hist_sum(op0, "operator.process_micros")
-    wmk = _hist_sum(op0, "operator.on_watermark_micros")
-    # busy/self-time must cover both synchronous critical sections, as the catalog meaning states.
-    assert step == proc + wmk
-    # this operator does real work in on_watermark (window flush), so the two differ.
-    assert wmk > 0
+    proc = next(h for h in op0.histograms if h.name == "operator.process_micros")
+    wmk = next(h for h in op0.histograms if h.name == "operator.on_watermark_micros")
+    # busy/self-time covers both synchronous critical sections (catalog meaning). step accumulates in
+    # nanoseconds and carries the sub-µs remainder, so it is at least the per-call histograms' truncated
+    # sums and exceeds them by at most one microsecond per call.
+    assert proc.sum + wmk.sum <= step <= proc.sum + wmk.sum + proc.count + wmk.count
+    assert wmk.sum > 0  # this operator does real work in on_watermark (window flush)
 
 
 async def test_state_entries_and_keys_track_open_windows():
@@ -78,6 +75,36 @@ async def test_partition_route_micros_attributes_the_keyed_shuffle():
     assert routed, "the shuffling source must record partition.route_micros"
     assert all(h.labels for h in routed)  # labeled by (operator_id, edge_dst)
     assert sum(h.count for h in routed) > 0
+
+
+def test_micros_accumulator_carries_sub_microsecond_remainders():
+    from nautilus.runtime.actor import _MicrosAccumulator
+    from nautilus.telemetry.model import Counter
+
+    c = Counter()
+    acc = _MicrosAccumulator(c)
+    for _ in range(2000):
+        acc.add_ns(600)  # 0.6µs each — truncating per add would floor every one to 0 (lose it all)
+    assert c.value == 1200  # 2000 * 600ns = 1,200,000ns = 1200µs, recovered exactly by carrying
+
+
+async def test_source_generation_time_is_recorded_as_self_time():
+    from nautilus.benchmarks import SyntheticKeyedSource, passthrough
+    from nautilus.operators import MapBatch
+
+    # A source doing real (numpy) generation work must show non-zero self-time, not read as idle.
+    src = SyntheticKeyedSource(num_batches=50, batch_rows=2048, key_cardinality=100)
+    rep = (await run_local_chain(src, [MapBatch(passthrough)])).telemetry
+    assert _counter(rep.operator("source"), "runtime.step_micros") > 0
+
+
+async def test_queue_depth_histogram_records_a_distribution():
+    src, ops = _windowed()
+    rep = (await run_local_chain(src, ops, clock=TestClock())).telemetry
+    # Every in-process edge with sends has a depth distribution (counts how often at each fill level),
+    # not just the high-water gauge.
+    hists = [h for o in rep.operators for h in o.histograms if h.name == "edge.queue_depth_hist"]
+    assert hists and sum(h.count for h in hists) > 0
 
 
 def test_backend_sizes_count_entries_and_distinct_keys():

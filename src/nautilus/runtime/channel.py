@@ -53,6 +53,18 @@ class Channel(ABC):
         ``edge.credit_wait_micros``."""
         return None
 
+    def encode_micros(self) -> int | None:
+        """Cumulative microseconds this end spent serializing frames to the wire, or ``None`` for an
+        in-process channel (which serializes nothing). The sending
+        :class:`~nautilus.runtime.actor.Output` records the delta as ``transport.encode_micros``."""
+        return None
+
+    def decode_micros(self) -> int | None:
+        """Cumulative microseconds this end spent deserializing frames from the wire, or ``None`` for an
+        in-process channel. Accumulated in the background read loop; the receiving actor totals it as
+        ``transport.decode_micros`` at close."""
+        return None
+
 
 class InProcChannel(Channel):
     """A bounded in-process channel backed by ``asyncio.Queue``."""

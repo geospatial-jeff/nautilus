@@ -67,6 +67,8 @@ DURATION_US_BUCKETS: tuple[int, ...] = (
     1048576,
 )
 ROWS_BUCKETS: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 4096, 16384, 65536)
+# Channel-fill levels: a typical capacity is small (default 16), so fine low buckets, then headroom.
+QUEUE_DEPTH_BUCKETS: tuple[int, ...] = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
 #: Words that would turn a fact into a verdict. The catalog must contain none of these (CI-enforced).
 BANNED_ANALYSIS_WORDS: frozenset[str] = frozenset(
@@ -323,6 +325,19 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             deterministic=True,
         ),
         MetricSpec(
+            "edge.queue_depth_hist",
+            MetricKind.HISTOGRAM,
+            "count",
+            _EDGE,
+            Reduction.SUM,
+            "Distribution of Channel.depth() sampled by the producer after each send. Where "
+            "edge.queue_depth gives the high-water level, this gives how often each level occurred — the "
+            "share of sends near capacity. In-process channels only (a socket channel reports no depth).",
+            relates_to=("edge.queue_depth", "edge.queue_capacity"),
+            boundaries=QUEUE_DEPTH_BUCKETS,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
             "partition.route_micros",
             MetricKind.HISTOGRAM,
             "microseconds",
@@ -441,7 +456,10 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "microseconds",
             _OP,
             Reduction.SUM,
-            "Summed wall time spent inside synchronous process/on_watermark critical sections.",
+            "Summed wall time the actor spent producing output: a transform's process and on_watermark "
+            "critical sections, or a source's frame generation (which includes any await a self-pacing "
+            "source performs between frames). Accumulated in nanoseconds and reduced to microseconds "
+            "once, so a step shorter than a microsecond still counts.",
             relates_to=("runtime.await_count",),
         ),
         MetricSpec(
@@ -564,6 +582,33 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             since_stage=1,
             stability=Stability.EXPERIMENTAL,
             min_tier=Tier.FULL,
+        ),
+        MetricSpec(
+            "transport.encode_micros",
+            MetricKind.COUNTER,
+            "microseconds",
+            _EDGE,
+            Reduction.SUM,
+            "Wall time the producer spent serializing frames to the wire (Arrow IPC for a batch, msgpack "
+            "for a control frame) on a cross-process edge. A component of edge.send_wait_micros, "
+            "separated out so serialization is distinguishable from flow-control and network waiting.",
+            relates_to=("transport.bytes_sent", "edge.send_wait_micros", "transport.decode_micros"),
+            since_stage=2,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "transport.decode_micros",
+            MetricKind.COUNTER,
+            "microseconds",
+            ("operator_id",),
+            Reduction.SUM,
+            "Wall time this instance's inbound socket reader spent deserializing frames from the wire "
+            "(Arrow IPC for a batch, msgpack for a control frame). Runs in the background read loop, so "
+            "it overlaps the actor's own work; recorded once when the instance closes. No cross-process "
+            "inbound edge means zero.",
+            relates_to=("transport.encode_micros",),
+            since_stage=2,
+            stability=Stability.EXPERIMENTAL,
         ),
         MetricSpec(
             "placement.instances_per_worker",

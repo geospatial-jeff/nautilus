@@ -91,6 +91,26 @@ def _capture(
         raise
 
 
+class _MicrosAccumulator:
+    """Adds nanosecond durations into a microsecond Counter, carrying the sub-microsecond remainder so
+    the running total stays accurate even when each step is under a microsecond. Truncating every add
+    with ``// 1000`` would floor a sub-µs step to zero, so a high-rate stream of tiny steps would read
+    as idle; carrying the remainder recovers it while keeping the counter in whole microseconds."""
+
+    __slots__ = ("_counter", "_carry_ns")
+
+    def __init__(self, counter: Counter) -> None:
+        self._counter = counter
+        self._carry_ns = 0
+
+    def add_ns(self, ns: int) -> None:
+        self._carry_ns += ns
+        micros = self._carry_ns // 1000
+        if micros:
+            self._counter.add(micros)
+            self._carry_ns -= micros * 1000
+
+
 class Output:
     """Routes an upstream instance's frames to the downstream instance channels and records the
     send-side edge metrics (backpressure, frames/rows sent, queue depth)."""
@@ -117,6 +137,20 @@ class Output:
         self._route_hist = recorder.histogram(
             "partition.route_micros", operator_id=edge_src, edge_dst=edge_dst
         )
+        # Per-channel queue-depth histograms, hoisted: the depth gauge gives the high-water level, this
+        # gives the distribution (how often near capacity). Built only for channels that report a depth
+        # (in-process), so a socket edge gets no empty series — matching the lazily-set depth gauge.
+        self._depth_hists = {
+            i: recorder.histogram(
+                "edge.queue_depth_hist",
+                operator_id=edge_src,
+                edge_src=edge_src,
+                edge_dst=edge_dst,
+                channel_index=i,
+            )
+            for i, ch in enumerate(channels)
+            if ch.depth() is not None
+        }
         # Transport accounting is per-channel and only for cross-process edges: an in-process channel
         # reports None, so its index is absent here and its sends skip the bookkeeping entirely. The
         # SocketChannel reports cumulative totals; we record the per-send delta against these.
@@ -125,6 +159,7 @@ class Output:
         }
         self._prev_bytes = [0] * len(channels)
         self._prev_credit_wait = [0] * len(channels)
+        self._prev_encode = [0] * len(channels)
 
     async def emit(self, batch: pa.RecordBatch) -> None:
         if self._on:
@@ -165,13 +200,17 @@ class Output:
         if depth is not None:
             rec.set_gauge("edge.queue_depth", depth, **base)
             rec.set_gauge("edge.queue_capacity", self._capacity, **base)
-        if idx in self._transport_idx:  # cross-process edge: record wire bytes + credit-stall deltas
+            self._depth_hists[idx].observe(depth)
+        if idx in self._transport_idx:  # cross-process edge: record wire bytes + serialize/stall deltas
             written = ch.bytes_written() or 0
             rec.incr("transport.bytes_sent", written - self._prev_bytes[idx], **base)
             self._prev_bytes[idx] = written
             waited = ch.credit_wait_micros() or 0
             rec.incr("edge.credit_wait_micros", waited - self._prev_credit_wait[idx], **base)
             self._prev_credit_wait[idx] = waited
+            encoded = ch.encode_micros() or 0
+            rec.incr("transport.encode_micros", encoded - self._prev_encode[idx], **base)
+            self._prev_encode[idx] = encoded
 
 
 async def _flush(
@@ -209,6 +248,11 @@ async def run_source(
     batches_out = recorder.counter("operator.batches_out", operator_id=op_id, subtask_index=sub)
     bytes_out = recorder.counter("operator.bytes_out", operator_id=op_id, subtask_index=sub)
     bytes_on = bytes_out is not NOOP_COUNTER  # FULL tier only — skip the Arrow buffer-size walk
+    # A source has no process/on_watermark, so without this it shows zero self-time and reads as idle
+    # even when generation is the bottleneck. Time each frame's production (the generator step).
+    step = _MicrosAccumulator(
+        recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
+    )
     started = perf_counter_ns()
 
     async def emit(frame: Frame) -> None:
@@ -235,8 +279,13 @@ async def run_source(
     try:
         with _capture(recorder, op_id, opcls, loc, "process"):
             frames = source.frames()
+            gen0 = perf_counter_ns()
             async for frame in frames:
+                # Time to produce this frame (the generator body); for a self-pacing source this
+                # includes its await. The send that follows is timed separately as send/route.
+                step.add_ns(perf_counter_ns() - gen0)
                 await emit(frame)
+                gen0 = perf_counter_ns()
     finally:
         # Finalize the frames() async generator BEFORE source.close(). Python does not call aclose()
         # on a CancelledError unwind, so a user's `async with` / try-finally inside frames() would only
@@ -292,7 +341,9 @@ async def run_transform(
     )
     proc_calls = recorder.counter("operator.process_calls", operator_id=op_id, subtask_index=sub)
     wm_calls = recorder.counter("operator.on_watermark_calls", operator_id=op_id, subtask_index=sub)
-    step = recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
+    step = _MicrosAccumulator(
+        recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
+    )
     awaits = recorder.counter("runtime.await_count", operator_id=op_id, subtask_index=sub)
     input_wait = recorder.counter("edge.input_wait_micros", operator_id=op_id)
     wm_gauge = recorder.gauge("watermark.combined_micros", operator_id=op_id, subtask_index=sub)
@@ -319,10 +370,10 @@ async def run_transform(
         w0 = perf_counter_ns()
         with _capture(recorder, op_id, opcls, loc, "on_watermark", frame_kind=frame_kind):
             op.on_watermark(t, collector)
-        dt = (perf_counter_ns() - w0) // 1000
-        wm_hist.observe(dt)
+        dt_ns = perf_counter_ns() - w0
+        wm_hist.observe(dt_ns // 1000)
         wm_calls.add(1)
-        step.add(dt)  # on_watermark is a synchronous critical section too — see runtime.step_micros
+        step.add_ns(dt_ns)  # on_watermark is a synchronous critical section too — see runtime.step_micros
 
     async def _advance(advanced: int | None) -> None:
         """On a strict watermark advance: record it, fire due windows/timers, flush, then forward the
@@ -371,9 +422,9 @@ async def run_transform(
                     batch_rows=rows,
                 ):
                     op.process(frame.data, collector)
-                dt = (perf_counter_ns() - p0) // 1000
-                proc_hist.observe(dt)
-                step.add(dt)
+                dt_ns = perf_counter_ns() - p0
+                proc_hist.observe(dt_ns // 1000)
+                step.add_ns(dt_ns)
                 proc_calls.add(1)
                 await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
 
@@ -404,6 +455,11 @@ async def run_transform(
         with _capture(recorder, op_id, opcls, loc, "close"):
             op.close()
         wm_final.set(tracker.combined)
+        # Inbound Arrow IPC decode happens in the channels' background read loops; total it once here.
+        # Zero unless an input crossed a socket, so single-process runs record nothing.
+        decoded = mailbox.decode_micros()
+        if decoded:
+            recorder.incr("transport.decode_micros", decoded, operator_id=op_id)
         recorder.event(
             "operator.lifecycle.close",
             operator_id=op_id,

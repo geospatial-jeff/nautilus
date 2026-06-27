@@ -95,6 +95,9 @@ async def _collect_sink(mailbox: Mailbox, out: list[pa.RecordBatch], recorder: R
         elif isinstance(frame, EOS):
             recorder.incr("eos.received", 1, operator_id="sink", input_index=i)
             mailbox.close_input(i)
+    decoded = mailbox.decode_micros()  # inbound Arrow IPC decode for a sink behind a cross-worker edge
+    if decoded:
+        recorder.incr("transport.decode_micros", decoded, operator_id="sink")
 
 
 async def execute(

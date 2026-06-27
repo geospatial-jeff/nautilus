@@ -68,10 +68,14 @@ class SocketChannel(Channel):
         self._closing = False  # producer end: finish() in progress, so peer EOF is expected
         self._bytes_written = 0  # cumulative wire bytes this end has written (forward data + control)
         self._credit_wait_ns = 0  # cumulative time send() blocked awaiting a data credit
+        self._encode_ns = 0  # cumulative time spent serializing outbound frames
+        self._decode_ns = 0  # cumulative time the read loop spent deserializing inbound frames
         self._read_task: asyncio.Task[None] = asyncio.create_task(self._read_loop())
 
     async def send(self, frame: Frame) -> None:
+        e0 = perf_counter_ns()
         message = encode_frame(frame)
+        self._encode_ns += perf_counter_ns() - e0
         if frame.is_control:
             self._raise_if_terminated()
             await self._send_bytes(message)
@@ -112,6 +116,12 @@ class SocketChannel(Channel):
     def credit_wait_micros(self) -> int | None:
         return self._credit_wait_ns // 1000
 
+    def encode_micros(self) -> int | None:
+        return self._encode_ns // 1000
+
+    def decode_micros(self) -> int | None:
+        return self._decode_ns // 1000
+
     async def finish(self) -> None:
         """Producer-side graceful end of stream: call after the last frame (the EOS), before
         :meth:`close`.
@@ -149,7 +159,9 @@ class SocketChannel(Channel):
         try:
             while True:
                 kind, payload = await read_message(self._reader)
+                d0 = perf_counter_ns()
                 obj = decode(kind, payload)
+                self._decode_ns += perf_counter_ns() - d0
                 if kind == Kind.CREDIT:
                     assert isinstance(obj, int)
                     await self._grant_credits(obj)

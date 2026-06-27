@@ -35,6 +35,11 @@ class Mailbox:
     def exhausted(self) -> bool:
         return all(self._closed)
 
+    def decode_micros(self) -> int:
+        """Total microseconds the inbound channels spent deserializing the wire (0 for in-process
+        inputs). The actor totals this once at close as ``transport.decode_micros``."""
+        return sum(d for ch in self._channels if (d := ch.decode_micros()) is not None)
+
     async def get(self) -> tuple[int, Frame]:
         """Return the next ``(input_index, frame)`` preserving per-channel FIFO order."""
         if self.exhausted:
