@@ -157,12 +157,31 @@ class KeyedTumblingSum(OneInputOperator):
         return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
-        keys = batch.column(self.key_col).to_pylist()
-        values = batch.column(self.value_col).to_pylist()
-        times = pc.cast(batch.column(self.ts_col), pa.int64()).to_pylist()
-        for key, value, ts in zip(keys, values, times, strict=True):
-            for window in self.window.assign(ts):
-                self._ctx.reducing_state("acc", KeyContext((key,), window), _add).add(value)
+        # A tumbling window assigns each row to exactly one window [start, start+size) with
+        # start = ts - ts % size, so the window can be computed columnar (ts >= 0, so floor-div * size
+        # equals ts - ts % size). Partial-summing this batch per (key, window) in Arrow first turns the
+        # old per-row state write into one write per distinct (key, window) — far fewer Python-level
+        # state ops — and the per-batch partial folds into the running sum because addition is associative.
+        size = self.window.size
+        ts = pc.cast(batch.column(self.ts_col), pa.int64()).to_numpy(zero_copy_only=False)
+        window_start = (ts // size) * size
+        grouped = (
+            pa.table(
+                {
+                    "key": batch.column(self.key_col),
+                    "ws": pa.array(window_start),
+                    "val": batch.column(self.value_col),
+                }
+            )
+            .group_by(["key", "ws"])
+            .aggregate([("val", "sum")])
+        )
+        keys = grouped.column("key").to_pylist()
+        starts = grouped.column("ws").to_pylist()
+        partials = grouped.column("val_sum").to_pylist()
+        for key, start, partial in zip(keys, starts, partials, strict=True):
+            window = TimeWindow(start, start + size)
+            self._ctx.reducing_state("acc", KeyContext((key,), window), _add).add(partial)
 
     def on_watermark(self, t: int, out: Collector) -> None:
         keys: list[object] = []
