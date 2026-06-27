@@ -5,10 +5,16 @@ fills a channel, grows state, or pushes a histogram past its low buckets. These 
 millions of rows with *no* real-time pacing (unlike :class:`~nautilus.demos.DemoStreamSource`, which
 sleeps), so a run is bound by the engine, not a timer — which is what a throughput measurement needs.
 
-Generation is **deterministic**: keys, values, and timestamps are pure functions of the row index, so a
-re-run produces byte-identical input. That is what lets the dev loop trust a structural digest — the
-provably-reproducible fingerprint of a run's results — as an unchanged-output check across a code change,
-and read a throughput delta as a real effect rather than input noise.
+Generation is **deterministic** — even the randomized-looking knobs (skew, jitter, varied values, nulls)
+draw from a fixed seed — so a re-run produces byte-identical input. That is what lets the dev loop trust a
+structural digest as an unchanged-output check across a code change, and read a throughput delta as a real
+effect rather than input noise.
+
+The clean stream (uniform keys, ordered timestamps, constant values) is good for *isolating* one cost, but
+it is not a real workload. :class:`SyntheticKeyedSource`'s knobs add the realism a real stream has — key
+**skew**, **out-of-order/late** events, **varied values**, **null** keys, a wider **payload** — each
+isolating a stressor the clean stream cannot reach; the ``bench-skew`` / ``bench-late`` /
+``bench-backpressure`` pipelines wire them up. See the class docstring.
 
 Scale is read from the environment so the same registered pipeline serves both a quick check and a real
 benchmark without code edits:
@@ -17,24 +23,47 @@ benchmark without code edits:
 * ``NAUTILUS_BENCH_BATCH`` — rows per batch (default 4096)
 * ``NAUTILUS_BENCH_KEYS``  — distinct keys / word vocabulary (default 1000)
 * ``NAUTILUS_BENCH_WM_EVERY`` — emit a watermark every N batches (default 8)
+* ``NAUTILUS_BENCH_SKEW`` — zipfian key-skew exponent for ``bench-skew`` (default 1.2)
+* ``NAUTILUS_BENCH_DELAY_US`` — per-batch stall for ``bench-backpressure`` (default 200)
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from time import perf_counter_ns
 
 import numpy as np
 import pyarrow as pa
 
-from nautilus.core.operator import SourceOperator
+from nautilus.core.operator import Collector, OneInputOperator, SourceOperator
 from nautilus.core.records import EOS_FRAME, Batch, Frame, Watermark
+
+#: Fixed seed for the realism knobs (skew, jitter, nulls, varied values). Fixed so a re-run reproduces
+#: byte-identical input even with randomized-looking data — the structural digest stays a usable gate.
+_SEED = 0x5EED
 
 
 def passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
     """Identity map — the linear benchmark's transform. A module-level function (not a lambda) so a
     ``--workers`` run can cloudpickle the operator to a spawned worker."""
     return batch
+
+
+class SlowMap(OneInputOperator):
+    """Busy-spins ``delay_micros`` per batch, then emits it unchanged — a deterministic CPU-bound
+    consumer. Behind a fast source it forces backpressure: the bounded channel fills, the producer stalls,
+    and ``edge.queue_depth_hist`` / ``edge.send_wait_micros`` (and, across a socket, ``edge.credit_wait_micros``)
+    finally populate. Identity output, so the structural digest is unaffected — only timing is."""
+
+    def __init__(self, delay_micros: int) -> None:
+        self._delay_ns = delay_micros * 1000
+
+    def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        deadline = perf_counter_ns() + self._delay_ns  # busy-wait (not sleep): a real CPU-bound stage
+        while perf_counter_ns() < deadline:
+            pass
+        out.emit(batch)
 
 
 # Default scale, shared by bench_params and the `nautilus bench` harness so both agree on one baseline.
@@ -64,15 +93,27 @@ def bench_params() -> dict[str, int]:
 
 
 class SyntheticKeyedSource(SourceOperator):
-    """Yields ``num_batches`` batches of ``batch_rows`` rows: ``key`` (int64, ``row_index %
-    key_cardinality``), ``value`` (int64, constant 1), and ``ts`` (int64, the row index — strictly
-    monotonic event time). A watermark advancing to the latest emitted ``ts`` is broadcast every
-    ``wm_every`` batches, then one EOS. No ``await`` between batches, so the source runs flat out.
+    """A configurable keyed event-time stream. With every realism knob at its default it is the simple,
+    clean stream: ``key`` (``row_index % key_cardinality``), ``value`` (constant 1), ``ts`` (the row
+    index — strictly monotonic), a watermark at the latest ts every ``wm_every`` batches, then EOS. The
+    knobs make it resemble a real stream, each isolating one stressor the clean stream cannot exercise:
 
-    Uniform round-robin keys spread evenly across a keyed shuffle's instances; because consecutive row
-    indices cycle through every key, one window of at least ``key_cardinality`` rows holds all keys, so
-    open-window state is ``~key_cardinality`` entries — large enough to be visible, bounded by regular
-    window firing."""
+    * ``skew`` — > 0 draws keys from a zipfian distribution (exponent ``skew``) instead of uniform, so a
+      few keys are hot. This is the classic source of partition imbalance: across a parallel shuffle one
+      instance gets most of the rows (visible as per-subtask ``operator.rows_in`` / ``process_micros`` skew).
+    * ``jitter`` — > 0 perturbs ``ts`` by up to ±``jitter`` so events arrive out of order, and
+      ``watermark_lag`` holds the watermark that far behind the latest index (allowed lateness). Together
+      they exercise late data and windows that stay open longer — the event-time machinery a perfectly
+      ordered stream never tests.
+    * ``value_spread`` — > 0 makes ``value`` vary over ``[1, value_spread]`` instead of a constant, so an
+      aggregation sums real spread.
+    * ``null_fraction`` — > 0 makes that fraction of keys null (a real stream has missing keys).
+    * ``payload_bytes`` — > 0 adds a fixed-width ``payload`` string column, widening the schema and the
+      bytes an Arrow-IPC frame carries across a socket.
+    * ``extra_value_cols`` — adds N constant int columns (cheap schema width).
+
+    Randomized knobs draw from a fixed-seed generator, so the stream is still byte-for-byte reproducible
+    and the structural digest remains a valid correctness gate."""
 
     def __init__(
         self,
@@ -82,30 +123,69 @@ class SyntheticKeyedSource(SourceOperator):
         key_cardinality: int,
         wm_every: int = 8,
         extra_value_cols: int = 0,
+        skew: float = 0.0,
+        jitter: int = 0,
+        watermark_lag: int = 0,
+        value_spread: int = 0,
+        null_fraction: float = 0.0,
+        payload_bytes: int = 0,
     ) -> None:
         self._num_batches = num_batches
         self._batch_rows = batch_rows
         self._key_cardinality = key_cardinality
         self._wm_every = wm_every
-        self._extra_value_cols = extra_value_cols  # widen the schema (transport / IPC stress)
+        self._extra_value_cols = extra_value_cols
+        self._skew = skew
+        self._jitter = jitter
+        self._watermark_lag = watermark_lag
+        self._value_spread = value_spread
+        self._null_fraction = null_fraction
+        self._payload_bytes = payload_bytes
+        if skew > 0:  # zipfian PMF over [0, K): key 0 is hottest, mass ∝ 1 / (rank ** skew)
+            weights = np.arange(1, key_cardinality + 1, dtype=np.float64) ** -skew
+            self._pmf = weights / weights.sum()
 
     async def frames(self) -> AsyncIterator[Frame]:
         n = self._batch_rows
         ones = pa.array(np.ones(n, dtype=np.int64))
+        payload = pa.array(["x" * self._payload_bytes] * n) if self._payload_bytes else None
+        # Always built; the default (all-knobs-off) path never draws from it, so its output is unchanged.
+        rng = np.random.default_rng(_SEED)
         next_ts = 0
         for b in range(self._num_batches):
-            idx = np.arange(next_ts, next_ts + n, dtype=np.int64)
+            base = np.arange(next_ts, next_ts + n, dtype=np.int64)
+            if self._skew > 0:
+                key_ids = rng.choice(self._key_cardinality, size=n, p=self._pmf)
+            else:
+                key_ids = base % self._key_cardinality
+            mask = rng.random(n) < self._null_fraction if self._null_fraction > 0 else None
+            value = (
+                pa.array(rng.integers(1, self._value_spread + 1, size=n))
+                if self._value_spread > 0
+                else ones
+            )
+            ts = (
+                np.maximum(base + rng.integers(-self._jitter, self._jitter + 1, size=n), 0)
+                if self._jitter > 0
+                else base
+            )
             columns: dict[str, pa.Array] = {
-                "key": pa.array(idx % self._key_cardinality),
-                "value": ones,
-                "ts": pa.array(idx),
+                "key": pa.array(key_ids, mask=mask),
+                "value": value,
+                "ts": pa.array(ts),
             }
+            if payload is not None:
+                columns["payload"] = payload
             for c in range(self._extra_value_cols):
                 columns[f"v{c}"] = ones
             yield Batch(pa.record_batch(columns))
             next_ts += n
             if (b + 1) % self._wm_every == 0:
-                yield Watermark(next_ts - 1)  # advance event time to the latest ts emitted so far
+                # Hold the watermark `watermark_lag` behind the latest index, so jittered late events
+                # below it are still in flight. With both knobs off this is the latest ts (the old path).
+                wm = next_ts - 1 - self._watermark_lag
+                if wm >= 0:
+                    yield Watermark(wm)
         yield EOS_FRAME
 
 

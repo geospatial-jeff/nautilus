@@ -8,12 +8,14 @@ returns ``(source, transforms)``).
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Callable
 
 import numpy as np
 import pyarrow as pa
 
 from nautilus.benchmarks import (
+    SlowMap,
     SyntheticKeyedSource,
     SyntheticTextSource,
     bench_params,
@@ -127,6 +129,44 @@ def bench_fanout() -> Pipeline:
     return source, [Tokenize("line", "word"), KeyedCount("word")]
 
 
+def bench_skew() -> Pipeline:
+    """Benchmark: hot-key (zipfian) keyed window sum — partition skew, the classic distributed killer.
+    Run parallel to watch one instance take most of the rows: `nautilus run bench-skew --parallelism 4`.
+    Tune the skew with NAUTILUS_BENCH_SKEW (exponent; higher = hotter, default 1.2)."""
+    p = bench_params()
+    skew = float(os.environ.get("NAUTILUS_BENCH_SKEW", "1.2"))
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"], batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"], wm_every=p["wm_every"], skew=skew,
+    )
+    return source, [KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))]
+
+
+def bench_late() -> Pipeline:
+    """Benchmark: out-of-order events with watermark lag (allowed lateness) and varied values — the
+    event-time path a perfectly-ordered stream never exercises (late data, windows held open, state
+    growth before they fire)."""
+    p = bench_params()
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"], batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"], wm_every=p["wm_every"],
+        jitter=p["batch_rows"] * 2, watermark_lag=p["batch_rows"], value_spread=1000,
+    )
+    return source, [KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))]
+
+
+def bench_backpressure() -> Pipeline:
+    """Benchmark: a fast source feeding a deliberately slow stage, so the bounded channel saturates and
+    the backpressure metrics (queue depth at capacity, send-wait, cross-process credit-wait) populate.
+    Tune the per-batch stall with NAUTILUS_BENCH_DELAY_US (default 200µs)."""
+    p = bench_params()
+    delay = int(os.environ.get("NAUTILUS_BENCH_DELAY_US", "200"))
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"], batch_rows=p["batch_rows"], key_cardinality=p["key_cardinality"]
+    )
+    return source, [SlowMap(delay)]
+
+
 EXAMPLES: dict[str, Builder] = {
     "wordcount": wordcount,
     "windowed-sum": windowed_sum,
@@ -135,6 +175,9 @@ EXAMPLES: dict[str, Builder] = {
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
     "bench-fanout": bench_fanout,
+    "bench-skew": bench_skew,
+    "bench-late": bench_late,
+    "bench-backpressure": bench_backpressure,
 }
 
 

@@ -360,10 +360,14 @@ def bench(
     json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
     baseline: Path = typer.Option(DEFAULT_BASELINE, help="Baseline file to compare against / update."),
     update: bool = typer.Option(False, "--update", help="Write this result into the baseline file."),
+    label: str = typer.Option(
+        "", help="Baseline entry name (default: the pipeline). Use to keep a --workers variant alongside the single-process one."
+    ),
 ) -> None:
     """Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to the
     baseline if one exists, and optionally update it. This is how to produce the before/after numbers a
     PERFORMANCE_CHANGELOG.md entry records."""
+    key = label or pipeline
     tier = _tier(telemetry)
     if tier <= Tier.OFF:
         raise typer.BadParameter("bench needs telemetry >= counters (the structural digest needs it)")
@@ -384,14 +388,14 @@ def bench(
     else:
         console.print(_bench_panel(result))
         base = load_baseline(baseline) if baseline.exists() else {}
-        if pipeline in base:
-            console.print(_comparison_line(compare(base[pipeline], result)))
+        if key in base:
+            console.print(_comparison_line(compare(base[key], result)))
 
     if update:
         base = load_baseline(baseline) if baseline.exists() else {}
-        base[pipeline] = result
+        base[key] = result
         save_baseline(baseline, base)
-        console.print(f"[green]updated baseline[/green] {baseline} · [bold]{pipeline}[/bold]")
+        console.print(f"[green]updated baseline[/green] {baseline} · [bold]{key}[/bold]")
 
 
 @app.command(name="bench-check")

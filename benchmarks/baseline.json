@@ -1,17 +1,54 @@
 {
   "note": "Throughput is machine-specific (see each entry's environment); re-baseline per machine. structural_digest is portable and anchors output correctness across machines. Maintained by `nautilus bench --update` / `nautilus bench-check`.",
   "results": {
+    "bench-backpressure": {
+      "deterministic": true,
+      "environment": {
+        "commit": "232ea4a",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-backpressure",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "ab27a4e2780953e767721c33b5604f7b218d74915f2a52010f56ffdd2a56ae97",
+      "throughput_rows_per_sec": {
+        "iqr": 1682914.9918310344,
+        "max": 33026822.445285503,
+        "median": 31969417.011787195,
+        "min": 30260686.01583113,
+        "rel_spread": 0.05264140385201707,
+        "samples": [
+          30260686.01583113,
+          31284233.496999454,
+          31969417.011787195,
+          32967148.48883049,
+          33026822.445285503
+        ]
+      },
+      "trials": 5
+    },
     "bench-fanout": {
       "deterministic": true,
       "environment": {
-        "commit": "e860bc0",
+        "commit": "232ea4a",
         "nautilus_version": "0.0.1",
         "platform": "macOS-12.3-arm64-arm-64bit",
         "processor": "arm",
         "python_version": "3.12.11"
       },
       "pipeline": "bench-fanout",
-      "recorded_at": "2026-06-27T14:21:31+00:00",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -23,17 +60,17 @@
       },
       "structural_digest": "9863b04ca1c71ade6e53ddf18b5bab54cfb1276ecc5b9a553bbcaaa60dbab7f8",
       "throughput_rows_per_sec": {
-        "iqr": 55817.617100750096,
-        "max": 6217931.968839212,
-        "median": 6191568.296795953,
-        "min": 6132913.355763953,
-        "rel_spread": 0.009015101574448417,
+        "iqr": 123995.54838669859,
+        "max": 6198287.712528639,
+        "median": 6190971.720383485,
+        "min": 6037255.408611496,
+        "rel_spread": 0.020028446904134457,
         "samples": [
-          6132913.355763953,
-          6140826.225121258,
-          6191568.296795953,
-          6196643.842222008,
-          6217931.968839212
+          6037255.408611496,
+          6068617.0338362735,
+          6190971.720383485,
+          6192612.582222972,
+          6198287.712528639
         ]
       },
       "trials": 5
@@ -41,14 +78,14 @@
     "bench-keyed": {
       "deterministic": true,
       "environment": {
-        "commit": "e860bc0",
+        "commit": "232ea4a",
         "nautilus_version": "0.0.1",
         "platform": "macOS-12.3-arm64-arm-64bit",
         "processor": "arm",
         "python_version": "3.12.11"
       },
       "pipeline": "bench-keyed",
-      "recorded_at": "2026-06-27T14:21:29+00:00",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -60,17 +97,91 @@
       },
       "structural_digest": "c44c92c665202c3c13c80584eb77d13915ffa89cdb0c91e09380bf5b313a0520",
       "throughput_rows_per_sec": {
-        "iqr": 7782.358434704132,
-        "max": 1814420.0323882727,
-        "median": 1808359.0958365118,
-        "min": 1794768.8040931476,
-        "rel_spread": 0.0043035470403095825,
+        "iqr": 3228.270790464245,
+        "max": 1778216.4458411634,
+        "median": 1760258.8753927685,
+        "min": 1727846.061777839,
+        "rel_spread": 0.0018339750110584825,
         "samples": [
-          1794768.8040931476,
-          1804374.64946719,
-          1808359.0958365118,
-          1812157.0079018942,
-          1814420.0323882727
+          1727846.061777839,
+          1757278.2958136632,
+          1760258.8753927685,
+          1760506.5666041274,
+          1778216.4458411634
+        ]
+      },
+      "trials": 5
+    },
+    "bench-keyed-dist": {
+      "deterministic": true,
+      "environment": {
+        "commit": "232ea4a",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 4,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 2
+      },
+      "structural_digest": "815bb1a36798d3f431458dcab35292d31ed72c9e6761958f25bf45d62603e1e5",
+      "throughput_rows_per_sec": {
+        "iqr": 9520.231122699333,
+        "max": 331488.49231348955,
+        "median": 323375.21915748756,
+        "min": 314153.3911781938,
+        "rel_spread": 0.029440199986576175,
+        "samples": [
+          314153.3911781938,
+          319717.2001107349,
+          323375.21915748756,
+          329237.43123343424,
+          331488.49231348955
+        ]
+      },
+      "trials": 5
+    },
+    "bench-late": {
+      "deterministic": true,
+      "environment": {
+        "commit": "232ea4a",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-late",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "1315fb39e5900d2d57b0713157cccd6e9255d2711bcdeb3c9f7fc7835f5a4feb",
+      "throughput_rows_per_sec": {
+        "iqr": 8385.857513841242,
+        "max": 579929.5422297601,
+        "median": 532616.3286658906,
+        "min": 464426.248035096,
+        "rel_spread": 0.01574464968966747,
+        "samples": [
+          464426.248035096,
+          531347.9292194344,
+          532616.3286658906,
+          539733.7867332756,
+          579929.5422297601
         ]
       },
       "trials": 5
@@ -78,14 +189,14 @@
     "bench-linear": {
       "deterministic": true,
       "environment": {
-        "commit": "e860bc0",
+        "commit": "232ea4a",
         "nautilus_version": "0.0.1",
         "platform": "macOS-12.3-arm64-arm-64bit",
         "processor": "arm",
         "python_version": "3.12.11"
       },
       "pipeline": "bench-linear",
-      "recorded_at": "2026-06-27T14:21:31+00:00",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -97,17 +208,54 @@
       },
       "structural_digest": "eda4b334ef066c741ef93c16dbe67390c5b04e695c125568b45eacd8bda84c5f",
       "throughput_rows_per_sec": {
-        "iqr": 7080613.050781518,
-        "max": 183963336.3886343,
-        "median": 183040583.67533058,
-        "min": 175058002.6166594,
-        "rel_spread": 0.03868329584951937,
+        "iqr": 18262369.064155877,
+        "max": 164646431.5012305,
+        "median": 141340845.07042253,
+        "min": 128286353.46756153,
+        "rel_spread": 0.12920800816675973,
         "samples": [
-          175058002.6166594,
-          176210711.1501317,
-          183040583.67533058,
-          183291324.20091322,
-          183963336.3886343
+          128286353.46756153,
+          137988312.1347542,
+          141340845.07042253,
+          156250681.1989101,
+          164646431.5012305
+        ]
+      },
+      "trials": 5
+    },
+    "bench-skew": {
+      "deterministic": true,
+      "environment": {
+        "commit": "232ea4a",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-skew",
+      "recorded_at": "2026-06-27T19:17:27+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "281c5aefd4d8faa52a2d952c07dec9e15cd627d1af99bf74b3c2772dbcd4bf20",
+      "throughput_rows_per_sec": {
+        "iqr": 136180.69306823355,
+        "max": 2042831.5311782174,
+        "median": 1953993.7300715416,
+        "min": 1826168.6143572622,
+        "rel_spread": 0.06969351588617818,
+        "samples": [
+          1826168.6143572622,
+          1877413.5415772763,
+          1953993.7300715416,
+          2013594.2346455099,
+          2042831.5311782174
         ]
       },
       "trials": 5

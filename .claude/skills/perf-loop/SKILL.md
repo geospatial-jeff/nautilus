@@ -28,11 +28,19 @@ NAUTILUS_BENCH_ROWS=2000000 NAUTILUS_BENCH_BATCH=4096 NAUTILUS_BENCH_KEYS=1000 \
   nautilus run bench-keyed --telemetry counters --save report.json --show markdown
 ```
 
-Pick the workload to match the question: `bench-keyed` for the keyed shuffle + per-key state + window
-firing; `bench-linear` for per-batch runtime overhead with no shuffle or state; `bench-fanout` for
-per-row Python in a flat-map. Add `--parallelism N` to run N instances (the keyed shuffle then routes by
-key); add `--workers W` to spawn W processes (a true shuffle then crosses a socket). Keep total rows
-fixed when sweeping a knob (batch size, parallelism) so throughput is comparable.
+Pick the workload to match the question. The clean micro-benchmarks isolate one cost each: `bench-keyed`
+(keyed shuffle + per-key state + window firing), `bench-linear` (per-batch runtime overhead, no shuffle
+or state), `bench-fanout` (per-row Python in a flat-map). The realistic-scenario benchmarks add the
+stressors a real stream has, which the clean ones can't reach: `bench-skew` (zipfian hot keys → partition
+imbalance, the classic distributed killer — read per-subtask `operator.rows_in`/`process_micros`),
+`bench-late` (out-of-order events + watermark lag → late data, windows held open, state growth), and
+`bench-backpressure` (a deliberately slow stage → the channel saturates so `edge.queue_depth_hist` /
+`edge.send_wait_micros` / `edge.credit_wait_micros` finally populate). The `SyntheticKeyedSource` knobs
+(`skew`, `jitter`, `value_spread`, `null_fraction`, `payload_bytes`) compose these if you need a custom
+mix. Add `--parallelism N` to run N instances (the keyed shuffle then routes by key); add `--workers W`
+to spawn W processes (a true shuffle then crosses a TCP socket — `benchmarks/baseline.json` carries a
+`bench-keyed-dist` entry that does exactly this). Keep total rows fixed when sweeping a knob so throughput
+is comparable.
 
 For a baseline cheap enough to iterate on, shrink `NAUTILUS_BENCH_ROWS` — the bottleneck ranking holds at
 any scale; only the absolute wall changes.
