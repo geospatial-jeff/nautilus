@@ -112,9 +112,28 @@ class Output:
         self._src = edge_src
         self._dst = edge_dst
         self._capacity = capacity
+        # Hoisted once (the recorder warns against per-call resolution on the hot path): the time the
+        # keyed shuffle spends routing is otherwise unattributed wall between process and send.
+        self._route_hist = recorder.histogram(
+            "partition.route_micros", operator_id=edge_src, edge_dst=edge_dst
+        )
+        # Transport accounting is per-channel and only for cross-process edges: an in-process channel
+        # reports None, so its index is absent here and its sends skip the bookkeeping entirely. The
+        # SocketChannel reports cumulative totals; we record the per-send delta against these.
+        self._transport_idx = {
+            i for i, ch in enumerate(channels) if ch.bytes_written() is not None
+        }
+        self._prev_bytes = [0] * len(channels)
+        self._prev_credit_wait = [0] * len(channels)
 
     async def emit(self, batch: pa.RecordBatch) -> None:
-        for idx, sub in self.partitioner.route(batch, len(self.channels)):
+        if self._on:
+            t0 = perf_counter_ns()
+            routed = self.partitioner.route(batch, len(self.channels))
+            self._route_hist.observe((perf_counter_ns() - t0) // 1000)
+        else:
+            routed = self.partitioner.route(batch, len(self.channels))
+        for idx, sub in routed:
             if sub.num_rows:
                 await self._send(idx, Batch(sub), "data", sub.num_rows)
 
@@ -146,6 +165,13 @@ class Output:
         if depth is not None:
             rec.set_gauge("edge.queue_depth", depth, **base)
             rec.set_gauge("edge.queue_capacity", self._capacity, **base)
+        if idx in self._transport_idx:  # cross-process edge: record wire bytes + credit-stall deltas
+            written = ch.bytes_written() or 0
+            rec.incr("transport.bytes_sent", written - self._prev_bytes[idx], **base)
+            self._prev_bytes[idx] = written
+            waited = ch.credit_wait_micros() or 0
+            rec.incr("edge.credit_wait_micros", waited - self._prev_credit_wait[idx], **base)
+            self._prev_credit_wait[idx] = waited
 
 
 async def _flush(
@@ -278,13 +304,25 @@ async def run_transform(
     collector = ListCollector()
     closed = [False] * n
     started = perf_counter_ns()
+    state_on = recorder is not NULL_RECORDER  # gate the state-size walk; OFF/no-op runs skip it
+
+    def _sample_state() -> None:
+        # Sampled at each fire — the high-water point, before on_watermark flushes due windows. The
+        # gauge's MAX reduction keeps the peak across fires. sizes() is O(state-names), not a store walk.
+        for (sop_id, name), (entries, keys) in ctx.state_backend.sizes().items():
+            recorder.set_gauge("state.entries", entries, operator_id=sop_id, state_name=name)
+            recorder.set_gauge("state.keys", keys, operator_id=sop_id, state_name=name)
 
     def _fire(t: int, frame_kind: str) -> None:
+        if state_on:
+            _sample_state()
         w0 = perf_counter_ns()
         with _capture(recorder, op_id, opcls, loc, "on_watermark", frame_kind=frame_kind):
             op.on_watermark(t, collector)
-        wm_hist.observe((perf_counter_ns() - w0) // 1000)
+        dt = (perf_counter_ns() - w0) // 1000
+        wm_hist.observe(dt)
         wm_calls.add(1)
+        step.add(dt)  # on_watermark is a synchronous critical section too — see runtime.step_micros
 
     async def _advance(advanced: int | None) -> None:
         """On a strict watermark advance: record it, fire due windows/timers, flush, then forward the

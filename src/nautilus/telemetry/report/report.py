@@ -218,6 +218,23 @@ class RunReport:
     def by_send_wait(self) -> list[OperatorSummary]:
         return self.ranked_by("send_wait_micros_total")
 
+    def throughput_rows_per_sec(self) -> float:
+        """End-to-end throughput: total rows out per wall-clock second (derived on demand, never
+        persisted). The headline number for comparing two runs of the same pipeline."""
+        return self.summary.total_rows_out / (self.meta.wall_micros / 1_000_000) if self.meta.wall_micros else 0.0
+
+    def by_occupancy(self) -> list[tuple[str, float]]:
+        """Per-instance occupancy — self-time as a fraction of wall — highest first (derived on demand,
+        never persisted). Returns ``(operator_id, busy_fraction)``. A stage that gates the run yet shows
+        low occupancy has its wall going somewhere unattributed by step_micros: the keyed shuffle
+        (``partition.route_micros``), input waiting (``edge.input_wait_micros``), or cross-process I/O."""
+        wall = self.meta.wall_micros
+        ranked = [
+            (s.operator_id, (s.busy_micros_total / wall if wall else 0.0))
+            for s in self.summary.per_operator
+        ]
+        return sorted(ranked, key=lambda kv: kv[1], reverse=True)
+
     def by_rows_per_sec(self) -> list[tuple[str, float]]:
         """Operators ranked by rows_out per second of self-time (a derived ratio, computed on demand
         and never persisted). Returns ``(operator_id, rows_per_sec)``."""

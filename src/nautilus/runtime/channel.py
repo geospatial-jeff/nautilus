@@ -40,6 +40,19 @@ class Channel(ABC):
         """
         return None
 
+    def bytes_written(self) -> int | None:
+        """Cumulative bytes this end has written to the wire, or ``None`` for an in-process channel
+        (which moves no bytes). The sending :class:`~nautilus.runtime.actor.Output` records the delta as
+        ``transport.bytes_sent``. Cumulative — not per-send — so a missed read never loses bytes."""
+        return None
+
+    def credit_wait_micros(self) -> int | None:
+        """Cumulative microseconds a producer has blocked here awaiting flow-control credit, or ``None``
+        for an in-process channel (whose backpressure is the queue bound, timed as ``edge.send_wait``).
+        The sending :class:`~nautilus.runtime.actor.Output` records the delta as
+        ``edge.credit_wait_micros``."""
+        return None
+
 
 class InProcChannel(Channel):
     """A bounded in-process channel backed by ``asyncio.Queue``."""

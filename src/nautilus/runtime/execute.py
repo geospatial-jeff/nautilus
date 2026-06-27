@@ -228,14 +228,20 @@ async def execute(
     # attributing its readings to its own node.
     sampler = None
     sampler_task: asyncio.Task[None] | None = None
-    if cfg.tier > Tier.OFF and cfg.sample_system:
+    if cfg.tier > Tier.OFF:
         from nautilus.telemetry.system import SystemSampler, make_system_recorder
 
         proc_rec = registry.register(make_system_recorder(cfg, node=deployment.node))
-        sampler = SystemSampler(
-            proc_rec, node=deployment.node, interval_micros=cfg.sample_interval_micros
+        # This worker's placement fact: how many operator instances it hosts. Recorded on the
+        # per-process recorder (independent of system sampling) so it lands in this node's process row.
+        proc_rec.set_gauge(
+            "placement.instances_per_worker", len(hosted), node=deployment.node
         )
-        sampler_task = asyncio.create_task(sampler.run())
+        if cfg.sample_system:
+            sampler = SystemSampler(
+                proc_rec, node=deployment.node, interval_micros=cfg.sample_interval_micros
+            )
+            sampler_task = asyncio.create_task(sampler.run())
 
     try:
         try:

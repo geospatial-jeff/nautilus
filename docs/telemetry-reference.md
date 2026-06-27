@@ -32,6 +32,7 @@ Descriptive only: each entry states what a number measures and which other metri
 | `operator.process_micros` | histogram | microseconds | COUNTERS | sum | operator_id, op_class, subtask_index | Wall time of one op.process(batch) call, measured with perf_counter_ns. | operator.batch_rows |  |
 | `operator.rows_in` | counter | rows | COUNTERS | sum | operator_id, subtask_index | Sum of num_rows across received batches. | operator.rows_out |  |
 | `operator.rows_out` | counter | rows | COUNTERS | sum | operator_id, subtask_index | Sum of num_rows across emitted batches. | operator.rows_in | rows_out / rows_in = selectivity |
+| `partition.route_micros` | histogram | microseconds | COUNTERS | sum | operator_id, edge_dst | Wall time of one partitioner.route(batch) call on the sending actor, measured with perf_counter_ns. Spans key extraction, per-key assignment, and the take into sub-batches; sits between the operator's process and the downstream send. | edge.rows_sent, edge.send_wait_micros |  |
 | `placement.instances_per_worker` | gauge | count | COUNTERS | last | node | Number of operator instances placed on a worker. |  |  |
 | `process.cpu_percent` | gauge | percent | COUNTERS | last |  | psutil.Process.cpu_percent() over the interval since the previous sample, where 100 equals one fully used CPU core. | runtime.loop_lag_micros |  |
 | `process.num_fds` | gauge | count | COUNTERS | last |  | psutil.Process.num_fds(): open file descriptors at the sample (POSIX; omitted elsewhere). |  |  |

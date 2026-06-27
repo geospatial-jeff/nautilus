@@ -67,6 +67,13 @@ class StateBackend(ABC):
         all open windows when flushing. The iterable is a snapshot; mutating during iteration is
         safe."""
 
+    def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
+        """Per ``(operator_id, name)``: ``(entries, distinct_keys)`` currently held. ``entries`` counts
+        every ``(key, namespace)`` slot — for a tumbling-window aggregation that is keys × open windows.
+        The actor samples this to emit ``state.entries`` / ``state.keys``; a backend that cannot report
+        cheaply returns ``{}`` (the default) rather than walking its store on the hot path."""
+        return {}
+
     @abstractmethod
     def snapshot(self) -> bytes: ...
 
@@ -76,17 +83,31 @@ class StateBackend(ABC):
 
 @dataclass
 class InMemoryStateBackend(StateBackend):
-    """Dict-backed state. MVP only — unbounded memory; documented limitation."""
+    """Dict-backed state. MVP only — unbounded memory; documented limitation.
+
+    Alongside the store it keeps incremental per-``(operator_id, name)`` counts of entries and distinct
+    keys, updated on ``put``/``clear`` of a *new*/removed slot, so :meth:`sizes` is O(state-names) and
+    needs no walk of the store. The bookkeeping adds one membership test per ``put`` (an existing key's
+    repeated ``put`` — every reducing-state fold — touches no counter), keeping the per-record path cheap.
+    """
 
     _store: dict[StateScope, object] = field(default_factory=dict)
+    #: (operator_id, name) -> live entry count.
+    _entry_count: dict[tuple[str, str], int] = field(default_factory=dict)
+    #: (operator_id, name) -> {key: number of namespaces holding that key}; a key is distinct while > 0.
+    _key_count: dict[tuple[str, str], dict[Key, int]] = field(default_factory=dict)
 
     def get(self, scope: StateScope) -> object | None:
         return self._store.get(scope)
 
     def put(self, scope: StateScope, value: object) -> None:
+        if scope not in self._store:  # a new slot — update the size counters (existing folds skip this)
+            self._track_add(scope)
         self._store[scope] = value
 
     def clear(self, scope: StateScope) -> None:
+        if scope in self._store:
+            self._track_remove(scope)
         self._store.pop(scope, None)
 
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
@@ -94,11 +115,37 @@ class InMemoryStateBackend(StateBackend):
             if scope.operator_id == operator_id and scope.name == name:
                 yield scope.key, scope.namespace, value
 
+    def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
+        return {
+            name: (count, len(self._key_count.get(name, {})))
+            for name, count in self._entry_count.items()
+        }
+
+    def _track_add(self, scope: StateScope) -> None:
+        name = (scope.operator_id, scope.name)
+        self._entry_count[name] = self._entry_count.get(name, 0) + 1
+        keys = self._key_count.setdefault(name, {})
+        keys[scope.key] = keys.get(scope.key, 0) + 1
+
+    def _track_remove(self, scope: StateScope) -> None:
+        name = (scope.operator_id, scope.name)
+        self._entry_count[name] = self._entry_count.get(name, 1) - 1
+        keys = self._key_count.get(name, {})
+        remaining = keys.get(scope.key, 1) - 1
+        if remaining <= 0:
+            keys.pop(scope.key, None)
+        else:
+            keys[scope.key] = remaining
+
     def snapshot(self) -> bytes:
         return pickle.dumps(self._store, protocol=pickle.HIGHEST_PROTOCOL)
 
     def restore(self, blob: bytes) -> None:
         self._store = pickle.loads(blob)
+        self._entry_count = {}
+        self._key_count = {}
+        for scope in self._store:  # rebuild the size counters from the restored store
+            self._track_add(scope)
 
 
 # --- Typed handles -----------------------------------------------------------------------------

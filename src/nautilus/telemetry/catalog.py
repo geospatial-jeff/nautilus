@@ -322,6 +322,18 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("edge.queue_depth",),
             deterministic=True,
         ),
+        MetricSpec(
+            "partition.route_micros",
+            MetricKind.HISTOGRAM,
+            "microseconds",
+            ("operator_id", "edge_dst"),
+            Reduction.SUM,
+            "Wall time of one partitioner.route(batch) call on the sending actor, measured with "
+            "perf_counter_ns. Spans key extraction, per-key assignment, and the take into sub-batches; "
+            "sits between the operator's process and the downstream send.",
+            relates_to=("edge.rows_sent", "edge.send_wait_micros"),
+            boundaries=DURATION_US_BUCKETS,
+        ),
         # --- watermarks ----------------------------------------------------------------------
         MetricSpec(
             "watermark.combined_micros",
@@ -531,7 +543,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             boundaries=DURATION_US_BUCKETS,
             stability=Stability.EXPERIMENTAL,
         ),
-        # --- reserved for later stages (declared now so the schema stays additive) -----------
+        # --- cross-process edges and placement (emitted by the socket channel + executor) --------
         MetricSpec(
             "edge.credit_wait_micros",
             MetricKind.COUNTER,

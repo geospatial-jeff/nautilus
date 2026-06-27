@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from time import perf_counter_ns
 
 from nautilus.core.records import EOS, Frame
 from nautilus.runtime.channel import DEFAULT_CAPACITY, Channel
@@ -65,6 +66,8 @@ class SocketChannel(Channel):
         self._error: BaseException | None = None
         self._eos_seen = False  # consumer end: an EOS frame was received before the peer closed
         self._closing = False  # producer end: finish() in progress, so peer EOF is expected
+        self._bytes_written = 0  # cumulative wire bytes this end has written (forward data + control)
+        self._credit_wait_ns = 0  # cumulative time send() blocked awaiting a data credit
         self._read_task: asyncio.Task[None] = asyncio.create_task(self._read_loop())
 
     async def send(self, frame: Frame) -> None:
@@ -74,15 +77,19 @@ class SocketChannel(Channel):
             await self._send_bytes(message)
             return
         async with self._cond:
-            while self._credits == 0:
-                self._raise_if_terminated()
-                await self._cond.wait()
+            if self._credits == 0:  # time only the genuine flow-control stall (not the happy path)
+                w0 = perf_counter_ns()
+                while self._credits == 0:
+                    self._raise_if_terminated()
+                    await self._cond.wait()
+                self._credit_wait_ns += perf_counter_ns() - w0
             self._raise_if_terminated()
             self._credits -= 1
             # Buffer synchronously, still under the lock and with no await between spending the
             # credit and handing the bytes to the transport, so a cancellation here cannot lose a
             # credit or split a frame. drain() (backpressure) happens after, outside the lock.
             self._writer.write(message)
+            self._bytes_written += len(message)
         with contextlib.suppress(ConnectionError, OSError):
             await self._writer.drain()
 
@@ -98,6 +105,12 @@ class SocketChannel(Channel):
 
     def depth(self) -> int | None:
         return None
+
+    def bytes_written(self) -> int | None:
+        return self._bytes_written
+
+    def credit_wait_micros(self) -> int | None:
+        return self._credit_wait_ns // 1000
 
     async def finish(self) -> None:
         """Producer-side graceful end of stream: call after the last frame (the EOS), before
@@ -128,6 +141,7 @@ class SocketChannel(Channel):
 
     async def _send_bytes(self, message: bytes) -> None:
         self._writer.write(message)
+        self._bytes_written += len(message)
         with contextlib.suppress(ConnectionError, OSError):
             await self._writer.drain()
 

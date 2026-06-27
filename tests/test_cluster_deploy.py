@@ -121,6 +121,46 @@ def test_same_plan_runs_under_inproc_and_socket_connectors() -> None:
     assert _wc(in_process) == _wc(distributed)
 
 
+# --- cross-process telemetry: the formerly-dead transport/placement metrics now populate ----------
+
+
+def test_cross_worker_run_records_transport_and_placement() -> None:
+    from nautilus.telemetry.catalog import Tier
+    from nautilus.telemetry.recorder import TelemetryConfig
+
+    graph = graph_from_stages(
+        _source(),
+        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+    )
+    rep = deploy(graph, num_workers=2, telemetry=TelemetryConfig(tier=Tier.FULL)).telemetry
+
+    # transport.bytes_sent (FULL tier) is nonzero on the edge that genuinely crossed a socket.
+    edge_bytes = {
+        (dict(p.labels)["edge_src"], dict(p.labels)["edge_dst"]): p.value
+        for o in rep.operators
+        for p in o.counters
+        if p.name == "transport.bytes_sent"
+    }
+    assert edge_bytes, "no transport.bytes_sent recorded over a cross-worker edge"
+    assert any(v > 0 for v in edge_bytes.values())
+
+    # edge.credit_wait_micros is recorded (>= 0) on those same socket edges, never on in-process ones.
+    assert any(
+        p.name == "edge.credit_wait_micros" for o in rep.operators for p in o.counters
+    )
+
+    # placement.instances_per_worker is recorded once per worker node and sums to the instance count.
+    placements = {
+        o.node: g.last
+        for o in rep.operators
+        for g in o.gauges
+        if g.name == "placement.instances_per_worker"
+    }
+    assert set(placements) == {"worker-0", "worker-1"}
+    instances = {(o.operator_id, o.subtask_index) for o in rep.operators if o.kind != "process"}
+    assert sum(placements.values()) == len(instances)  # every instance is placed on exactly one worker
+
+
 # --- fail-fast: re-raise the child traceback and reap every worker -----------------------------
 
 

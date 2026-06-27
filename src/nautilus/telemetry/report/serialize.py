@@ -252,6 +252,9 @@ def report_to_markdown(report: RunReport, *, token_budget: int = 4000) -> str:
         "",
         "## summary",
         f"rows_in={s.total_rows_in} rows_out={s.total_rows_out} errors={s.total_errors}",
+        # Derivation hints (no numbers — the digest stays a pure projection of raw facts): the reader
+        # computes these ratios from the facts above and the table below.
+        "derive: throughput = rows_out / wall · busy% = busy_us / wall · selectivity = rows_out / rows_in",
     ]
     if s.deepest_queue:
         edge, depth = s.deepest_queue
