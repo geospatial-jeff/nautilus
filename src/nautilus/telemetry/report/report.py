@@ -410,14 +410,17 @@ def build_report(
     topology: Topology | None = None,
 ) -> RunReport:
     """Aggregate per-instance snapshots into one immutable :class:`RunReport`."""
-    groups: dict[tuple[str, int], list[InstanceSnapshot]] = {}
+    # node joins the grouping key so each worker's hardware ("process") row stays distinct — there are
+    # exactly W of them across W workers. For a dataflow row this is a no-op: an operator instance lives
+    # on exactly one node, so adding node never splits it.
+    groups: dict[tuple[str, int, str], list[InstanceSnapshot]] = {}
     for s in snapshots:
         if s.operator_id:
-            groups.setdefault((s.operator_id, s.subtask_index), []).append(s)
+            groups.setdefault((s.operator_id, s.subtask_index, s.node), []).append(s)
     operators = tuple(
         sorted(
             (_operator_stats(g) for g in groups.values()),
-            key=lambda o: (o.operator_id, o.subtask_index),
+            key=lambda o: (o.operator_id, o.subtask_index, o.node),
         )
     )
     edges = _build_edges(snapshots)

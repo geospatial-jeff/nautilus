@@ -17,10 +17,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 import nautilus
+from nautilus.cluster import deploy
 from nautilus.core.time import SystemClock
 from nautilus.pipelines import EXAMPLES, load_pipeline
 from nautilus.runtime.local import run_local_chain
+from nautilus.runtime.parallel import graph_from_pipeline
 from nautilus.runtime.result import RunResult
+from nautilus.runtime.run import run_plan
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport
@@ -47,14 +50,23 @@ def _tier(name: str) -> Tier:
         raise typer.BadParameter(f"telemetry must be one of: {', '.join(_TIERS)}") from None
 
 
-def _run(pipeline: str, tier: Tier, capacity: int) -> RunResult:
+def _run(
+    pipeline: str, tier: Tier, capacity: int, workers: int = 1, parallelism: int = 1
+) -> RunResult:
     try:
         source, transforms = load_pipeline(pipeline)
     except (KeyError, ImportError, AttributeError) as e:
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
     config = TelemetryConfig(tier=tier, clock=SystemClock())
-    return asyncio.run(run_local_chain(source, transforms, capacity=capacity, telemetry=config))
+    if workers == 1 and parallelism == 1:
+        return asyncio.run(run_local_chain(source, transforms, capacity=capacity, telemetry=config))
+    # Parallel / distributed: lower the pipeline to a graph (each transform at `parallelism`, keyed by
+    # its declared key columns). One worker runs it in-process; more workers spawn and deploy it.
+    graph = graph_from_pipeline(source, transforms, parallelism)
+    if workers == 1:
+        return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
+    return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
 
 
 def _summary_table(report: RunReport) -> Table:
@@ -127,9 +139,13 @@ def run(
     save: Path | None = typer.Option(None, help="Write the full JSON report to this path."),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     head: int = typer.Option(5, help="Rows of pipeline output to preview."),
+    workers: int = typer.Option(
+        1, help="Worker processes to deploy across (>1 spawns and distributes)."
+    ),
+    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
 ) -> None:
     """Run a PIPELINE and show its output and telemetry."""
-    result = _run(pipeline, _tier(telemetry), capacity)
+    result = _run(pipeline, _tier(telemetry), capacity, workers, parallelism)
     report = result.telemetry
 
     if head > 0 and len(result) > 0:

@@ -7,4 +7,11 @@ mechanically by an import-linter contract: data-path packages (``nautilus.runtim
 
 Fleshed out in Stage 2 (deterministic placement, two-phase bootstrap launcher, static membership,
 decentralized startup barrier).
+
+:func:`~nautilus.cluster.coordinator.deploy` is the entry point: it runs a :class:`LogicalGraph` across
+spawned worker processes and returns a :class:`RunResult`.
 """
+
+from nautilus.cluster.coordinator import WorkerCrashed, WorkerError, deploy
+
+__all__ = ["deploy", "WorkerError", "WorkerCrashed"]

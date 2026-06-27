@@ -33,6 +33,15 @@ phase or to job boundaries; none grant data credits or gate per-record progress.
 enforced mechanically — `nautilus.runtime`/`core`/`transport` may not import `nautilus.cluster`
 (an import-linter contract in CI).
 
+The compiler's output, the `PhysicalPlan`, is the unit of distribution: a worker is handed a plan it
+never compiled. So the plan is kept neutral — it carries operator factories and stateless partitioner
+*specs* (not live partitioners) and a transport-free structural description (not a telemetry topology).
+That is why `compile` imports neither the runtime nor the report layer (also an import-linter contract):
+a plan must cloudpickle to a process that has only the data path, so a `RoundRobin`'s rotation cursor or
+a report type must never ride along. A worker runs its slice of the plan and returns raw measurements;
+the boundary — the single-process runner today, the coordinator in a cluster — translates the plan's
+neutral structure into the report topology and aggregates the workers' snapshots into one report.
+
 ## The Frame model (`nautilus.core.records`)
 
 Every edge carries two kinds of frame:
@@ -68,6 +77,44 @@ real event times are kept strictly below that sentinel so they can never collide
 6. **Keyed state** (`nautilus.state`) — scoped by `(operator_id, name, key, namespace)` and accessed
    through a `KeyContext` captured by each handle (no shared mutable "current key" cursor).
    `snapshot`/`restore` are in the ABC from day one so a spilling/checkpointing backend is additive.
+7. **Key groups and the rescale boundary** (`runtime.partition.KeyGroupPartitioner`) — a keyed edge
+   hashes each key to one of a fixed number of key groups `G` (chosen once for the job, `G >= Q`) and
+   routes by a static `group → instance` table the plan carries, rather than hashing straight to an
+   instance. The indirection is the rescale seam: a key's group is fixed by the hash, and only the
+   table maps groups to instances, so changing the instance count `Q` is a new table over the same
+   groups — no key changes group. Stage 2 never moves live state: a rescale is a new job, not an online
+   migration, so the table is computed once at compile and immutable for the run. At `G == Q` the table
+   is the identity and routing is identical to a direct `hash(key) mod Q`.
+
+## Deployment (`nautilus.cluster`)
+
+`deploy(graph, num_workers=W)` runs a graph across W spawned worker processes, coordinated by a control
+plane that never touches the data path. The coordinator compiles once, computes placement, spawns the
+workers, then only moves control messages and waits at the job boundary; it reads no data channel and
+grants no credit, so "no central scheduler on the data path" still holds with a coordinator present.
+
+**Placement** is per-operator round-robin over the workers: subtask *i* of every operator goes to worker
+*i mod W*. Same-index subtasks co-locate, so a forward or diagonal edge stays a free in-process channel
+and only a genuine shuffle crosses workers. Each worker therefore runs a *hybrid* connector — in-process
+for co-located edges, a socket for cross-worker ones — wired by the same `execute` code as a
+single-process run.
+
+**Two-phase bootstrap** makes connection setup deadlock-free by construction. Every worker binds its
+listener and registers its address (phase 1) *before* the coordinator broadcasts the address book that
+lets anyone dial (phase 2). So by the time a worker dials, every destination listener exists; and because
+a worker dials all of its outbound edges before it accepts any inbound — and a dial completes once the
+peer's listener is bound, never waiting on the peer's accept — even a bidirectional mesh cannot
+circular-wait. A connection that arrives before its consumer accepts is parked by the listener, so no
+global "go" barrier is needed: credit and parking absorb startup skew, and a mailbox is always built with
+its full input set before its actor starts.
+
+**Teardown is symmetric.** On a clean stop each worker drains its outbound edges and closes its inbound
+edges in one `gather`, so every worker emits its FIN at once; sequential finish-then-close would
+circular-wait on a bidirectional mesh and make both workers eat the full drain timeout. On failure a
+worker skips the drain and abortively closes, so a peer's `recv` raises promptly, and the coordinator
+re-raises the child's traceback and reaps every worker. The coordinator is also the telemetry boundary:
+workers return raw snapshots, and it translates the plan into the report topology and aggregates the one
+`RunReport`.
 
 ## Telemetry
 
@@ -80,7 +127,10 @@ numbers; it never assembles a report, so a run pays as little as possible for it
 is a separate, boundary-time concern, and import-linter forbids the per-record code from importing the
 report layer, so report-building can never creep onto the hot path. Every reader sits downstream of the
 recorders, which makes new readers additive: the returned `RunResult` and the live `nautilus dashboard`
-read the same recordings, and neither required any change to instrumentation.
+read the same recordings, and neither required any change to instrumentation. That single-registry reader
+model is per-process: a distributed run has one registry per worker, each worker ships its raw snapshots
+to the coordinator, and the coordinator builds the one report at the job boundary (the live dashboard
+stays single-process).
 
 Every metric is declared once in a catalog — its name, unit, and a plain-language meaning — so a report
 describes itself and its schema cannot drift from the code; a lint rejects any meaning written as
@@ -88,6 +138,7 @@ cause-and-effect. See `docs/telemetry-reference.md`.
 
 ## Status
 
-The single-process semantics core, tensor columns, the credit transport, and the telemetry subsystem
-run today; the cluster control plane, the full DSL, and multi-node validation are designed but not
-built. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.
+The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, and
+the compiler + cluster control plane (compile a graph and deploy it across worker processes) run today.
+The full DSL and multi-node validation are designed but not built. `IMPLEMENTATION_PLAN.md` has the
+stage-by-stage detail.

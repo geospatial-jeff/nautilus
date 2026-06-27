@@ -20,22 +20,25 @@ helpers and no changes to the core.
 
 A `SocketChannel` carries framed Arrow-IPC over TCP, gating data frames with a credit window while
 control frames stay credit-exempt; a fast producer stalls with bounded memory, and graceful shutdown
-loses no in-flight data. `run_two_process` joins two processes over one TCP edge — the channel a
-cluster will use between nodes. It does not yet exercise operator parallelism or the keyed shuffle.
+loses no in-flight data. It is the cross-process edge a cluster uses between nodes (Stage 2 dials it
+through the `Connector`); on its own it does not yet exercise operator parallelism or the keyed shuffle.
 
 ### Stage 1.5 — Parallel topology and the keyed shuffle · **Done**
 
-An operator runs as N instances, each owning a key range, with a `HashPartitioner` routing each batch
-to the owning instance and `Mailbox` fan-in conserving rows. `run_parallel_chain` wires the P×Q channel
-mesh from a `ChannelFactory`, so the same graph runs unchanged over in-process channels or a TCP
-`SocketChannel` (`SocketPairFactory`), and the per-instance report groups by `subtask_index`. A
-`nautilus run --parallelism` CLI surface is deferred to Stage 2.
+An operator runs as N instances, each owning a key range, with the keyed shuffle (`HashPartitioner`,
+generalized to `KeyGroupPartitioner` in Stage 2) routing each batch to the owning instance and `Mailbox`
+fan-in conserving rows. The per-instance report groups by `(operator_id, subtask_index, node)`. Stage 2
+subsumed the original single-process channel mesh into the compiler and executor; `run_parallel_chain` is
+now a thin wrapper over them, and `nautilus run --parallelism`/`--workers` drives parallelism from the CLI.
 
-### Stage 2 — Compile, deploy, decentralized control plane · Planned
+### Stage 2 — Compile, deploy, decentralized control plane · **Done**
 
-Lower a `LogicalGraph` to N worker processes via a coordinator (placement, launcher, membership),
-replacing the hard-coded `run_two_process` split, with decentralized EOS termination and key-group
-partitioning. Cross-host reuses the Stage 1 `SocketChannel` with a node address.
+A `LogicalGraph` (`nautilus.api`) compiles to a serializable `PhysicalPlan` (`nautilus.compile`) and runs
+through a per-worker executor over an injected `Connector` (`nautilus.runtime`), single-process or across
+W worker processes via a coordinator — placement, two-phase bootstrap, launcher, key-group partitioning,
+and symmetric EOS-draining teardown (`nautilus.cluster.deploy`). Co-located edges stay in-process; only a
+true shuffle crosses workers, over the Stage 1 `SocketChannel` reached by a node address. `nautilus run
+--workers/--parallelism` drives it; telemetry aggregates at the coordinator with per-worker attribution.
 
 ### Stage 3 — Full DSL, two-input join, Arrow hot path · Planned
 

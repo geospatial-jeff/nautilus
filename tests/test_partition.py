@@ -21,6 +21,7 @@ import pytest
 from nautilus.runtime.partition import (
     Forward,
     HashPartitioner,
+    KeyGroupPartitioner,
     RoundRobin,
     stable_bucket,
 )
@@ -215,3 +216,81 @@ def test_hash_rejects_unsupported_key_scalars(col: pa.Array) -> None:
 def test_hash_requires_a_key_column() -> None:
     with pytest.raises(ValueError):
         HashPartitioner([])
+
+
+# --- KeyGroupPartitioner: indirection through a group -> instance table -------------------------
+
+
+def _route_map(partitioner: object, b: pa.RecordBatch, q: int) -> dict[int, int]:
+    """Map each row's ``rid`` to the instance it was routed to."""
+    out: dict[int, int] = {}
+    for idx, sub in partitioner.route(b, q):  # type: ignore[attr-defined]
+        for rid in sub.column("rid").to_pylist():
+            out[rid] = idx
+    return out
+
+
+def test_keygroup_identity_table_equals_hash_partitioner() -> None:
+    # G == Q with the identity table routes every row to the same instance as the direct hash. This is
+    # the equivalence that keeps 2a's compiled-vs-legacy digest oracle green.
+    rng = random.Random(99)
+    for _ in range(200):
+        n = rng.randint(1, 40)
+        cardinality = rng.randint(1, 8)
+        q = rng.choice([2, 3, 4, 5, 7])
+        keys = [f"k{rng.randrange(cardinality)}" for _ in range(n)]
+        b = batch(rid=list(range(n)), key=keys)
+        identity = tuple(range(q))
+        assert _route_map(KeyGroupPartitioner(["key"], identity), b, q) == _route_map(
+            HashPartitioner(["key"]), b, q
+        )
+
+
+def test_keygroup_co_locates_and_conserves_for_g_ge_q() -> None:
+    # For any G >= Q (multiples and non-multiples of Q), the table routes every key to exactly one
+    # instance and conserves every row — the co-partitioning the keyed operators depend on.
+    rng = random.Random(7)
+    for _ in range(200):
+        n = rng.randint(1, 40)
+        cardinality = rng.randint(1, 10)
+        q = rng.choice([2, 3, 4, 5])
+        g = q + rng.randrange(0, 8)  # G >= Q, including non-multiples of Q
+        table = tuple(i % q for i in range(g))
+        keys = [f"k{rng.randrange(cardinality)}" for _ in range(n)]
+        b = batch(rid=list(range(n)), key=keys)
+        routed = KeyGroupPartitioner(["key"], table).route(b, q)
+
+        rids = [r for _, sub in routed for r in sub.column("rid").to_pylist()]
+        assert sorted(rids) == list(range(n))  # disjoint AND covering
+        assert all(0 <= idx < q for idx, _ in routed)
+        where: dict[object, set[int]] = {}
+        for idx, sub in routed:
+            for k in sub.column("key").to_pylist():
+                where.setdefault(k, set()).add(idx)
+        assert all(len(instances) == 1 for instances in where.values()), where
+
+
+def test_keygroup_q1_short_circuits_without_keying() -> None:
+    b = batch(key=[1.0, 2.0])  # a float key would raise if the key column were inspected
+    assert KeyGroupPartitioner(["key"], (0,)).route(b, 1) == [(0, b)]
+
+
+@pytest.mark.parametrize(
+    "col",
+    [
+        pa.array([1.0, 2.0], pa.float64()),
+        pa.array([1, 2], pa.timestamp("us")),
+        pa.array([Decimal("1.5"), Decimal("2.5")], pa.decimal128(5, 2)),
+    ],
+)
+def test_keygroup_rejects_unsupported_key_scalars(col: pa.Array) -> None:
+    b = batch(key=col)
+    with pytest.raises(TypeError):
+        KeyGroupPartitioner(["key"], (0, 1)).route(b, 2)
+
+
+def test_keygroup_requires_key_column_and_table() -> None:
+    with pytest.raises(ValueError):
+        KeyGroupPartitioner([], (0, 1))
+    with pytest.raises(ValueError):
+        KeyGroupPartitioner(["k"], ())

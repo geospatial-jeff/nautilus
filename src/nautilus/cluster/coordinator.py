@@ -1,0 +1,122 @@
+"""``deploy`` — run a graph across W spawned workers and aggregate one report.
+
+The coordinator is the control plane and nothing more. It compiles the graph once, computes placement,
+spawns the workers, drives the two-phase bootstrap, and waits at the job boundary for one ``Done`` per
+worker. It reads no data channel and grants no credit — backpressure and routing are entirely the
+workers' local concern — so "no central scheduler on the data path" holds even with a coordinator.
+
+As the telemetry boundary it does the report assembly the workers don't: it translates the plan into a
+:class:`Topology` and aggregates every worker's raw snapshots into the single :class:`RunReport`. It is
+fail-fast: a worker's :class:`Failed` (its child traceback) or a hard crash aborts the run and reaps
+every worker immediately, so a failure never hangs or orphans a process.
+"""
+
+from __future__ import annotations
+
+import logging
+from time import perf_counter_ns
+
+import cloudpickle
+import pyarrow as pa
+
+from nautilus.api import LogicalGraph
+from nautilus.cluster.launcher import reap, spawn_workers
+from nautilus.cluster.placement import max_parallelism, place
+from nautilus.cluster.protocol import Done, Failed, decode_batches
+from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier, recv_event
+from nautilus.compile import compile_graph
+from nautilus.core.time import Clock, SystemClock
+from nautilus.runtime.channel import DEFAULT_CAPACITY
+from nautilus.runtime.local import make_run_meta
+from nautilus.runtime.result import RunResult
+from nautilus.runtime.run import plan_to_topology
+from nautilus.telemetry import TelemetryConfig
+from nautilus.telemetry.model import InstanceSnapshot
+from nautilus.telemetry.report import NullSink, Sink, build_report
+
+_log = logging.getLogger(__name__)
+_DEFAULT_BOOTSTRAP_TIMEOUT = 60.0  # seconds to wait for every worker to bind and register
+
+
+def deploy(
+    graph: LogicalGraph,
+    *,
+    num_workers: int = 2,
+    capacity: int = DEFAULT_CAPACITY,
+    key_groups: int | None = None,
+    host: str = "127.0.0.1",
+    clock: Clock | None = None,
+    telemetry: TelemetryConfig | None = None,
+    sink: Sink | None = None,
+    bootstrap_timeout: float = _DEFAULT_BOOTSTRAP_TIMEOUT,
+) -> RunResult:
+    """Compile ``graph`` and run it across ``num_workers`` spawned worker processes, returning the sink's
+    batches plus one aggregated telemetry report. ``num_workers`` is capped at the plan's maximum
+    parallelism (a wider W would only spawn idle workers). ``host`` is the address every worker's
+    listener binds — loopback by default; the seam for a real node-to-node address in Stage 4.
+
+    ``bootstrap_timeout`` bounds only the bind/register phase, where a silent worker means a hang; once
+    the job is running the wait is unbounded, because a healthy job runs as long as its data does.
+    Always reaps every worker. Raises :class:`WorkerError` (with the failing worker's traceback) on a
+    caught operator error, :class:`WorkerCrashed` on a hard crash, or ``TimeoutError`` if a worker never
+    registers."""
+    plan = compile_graph(graph, key_groups=key_groups)
+    effective = min(num_workers, max_parallelism(plan))
+    if effective < num_workers:
+        _log.info(
+            "capping workers from %d to %d (the plan's maximum parallelism)", num_workers, effective
+        )
+    worker_ids = list(range(effective))
+    placement = place(plan, worker_ids)
+
+    clk = clock or SystemClock()
+    config = telemetry or TelemetryConfig(clock=clk)
+    out_sink = sink or NullSink()
+    topology = plan_to_topology(plan, capacity)
+
+    plan_bytes = cloudpickle.dumps(plan)
+    procs, events, commands = spawn_workers(
+        plan_bytes, placement, host, capacity, int(config.tier), config.sample_system, effective
+    )
+    started_at = clk.now_micros()
+    wall0 = perf_counter_ns()
+    try:
+        bind_barrier(events, commands, procs, effective, bootstrap_timeout)
+
+        # Job-boundary completion: one Done per worker. No wall-clock timeout here — a busy worker is
+        # silent until it finishes, so the wait is bounded only by the job's own length (crash detection
+        # still fires). The sink's batches come from whichever worker hosts it; every worker's snapshots
+        # are aggregated into the one report.
+        snapshots: list[InstanceSnapshot] = []
+        batches: list[pa.RecordBatch] = []
+        remaining = set(worker_ids)
+        while remaining:
+            message = recv_event(events, procs, None)
+            if isinstance(message, Failed):
+                raise WorkerError(message.worker_id, message.traceback)
+            if not isinstance(message, Done):
+                raise RuntimeError(f"unexpected control message awaiting completion: {message!r}")
+            snapshots.extend(message.snapshots)
+            batches.extend(decode_batches(message.sink_batches))
+            remaining.discard(message.worker_id)
+
+        wall_micros = (perf_counter_ns() - wall0) // 1000
+        ended_at = clk.now_micros()
+        meta = make_run_meta(
+            run_id=config.run_id or f"run-{started_at}",
+            started_at=started_at,
+            ended_at=ended_at,
+            wall_micros=wall_micros,
+            clk=clk,
+            topology=topology,
+            config=config,
+            capacity=capacity,
+        )
+        report = build_report(snapshots, meta=meta, topology=topology)
+        out_sink.emit_report(report)
+        return RunResult(batches, report)
+    finally:
+        reap(procs)
+
+
+__all__ = ["deploy", "WorkerError", "WorkerCrashed"]

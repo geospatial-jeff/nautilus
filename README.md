@@ -18,15 +18,17 @@ architecture and the reasons behind it, `DESIGN.md`; for what's built and what's
 
 ## Status
 
-Early development. A single-process streaming engine runs today, along with a two-process credit
-transport; multicore deploy and multi-node are designed but not yet built. See
-`IMPLEMENTATION_PLAN.md`.
+Early development. A single-process streaming engine runs today, plus the compiler and a multicore
+deployer that runs a graph across worker processes over a mix of in-process and socket edges. Multi-node
+validation is designed but not yet built. See `IMPLEMENTATION_PLAN.md`.
 
 ## CLI
 
 ```bash
 nautilus examples                 # list runnable example pipelines
 nautilus run wordcount            # run one; prints its output and a telemetry summary
+nautilus run wordcount --parallelism 3      # run each operator as 3 instances (keyed ops shuffle by key)
+nautilus run wordcount --workers 2 --parallelism 2   # spread across 2 worker processes
 nautilus run wordcount --show markdown   # the telemetry digest formatted for an AI agent
 nautilus run wordcount --save report.json
 nautilus catalog                  # every metric nautilus records, with its meaning

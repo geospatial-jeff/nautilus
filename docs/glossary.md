@@ -44,16 +44,51 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Parallelism** — The number of instances an operator is split into.
 - **Partitioner** — A pure function on the sending side that decides which downstream instance each
   row of a batch goes to. The kinds are `Forward` (1:1), `Broadcast` (every instance gets a copy),
-  `HashPartitioner` (the keyed shuffle: routes each row by `hash(key) mod Q`), and `RoundRobin`
+  `HashPartitioner` and `KeyGroupPartitioner` (the keyed shuffle — see below), and `RoundRobin`
   (rotates whole batches for keyless rebalancing). Control frames skip the partitioner and are
   always broadcast.
-- **Keyed shuffle** — The `HashPartitioner` routing that sends every row with a given key to the same
-  downstream instance, so a key's rows and state are never split across instances. The hash
-  (`stable_bucket`) is process-, seed-, and platform-stable, so the same key maps to the same instance
-  in any process.
-- **Key range** — The set of keys one instance owns under the keyed shuffle: instance *i* of a stage
-  with parallelism *Q* handles every key *k* where `hash(k) mod Q == i`. Each key belongs to exactly
-  one instance.
+- **Keyed shuffle** — Routing that sends every row with a given key to the same downstream instance,
+  so a key's rows and state are never split across instances. The hash (`stable_bucket`) is process-,
+  seed-, and platform-stable, so the same key maps to the same instance in any process. Two forms: a
+  direct hash (`HashPartitioner`, `hash(key) mod Q`) and a key-group shuffle (`KeyGroupPartitioner`,
+  below) that adds a `group → instance` indirection.
+- **Key group** — One of *G* fixed buckets a key hashes to (`hash(key) mod G`) before being mapped to
+  an instance through a static `group → instance` table the plan carries (`KeyGroupPartitioner`). A key
+  never moves between groups, so rescaling the instance count is a table swap, not a re-hash of state.
+- **G (max parallelism)** — The fixed number of key groups a keyed edge hashes into, chosen once for
+  the job (the `key_groups` argument to `compile_graph` / `run_plan`, default *G == Q*; a `--key-groups`
+  CLI flag is **(planned)**). Because each group maps to one instance, *G* is the most instances the
+  edge can be rescaled to without re-hashing, so it must be *>= Q*.
+- **Q (stage parallelism)** — The number of instances of the operator an edge feeds (its parallelism).
+  The `group → instance` table maps the *G* groups onto these *Q* instances.
+- **Key range** — The set of keys one instance owns: the union of the key groups the `group → instance`
+  table assigns to it. At *G == Q* (the identity table) this is the direct-hash range
+  `{k : hash(k) mod Q == i}`; with *G > Q* an instance owns one or more groups. Each key belongs to
+  exactly one instance.
+
+## From graph to run (compile)
+
+*Source: `nautilus.api`, `nautilus.compile`.* How a described job becomes a runnable artifact.
+
+- **Logical graph** — The job as you describe it: a source and a chain of operators with their
+  parallelism and keying, and nothing physical — no instances, no channels, no operator ids
+  (`LogicalGraph`, built with `linear_graph`). It is the input to the compiler and what the fluent DSL
+  will produce **(planned)**.
+- **Vertex** — One operator in a logical graph: the factory that builds it, its kind (source or
+  one-input), its parallelism, and (for a keyed operator) its key columns (`LogicalVertex`).
+- **Compile (lowering)** — The one-time step that turns a logical graph into a physical plan
+  (`compile_graph`): it names the physical operators by position (`source`, `op0`…, `sink`), chooses a
+  partitioner spec for each edge, and synthesizes the collecting sink. It runs once, before the data
+  path starts — never per record.
+- **Physical plan** — The runnable, serializable result of compiling: the operators with their
+  parallelism, the edges between them, and a partitioner spec per edge (`PhysicalPlan`). It is plain
+  data plus the operator factories, so it can be cloudpickled to a worker that never saw the original
+  graph — it is the unit of serialization for distributing a job.
+- **Partitioner spec** — A stateless description of how one edge routes, selected by the compiler
+  (`ForwardSpec`, `RoundRobinSpec`, `KeyGroupSpec` — the last carrying the `group → instance` table).
+  The runtime builds a fresh `Partitioner` from it when it wires each output. The spec deliberately
+  carries no live state — a `RoundRobin`'s rotation cursor, for instance — so it is safe to serialize
+  and never shared between workers.
 
 ## Frames — what moves on a channel
 
@@ -160,11 +195,39 @@ the set of frame types is fixed.
   (single process, in-memory channels); `run()` is the synchronous one-line wrapper around it.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
   (`RunResult`; `result.telemetry`).
-- **Worker process** — For multicore, nautilus runs one operating-system process per core, each with
-  its own event loop and no shared memory. **(planned; Stage 0 is a single process.)**
-- **Compile and deploy** — The one-time step that lowers the dataflow graph to a physical plan and
-  starts the worker processes. Routing during the run is decided locally by each sender; there is no
-  central scheduler on the data path. **(planned.)**
+- **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and
+  no shared memory. `deploy` runs W of them; routing within and between them is local to each sender.
+- **Coordinator** — The control plane behind `deploy`: it compiles the graph, computes placement, spawns
+  the workers, drives the bootstrap, and aggregates one report at the job boundary. It reads no data
+  channel and grants no credit, so there is still no central scheduler on the data path.
+- **Placement** — The map from each operator instance to the worker that hosts it (`cluster.placement`):
+  per-operator round-robin over the workers, so same-index subtasks co-locate and only a real shuffle
+  crosses workers.
+- **Compile and deploy** — Lowering the graph to a physical plan (`compile`) and running it across
+  workers (`deploy`), driven from the CLI by `nautilus run --workers W --parallelism P`.
+
+## Cross-worker connections
+
+*Source: `nautilus.transport`, `nautilus.cluster`.* How an edge that crosses workers is established.
+
+- **Node address** — The `(host, port)` a worker's `EdgeListener` binds and accepts connections on;
+  producers on other workers dial it. Loopback between local processes today, a routable address across
+  machines later.
+- **Edge handshake** — A one-shot preamble a producer writes right after connecting, naming the
+  `ChannelId` of the edge it is opening, before any frame. The accepting `EdgeListener` reads it to route
+  the socket to the right consumer, so connections may arrive in any order without the wires crossing.
+- **ChannelId** — The identifier of one directed instance-to-instance edge: the source operator id and
+  subtask, and the destination operator id and subtask. It is both the key the in-process connector maps
+  to a queue and the value a socket announces in its handshake, so an edge is named the same way whatever
+  the transport.
+- **Address book** — The `AddressBook` (`cluster.membership`) mapping each worker to its listener's
+  `(host, port)`, built once after every worker binds. The socket connector takes a resolver over it (the
+  address a producer dials is the listener of the worker hosting the edge's destination), which is why
+  `transport` never imports `cluster`.
+- **Rendezvous** — The two-phase startup that makes connection setup deadlock-free: every worker binds
+  its listener (so all destinations exist) and registers before the coordinator broadcasts the address
+  book that lets anyone dial. A connection arriving before its consumer accepts is parked, so no global
+  "go" barrier is needed.
 
 ## Processing guarantees
 

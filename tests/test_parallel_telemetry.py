@@ -1,10 +1,9 @@
-"""Stage 1.5c: a parallel run's report groups and rolls up by subtask, and both digests diverge
-P=1 vs P=N — all without touching ``config_digest``, ``structural_digest``, ``build_report``, or the
-catalog.
+"""A parallel run's report groups and rolls up by subtask, and both digests diverge P=1 vs P=N.
 
 The divergence is structural, not a function edit: a P=N run emits one ``OperatorStats`` per subtask
 (``subtask_index`` 0..N-1) and Q ``Edge`` rows per fan-out connection (distinct ``channel_index``),
-which the unchanged digests already fold in.
+which the digests already fold in. ``build_report`` groups by ``(operator_id, subtask_index, node)``; in
+one process every row shares node ``local``, so the grouping is one row per subtask, as here.
 """
 
 from __future__ import annotations
@@ -91,13 +90,15 @@ async def test_topology_carries_num_subtasks_and_q_edges() -> None:
         if e.src_operator_id == "source" and e.dst_operator_id == "op0"
     ]
     assert len(fanout) == 3
-    assert {e.partitioner for e in fanout} == {"HashPartitioner"}
+    assert {e.partitioner for e in fanout} == {
+        "KeyGroupPartitioner"
+    }  # keyed shuffle via key groups
     assert sorted(e.channel_index for e in fanout) == [0, 1, 2]
 
 
 async def test_per_operator_summary_is_one_row_per_subtask() -> None:
-    # build_report is left unchanged, so RunSummary.per_operator ships one OperatorSummary per
-    # (operator_id, subtask_index): N rows for a P=N operator, summing to the conserved totals.
+    # RunSummary.per_operator ships one OperatorSummary per subtask in one process (node is constant):
+    # N rows for a P=N operator, summing to the conserved totals.
     serial = (await run_local_chain(_src(), [KeyedCount("word")], clock=TestClock())).telemetry
     par = (await run_parallel_chain(_src(), _kc(3), clock=TestClock())).telemetry
     op0_rows = [row for row in par.summary.per_operator if row.operator_id == "op0"]

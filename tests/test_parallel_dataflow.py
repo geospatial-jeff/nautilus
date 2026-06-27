@@ -1,9 +1,10 @@
-"""Stage 1.5b: the parallel mesh moves rows correctly, independent of telemetry.
+"""The parallel chain moves rows correctly single-process, independent of telemetry.
 
-The golden multiset-equality tests are what catch a co-partitioning bug: such a bug conserves rows
-while silently splitting a key's state, so only comparing the parallel result against the serial P=1
-result as a multiset reveals it. Cross-instance sink interleave is nondeterministic, so every
-comparison is over a ``collections.Counter`` of result tuples, never row or batch order.
+These exercise ``run_parallel_chain`` (now a thin wrapper over the compiler) at parallelism > 1 in one
+process. The golden multiset-equality tests catch a co-partitioning bug: such a bug conserves rows while
+silently splitting a key's state, so only comparing the parallel result against the serial P=1 result as
+a multiset reveals it. Cross-instance sink interleave is nondeterministic, so every comparison is over a
+``collections.Counter`` of result tuples, never row or batch order.
 """
 
 from __future__ import annotations
@@ -12,23 +13,11 @@ import asyncio
 import random
 from collections import Counter
 
-import pytest
-
-from nautilus.core.records import EOS_FRAME, Batch
+from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch
-from nautilus.runtime.channel import InProcChannel
 from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.mailbox import Mailbox
-from nautilus.runtime.parallel import (
-    Stage,
-    _check_fanout_partitioner,
-    _collect_parallel,
-    _partitioner_for,
-    run_parallel_chain,
-)
-from nautilus.runtime.partition import Forward, HashPartitioner, RoundRobin
-from nautilus.telemetry.recorder import NULL_RECORDER
-from nautilus.testing import TestClock, batch, data, wm
+from nautilus.runtime.parallel import Stage, run_parallel_chain
+from nautilus.testing import TestClock, data, wm
 from nautilus.windows import TumblingEventTimeWindows
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -56,23 +45,6 @@ def _op_counter(rep, op_id: str, name: str) -> int:
         for p in o.counters
         if p.name == name
     )
-
-
-# --- the wiring decision -----------------------------------------------------------------------
-
-
-def test_partitioner_selection() -> None:
-    assert isinstance(_partitioner_for(1, None), Forward)
-    assert isinstance(_partitioner_for(1, ["k"]), Forward)  # Q==1 is Forward even with keys
-    assert isinstance(_partitioner_for(3, ["k"]), HashPartitioner)
-    assert isinstance(_partitioner_for(3, None), RoundRobin)  # parallel + no key → rebalance
-
-
-def test_forward_misuse_raises_at_wiring() -> None:
-    with pytest.raises(ValueError, match="Forward"):
-        _check_fanout_partitioner(Forward(), 3, "op0")
-    _check_fanout_partitioner(HashPartitioner(["k"]), 3, "op0")  # a real shuffle is fine
-    _check_fanout_partitioner(Forward(), 1, "sink")  # Q==1 Forward is fine
 
 
 # --- golden multiset equality (the co-partitioning check) --------------------------------------
@@ -284,24 +256,6 @@ async def test_stateless_map_conserves_rows() -> None:
             rep = res.telemetry
             assert _op_counter(rep, "op0", "operator.rows_in") == total
             assert _op_counter(rep, "sink", "operator.rows_in") == total
-
-
-# --- EOS-after-all-P (the multi-input sink) ----------------------------------------------------
-
-
-async def test_collect_parallel_waits_for_all_eos() -> None:
-    a, b = InProcChannel(8), InProcChannel(8)
-    mb = Mailbox([a, b])
-    out: list = []
-    task = asyncio.create_task(_collect_parallel(mb, out, NULL_RECORDER))
-    await a.send(Batch(batch(x=[1])))
-    await a.send(EOS_FRAME)
-    # one input closed, one still open → the sink must not terminate
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
-    await b.send(EOS_FRAME)
-    await asyncio.wait_for(task, timeout=2)
-    assert sum(rb.num_rows for rb in out) == 1
 
 
 # --- degenerate (all-serial) -------------------------------------------------------------------

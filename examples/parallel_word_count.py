@@ -1,14 +1,14 @@
-"""Stage 1.5 demo: a parallel keyed word-count via the hash shuffle, in a single process.
+"""A parallel keyed word-count via the keyed shuffle, in a single process.
 
-The same word-count as ``examples/wordcount.py``, but ``KeyedCount`` runs as several instances. A
-``HashPartitioner`` routes every occurrence of a word to the one instance that owns it, so each
-instance counts a disjoint key range and the union is the full result — identical, as a multiset, to
-the single-instance run.
+The same word-count as ``examples/wordcount.py``, but ``KeyedCount`` runs as several instances. The keyed
+shuffle (a ``KeyGroupPartitioner`` — the identity table at G == N, so byte-identical to a direct hash)
+routes every occurrence of a word to the one instance that owns it, so each instance counts a disjoint
+key range and the union is the full result — identical, as a multiset, to the single-instance run.
 
 Run with:  python examples/parallel_word_count.py
 
-(A ``nautilus run --parallelism`` CLI surface is deferred to Stage 2, where it joins the compiler API
-rather than pre-empting it; for now the parallel runner is driven from Python as below.)
+(``nautilus run <pipeline> --parallelism N`` — add ``--workers W`` to spread across processes — now
+drives this from the command line; this example shows the same run from Python.)
 """
 
 from __future__ import annotations

@@ -48,8 +48,11 @@ nautilus run PIPELINE [options]
 | `--save PATH` | none | write the full JSON report to `PATH` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
 | `--head` | `5` | rows of pipeline output to preview |
+| `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
+| `--parallelism` | `1` | instances per operator (keyed operators shuffle by key) |
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`
+Distributed: `uv run nautilus run wordcount --workers 2 --parallelism 2`
 
 ### examples
 

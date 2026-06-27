@@ -1,21 +1,22 @@
-"""Run a pipeline across two processes (Stage 1).
+"""Run a pipeline across worker processes with ``deploy``.
 
-The same word-count as ``examples/wordcount.py``, but the source runs in this process and the
-transforms and sink run in a spawned child process, joined by one TCP edge on the loopback interface
-with credit-based flow control (see ``nautilus.transport``). The two-process result matches the
-single-process one.
+The same word-count as ``examples/wordcount.py``, but run across two spawned workers: ``KeyedCount`` at
+parallelism 2 forces a keyed shuffle that genuinely crosses a worker boundary over a socket, while
+co-located edges stay in-process. The distributed result matches the single-process one.
 
 Run with:  python examples/multiprocess.py
 
-The ``if __name__ == "__main__"`` guard below is required: ``run_two_process`` uses ``multiprocessing``
-with the ``spawn`` start method, which re-imports this file in the child process.
+The ``if __name__ == "__main__"`` guard below is required: ``deploy`` uses ``multiprocessing`` with the
+``spawn`` start method, which re-imports this file in each worker.
 """
 
 from __future__ import annotations
 
 from nautilus import run
+from nautilus.cluster import deploy
+from nautilus.operators import KeyedCount, Tokenize
 from nautilus.pipelines import wordcount
-from nautilus.transport import run_two_process
+from nautilus.runtime.parallel import Stage, graph_from_stages
 
 
 def _counts(rows: list[dict]) -> dict[str, int]:
@@ -26,20 +27,25 @@ def main() -> None:
     # Baseline: the whole pipeline in one process.
     single = _counts(run(*wordcount()).to_pylist())
 
-    # Same pipeline across two processes: source here, transforms + sink in a spawned child,
-    # with a credit window of 4 data frames on the cross-process edge.
-    result = run_two_process(*wordcount(), capacity=4)
+    # Same word-count across two workers: Tokenize feeds a parallelism-2 KeyedCount through a keyed
+    # shuffle, so each word's count is computed on exactly one worker.
+    source, _ = wordcount()
+    graph = graph_from_stages(
+        source,
+        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+    )
+    result = deploy(graph, num_workers=2, capacity=4)
     across = _counts(result.to_pylist())
 
     for word, count in sorted(across.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"{count:3d}  {word}")
     print(f"\nmatches single-process result: {across == single}")
 
-    # Telemetry from the child process (the operator side of the edge).
+    # Telemetry is aggregated at the coordinator; KeyedCount ran across both workers.
     summary = result.telemetry.summary
-    print(f"telemetry (child): {summary.total_rows_in} rows in, {summary.total_rows_out} rows out")
-    for op in summary.per_operator:
-        print(f"  {op.operator_id:7s} rows_out={op.rows_out_total:3d} errors={op.error_count}")
+    nodes = sorted({o.node for o in result.telemetry.operators if o.operator_id == "op1"})
+    print(f"telemetry: {summary.total_rows_in} rows in, {summary.total_rows_out} rows out")
+    print(f"  KeyedCount ran on workers: {nodes}")
 
 
 if __name__ == "__main__":

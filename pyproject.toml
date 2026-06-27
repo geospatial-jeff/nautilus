@@ -103,26 +103,51 @@ root_package = "nautilus"
 [[tool.importlinter.contracts]]
 name = "Data path must not import the control plane (cluster)"
 type = "forbidden"
-# nautilus.transport landed in Stage 1; expanded further as packages land.
+# nautilus.transport landed in Stage 1; the IR (api) and compiler landed in Stage 2a.
 source_modules = [
   "nautilus.runtime",
   "nautilus.core",
   "nautilus.telemetry",
   "nautilus.transport",
+  "nautilus.api",
+  "nautilus.compile",
 ]
 forbidden_modules = ["nautilus.cluster"]
 
 [[tool.importlinter.contracts]]
+name = "The compiler imports only the IR (api)"
+type = "forbidden"
+# compile lowers api -> PhysicalPlan and nothing more. The forbidden list is every internal package
+# except api (and compile's own modules): a forbidden contract is a denylist, so to mean "imports only
+# api" it must name each sibling. Keeping the plan free of these imports is what lets it cloudpickle to
+# a worker that has only the data path, and keeps the compiler off the runtime and the report layer.
+source_modules = ["nautilus.compile"]
+forbidden_modules = [
+  "nautilus.core",
+  "nautilus.runtime",
+  "nautilus.transport",
+  "nautilus.telemetry",
+  "nautilus.state",
+  "nautilus.cluster",
+]
+
+[[tool.importlinter.contracts]]
 name = "Per-record data path must not import the telemetry report (boundary) layer"
 type = "forbidden"
-# The runners (nautilus.runtime.local and nautilus.runtime.parallel) are the boundary and MAY import
-# the report layer; the per-record actors/channels/mailbox/partition/core may not.
+# The runners (nautilus.runtime.local, nautilus.runtime.parallel, nautilus.runtime.run) are the
+# boundary and MAY import the report layer; the per-record actors/channels/mailbox/partition/core, the
+# executor (runtime.execute) and connector, and the api/compile artifacts may not — so report assembly
+# can never reach the data path and compile.lower can never reach telemetry.report.Topology.
 source_modules = [
   "nautilus.core",
   "nautilus.runtime.actor",
   "nautilus.runtime.channel",
   "nautilus.runtime.mailbox",
   "nautilus.runtime.partition",
+  "nautilus.runtime.execute",
+  "nautilus.runtime.connector",
+  "nautilus.api",
+  "nautilus.compile",
 ]
 forbidden_modules = ["nautilus.telemetry.report", "nautilus.telemetry.live"]
 

@@ -1,17 +1,14 @@
-"""Edge-case robustness of the credit transport: peer death, child errors, no silent hangs."""
+"""Edge-case robustness of the credit transport: peer death, clean EOS, no silent hangs."""
 
 from __future__ import annotations
 
 import asyncio
 import socket
-import time
 
 import pytest
 
 from nautilus.core.records import EOS, EOS_FRAME, Batch
-from nautilus.operators import InMemorySource, KeyedCount
-from nautilus.testing import batch, data
-from nautilus.transport import run_two_process
+from nautilus.testing import batch
 from nautilus.transport.socket_channel import SocketChannel, TransportClosed
 
 
@@ -53,13 +50,3 @@ async def test_clean_eos_close_is_not_an_error() -> None:
     assert isinstance(await asyncio.wait_for(recv_ch.recv(), timeout=2.0), Batch)
     assert isinstance(await asyncio.wait_for(recv_ch.recv(), timeout=2.0), EOS)
     await recv_ch.close()
-
-
-def test_child_operator_error_propagates_without_hanging() -> None:
-    # The child's KeyedCount asks for a "word" column the source never produces, so the child's
-    # pipeline raises. The parent must surface that quickly, not wait out a timeout.
-    source = InMemorySource([data(wrong=["a", "b"]), EOS_FRAME])
-    start = time.monotonic()
-    with pytest.raises(RuntimeError, match="worker failed"):
-        run_two_process(source, [KeyedCount("word")], capacity=4)
-    assert time.monotonic() - start < 20.0

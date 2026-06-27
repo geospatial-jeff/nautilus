@@ -129,6 +129,15 @@ class OneInputOperator(ABC):
         """Event-time progress reached ``t``. Fire due windows/timers; emit via ``out``. The actor
         forwards the watermark downstream *after* this returns. Default: no-op (stateless ops)."""
 
+    def key_columns(self) -> tuple[str, ...] | None:
+        """The columns this operator's input must be co-partitioned on, or ``None`` if it is keyless.
+
+        A keyed operator — one that keeps per-key state — declares its key here so that a parallel run
+        routes its input through the keyed shuffle and never splits a key across instances. The default
+        ``None`` means the operator is stateless-per-row, so any row may go to any instance. A pipeline
+        driven by parallelism alone (the CLI) reads this to choose each edge's partitioner."""
+        return None
+
     def close(self) -> None:
         """Called once after EOS has been fully processed. Override to release resources."""
 

@@ -97,6 +97,9 @@ class KeyedCount(OneInputOperator):
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
 
+    def key_columns(self) -> tuple[str, ...]:
+        return (self.key_col,)
+
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         counts = pc.value_counts(batch.column(self.key_col))
         for value, count in zip(
@@ -149,6 +152,9 @@ class KeyedTumblingSum(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
+
+    def key_columns(self) -> tuple[str, ...]:
+        return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         keys = batch.column(self.key_col).to_pylist()
