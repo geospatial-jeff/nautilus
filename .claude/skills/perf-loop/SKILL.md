@@ -1,0 +1,134 @@
+---
+name: perf-loop
+description: Use when doing performance analysis or optimization of nautilus — finding what is slow, why, and fixing it. Drives the telemetry loop (run a workload at scale, read the facts, change the code, re-run, compare) and keeps results honest with the structural digest.
+---
+
+# The nautilus performance loop
+
+nautilus emits facts, never verdicts: a run records self-describing measurements and leaves the analysis
+out of the engine, on purpose, so the analysis can live and improve here. This skill *is* that analysis.
+The loop is: **run a workload at scale → read the telemetry → change one thing → re-run → compare → log.**
+
+Work one hypothesis at a time. A run produces dozens of numbers; resist fixing four things at once,
+because then no delta is attributable. Pick the dominant cost, change it, measure, repeat.
+
+**Every change that makes nautilus faster or more scalable gets an entry in `PERFORMANCE_CHANGELOG.md`
+(repo root) — no exceptions.** That file is the committed historical record; step 5 covers exactly what
+to write. This applies to any speed/scalability change, whether or not it came from a full loop run.
+
+## 1. Run a workload that actually exercises the engine
+
+The built-in `wordcount` / `windowed-sum` examples are tens of rows — every duration sits on the
+sub-microsecond noise floor, no channel fills, state never grows. Use the benchmarks (`bench-keyed`,
+`bench-linear`, `bench-fanout` in `nautilus.benchmarks`), scaled by environment so the same pipeline
+serves a quick check and a real measurement:
+
+```bash
+NAUTILUS_BENCH_ROWS=2000000 NAUTILUS_BENCH_BATCH=4096 NAUTILUS_BENCH_KEYS=1000 \
+  nautilus run bench-keyed --telemetry counters --save report.json --show markdown
+```
+
+Pick the workload to match the question: `bench-keyed` for the keyed shuffle + per-key state + window
+firing; `bench-linear` for per-batch runtime overhead with no shuffle or state; `bench-fanout` for
+per-row Python in a flat-map. Add `--parallelism N` to run N instances (the keyed shuffle then routes by
+key); add `--workers W` to spawn W processes (a true shuffle then crosses a socket). Keep total rows
+fixed when sweeping a knob (batch size, parallelism) so throughput is comparable.
+
+For a baseline cheap enough to iterate on, shrink `NAUTILUS_BENCH_ROWS` — the bottleneck ranking holds at
+any scale; only the absolute wall changes.
+
+## 2. Read the report
+
+`report.json` is the full surface; `--show markdown` is the digest. The digest carries only raw facts
+(every number in it is in the JSON) plus a `derive:` hint line — so compute the ratios yourself, or read
+the report in Python and use the query helpers:
+
+```python
+from nautilus.runtime.run import run_plan   # or run_local_chain / deploy
+rep = result.telemetry
+rep.throughput_rows_per_sec()   # headline: total rows_out / wall — the number you compare across runs
+rep.by_occupancy()              # (operator_id, busy/wall) per instance, busiest first
+rep.by_self_time()              # operators ranked by busy_us (runtime.step_micros)
+rep.structural_digest()         # the correctness fingerprint — see step 4
+```
+
+Read it through these lenses. Each turns facts into *a place to look*, never a verdict:
+
+- **Occupancy** = `busy_us / wall` per instance (`by_occupancy`). The stage that gates the run but shows
+  *low* occupancy is spending wall on something `step_micros` doesn't count: the keyed shuffle
+  (`partition.route_micros`), waiting for input (`edge.input_wait_micros`), or cross-process I/O
+  (`transport.*`). High occupancy on a stage means it is CPU-bound in its own `process`/`on_watermark`.
+- **Self-time** (`by_self_time`, `operator.process_micros` / `operator.on_watermark_micros` histograms):
+  the operator with the most busy time is the CPU bottleneck. Read its `process()` — per-row Python and
+  `to_pylist()` materialization are the usual cause; the histogram shows whether it is a few slow batches
+  or uniformly slow.
+- **Selectivity** = `rows_out / rows_in`: the fan-out (tokenize) or fan-in (aggregation) shape; explains
+  where row volume — and therefore downstream cost — is created or collapsed.
+- **Saturation** = `edge.queue_depth / edge.queue_capacity`, with `edge.send_wait_micros`: a depth at
+  capacity and nonzero send-wait is backpressure — the producer is being slowed by that consumer. Follow
+  the chain to the slowest consumer.
+- **Skew**: compare `operator.process_micros` and `operator.rows_in` *across subtasks of the same
+  operator*. One instance with most of the rows/time is an unbalanced key distribution, not a code cost.
+- **State growth**: `state.entries` / `state.keys` (max). This is the only unbounded structure; a high or
+  climbing value is both a memory risk and the size of the per-watermark window-flush scan.
+- **Shuffle cost**: `partition.route_micros` (sum) on the *sending* operator — the keyed shuffle's per-row
+  key extraction and hashing, otherwise invisible between process and send.
+- **Cross-process** (`--workers` runs, FULL tier): `transport.bytes_sent` (wire volume — wide schemas and
+  tiny batches inflate it) and `edge.credit_wait_micros` (producer stalled on flow-control credit).
+
+## 3. Form one hypothesis
+
+State it as a falsifiable sentence tied to a metric and a line of code, e.g. "`KeyedTumblingSum` self-time
+is X% of wall because `process` loops in Python over every row (operators.py:159); vectorizing the
+per-key sum with Arrow `group_by` will cut `operator.process_micros` and raise throughput." If the real
+cost is invisible — wall greatly exceeds every accounted metric and no lens explains it — the gap is in
+the *telemetry*, not the code: add the instrument first (a fact, declared in `telemetry/catalog.py`,
+never a verdict; see the `writing-docs` standards and the catalog's banned-words lint), re-run, then
+continue. The loop improves the measurement too.
+
+## 4. Change the code, then prove you only changed the speed
+
+Make the one targeted change. Then **guard correctness with the structural digest** — a SHA-256 over only
+the provably-reproducible facts (topology + row/EOS/watermark counts), excluding all timing. With a
+deterministic source (the benchmarks are), a pure speed change must leave it identical:
+
+```python
+before = rep_before.structural_digest()
+after  = rep_after.structural_digest()
+assert before == after   # same results; you changed only how fast they were produced
+```
+
+If the digest changed, the optimization changed the output — revert or fix it before trusting any speed
+number. With the digest equal, compare `throughput_rows_per_sec()` and the specific metric you targeted
+(e.g. that `operator.process_micros` actually fell). Run each side two or three times; report the change
+only if it clears the run-to-run wobble.
+
+## 5. Log the change, then iterate
+
+A speed or scalability win is not done until it is recorded. Commit in **two steps** so the log can cite
+the real hash of the fix:
+
+1. **Commit the performance change** on its own (code + any tests), with a `perf:` subject line.
+2. **Then** prepend an entry to `PERFORMANCE_CHANGELOG.md` (repo root, newest first) that references that
+   commit's short hash, and **commit the changelog separately**.
+
+Follow the format already in that file; each entry states:
+
+- **Date** and **Commit** — the date, and the short hash of the change commit from step 1 (or the PR).
+- **Change** — what changed, which files, and the mechanism (one or two sentences).
+- **Impact** — the exact workload and scale measured (pipeline, rows, batch, parallelism/workers), the
+  metric **before → after**, and the factor. Quote the metric you targeted, not just throughput.
+- **Correctness** — how you proved the output unchanged: structural digest equal, and for a routing or
+  value change, the output multiset equal too.
+
+Only real, repeated wins go in — run each side two or three times and report the change only if it clears
+the run-to-run wobble; a within-noise result is not an entry. Then re-read the new report — the
+bottleneck has usually moved to the next stage — and repeat from step 2. Keep `uv run pytest` green
+throughout; a perf change that breaks a test, or that lacks a changelog entry, is not done.
+
+## Tiers and overhead
+
+`--telemetry off` records nothing (the zero-cost baseline); `counters` (default) is the standard set;
+`full` adds the byte-accounting walk and `transport.bytes_sent`. To measure telemetry's own cost, run the
+same workload at `off` vs `counters` and compare throughput — instrumentation is meant to be cheap, so a
+large gap is itself a finding.
