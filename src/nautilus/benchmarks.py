@@ -37,6 +37,13 @@ def passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
     return batch
 
 
+# Default scale, shared by bench_params and the `nautilus bench` harness so both agree on one baseline.
+DEFAULT_ROWS = 1_000_000
+DEFAULT_BATCH = 4096
+DEFAULT_KEYS = 1000
+DEFAULT_WM_EVERY = 8
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
@@ -45,14 +52,14 @@ def _env_int(name: str, default: int) -> int:
 def bench_params() -> dict[str, int]:
     """Resolve the benchmark scale from the environment (with defaults). One place so every builder and
     any reporting agent reads the same knobs."""
-    rows = _env_int("NAUTILUS_BENCH_ROWS", 1_000_000)
-    batch_rows = _env_int("NAUTILUS_BENCH_BATCH", 4096)
+    rows = _env_int("NAUTILUS_BENCH_ROWS", DEFAULT_ROWS)
+    batch_rows = _env_int("NAUTILUS_BENCH_BATCH", DEFAULT_BATCH)
     return {
         "rows": rows,
         "batch_rows": batch_rows,
         "num_batches": max(1, -(-rows // batch_rows)),  # ceil; at least one batch
-        "key_cardinality": _env_int("NAUTILUS_BENCH_KEYS", 1000),
-        "wm_every": _env_int("NAUTILUS_BENCH_WM_EVERY", 8),
+        "key_cardinality": _env_int("NAUTILUS_BENCH_KEYS", DEFAULT_KEYS),
+        "wm_every": _env_int("NAUTILUS_BENCH_WM_EVERY", DEFAULT_WM_EVERY),
     }
 
 

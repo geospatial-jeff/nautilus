@@ -37,6 +37,12 @@ fixed when sweeping a knob (batch size, parallelism) so throughput is comparable
 For a baseline cheap enough to iterate on, shrink `NAUTILUS_BENCH_ROWS` — the bottleneck ranking holds at
 any scale; only the absolute wall changes.
 
+Two different jobs, two tools: `nautilus run … --save report.json` for *one* run you read to **find** the
+bottleneck (step 2), and `nautilus bench <pipeline>` to **measure** throughput rigorously once you have a
+change (step 4). The committed baseline lives in `benchmarks/baseline.json`; `nautilus bench-check`
+re-runs it and fails on any regression — run it before declaring a change done, and it is the regression
+gate in CI.
+
 ## 2. Read the report
 
 `report.json` is the full surface; `--show markdown` is the digest. The digest carries only raw facts
@@ -99,9 +105,20 @@ assert before == after   # same results; you changed only how fast they were pro
 ```
 
 If the digest changed, the optimization changed the output — revert or fix it before trusting any speed
-number. With the digest equal, compare `throughput_rows_per_sec()` and the specific metric you targeted
-(e.g. that `operator.process_micros` actually fell). Run each side two or three times; report the change
-only if it clears the run-to-run wobble.
+number.
+
+For the speed number itself, **do not eyeball one run or take the best of a few** — that is how noise
+gets logged as a win. Use the benchmark harness, which runs many trials and reports the **median** with
+the interquartile range as the spread, stamps the machine, and compares to the committed baseline:
+
+```bash
+nautilus bench bench-keyed --rows 2000000          # median ± IQR; auto-compares to the baseline
+```
+
+It classifies the change as `REGRESSED` / `IMPROVED` / `unchanged`, where a change counts only if it
+clears both a 7% floor and twice the measured noise — so it refuses to call a sub-noise wobble a win. A
+digest mismatch shows as `OUTPUT-CHANGED` and always fails. (`measure`/`compare` in `nautilus.bench` give
+the same thing in Python.) When the win is real, move the baseline forward with `--update`.
 
 ## 5. Log the change, then iterate
 
@@ -116,15 +133,16 @@ Follow the format already in that file; each entry states:
 
 - **Date** and **Commit** — the date, and the short hash of the change commit from step 1 (or the PR).
 - **Change** — what changed, which files, and the mechanism (one or two sentences).
-- **Impact** — the exact workload and scale measured (pipeline, rows, batch, parallelism/workers), the
-  metric **before → after**, and the factor. Quote the metric you targeted, not just throughput.
+- **Impact** — the exact workload and scale (pipeline, rows, batch, parallelism/workers), the **median
+  before → after** from `nautilus bench` (not a single run), and the factor. Quote the metric you
+  targeted, not just throughput.
 - **Correctness** — how you proved the output unchanged: structural digest equal, and for a routing or
   value change, the output multiset equal too.
 
-Only real, repeated wins go in — run each side two or three times and report the change only if it clears
-the run-to-run wobble; a within-noise result is not an entry. Then re-read the new report — the
-bottleneck has usually moved to the next stage — and repeat from step 2. Keep `uv run pytest` green
-throughout; a perf change that breaks a test, or that lacks a changelog entry, is not done.
+Only changes the harness classifies as `IMPROVED` go in — a within-noise result is not an entry. Then
+re-read the new report — the bottleneck has usually moved to the next stage — and repeat from step 2.
+Keep `uv run pytest` green and `nautilus bench-check` clean throughout; a perf change that breaks a test,
+regresses another benchmark, or lacks a changelog entry, is not done.
 
 ## Tiers and overhead
 

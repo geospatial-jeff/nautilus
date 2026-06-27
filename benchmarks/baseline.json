@@ -1,0 +1,117 @@
+{
+  "note": "Throughput is machine-specific (see each entry's environment); re-baseline per machine. structural_digest is portable and anchors output correctness across machines. Maintained by `nautilus bench --update` / `nautilus bench-check`.",
+  "results": {
+    "bench-fanout": {
+      "deterministic": true,
+      "environment": {
+        "commit": "e860bc0",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-fanout",
+      "recorded_at": "2026-06-27T14:21:31+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "9863b04ca1c71ade6e53ddf18b5bab54cfb1276ecc5b9a553bbcaaa60dbab7f8",
+      "throughput_rows_per_sec": {
+        "iqr": 55817.617100750096,
+        "max": 6217931.968839212,
+        "median": 6191568.296795953,
+        "min": 6132913.355763953,
+        "rel_spread": 0.009015101574448417,
+        "samples": [
+          6132913.355763953,
+          6140826.225121258,
+          6191568.296795953,
+          6196643.842222008,
+          6217931.968839212
+        ]
+      },
+      "trials": 5
+    },
+    "bench-keyed": {
+      "deterministic": true,
+      "environment": {
+        "commit": "e860bc0",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-06-27T14:21:29+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "c44c92c665202c3c13c80584eb77d13915ffa89cdb0c91e09380bf5b313a0520",
+      "throughput_rows_per_sec": {
+        "iqr": 7782.358434704132,
+        "max": 1814420.0323882727,
+        "median": 1808359.0958365118,
+        "min": 1794768.8040931476,
+        "rel_spread": 0.0043035470403095825,
+        "samples": [
+          1794768.8040931476,
+          1804374.64946719,
+          1808359.0958365118,
+          1812157.0079018942,
+          1814420.0323882727
+        ]
+      },
+      "trials": 5
+    },
+    "bench-linear": {
+      "deterministic": true,
+      "environment": {
+        "commit": "e860bc0",
+        "nautilus_version": "0.0.1",
+        "platform": "macOS-12.3-arm64-arm-64bit",
+        "processor": "arm",
+        "python_version": "3.12.11"
+      },
+      "pipeline": "bench-linear",
+      "recorded_at": "2026-06-27T14:21:31+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "eda4b334ef066c741ef93c16dbe67390c5b04e695c125568b45eacd8bda84c5f",
+      "throughput_rows_per_sec": {
+        "iqr": 7080613.050781518,
+        "max": 183963336.3886343,
+        "median": 183040583.67533058,
+        "min": 175058002.6166594,
+        "rel_spread": 0.03868329584951937,
+        "samples": [
+          175058002.6166594,
+          176210711.1501317,
+          183040583.67533058,
+          183291324.20091322,
+          183963336.3886343
+        ]
+      },
+      "trials": 5
+    }
+  },
+  "version": 1
+}

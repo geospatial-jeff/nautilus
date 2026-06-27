@@ -40,6 +40,8 @@ nautilus task "make Tokenize faster" --on wordcount
 # Performance work: the bench-* pipelines generate millions of rows (the examples above are tiny).
 # Scale them from the environment; vary --parallelism / --workers to stress the shuffle and transport.
 NAUTILUS_BENCH_ROWS=2000000 nautilus run bench-keyed --save report.json
+nautilus bench bench-keyed        # measure throughput over many trials: median ± IQR, vs the baseline
+nautilus bench-check              # re-run benchmarks/baseline.json; nonzero exit on a regression (CI)
 ```
 
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns

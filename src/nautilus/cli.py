@@ -7,6 +7,8 @@ task, a run's telemetry, what each metric means, and which files to read.
 from __future__ import annotations
 
 import asyncio
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -17,6 +19,21 @@ from rich.panel import Panel
 from rich.table import Table
 
 import nautilus
+from nautilus.bench import (
+    DEFAULT_BASELINE,
+    DEFAULT_THRESHOLD,
+    DEFAULT_TRIALS,
+    DEFAULT_WARMUP,
+    BenchResult,
+    Comparison,
+    compare,
+    is_failure,
+    load_baseline,
+    measure,
+    measure_like,
+    save_baseline,
+)
+from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
 from nautilus.cluster import deploy
 from nautilus.core.time import SystemClock
 from nautilus.pipelines import EXAMPLES, load_pipeline
@@ -288,6 +305,153 @@ def task(
     else:
         # Plain print (not Rich) so it is clean to copy/pipe into an agent.
         print(prompt)
+
+
+_STATUS_STYLE = {
+    "IMPROVED": "green",
+    "REGRESSED": "red",
+    "OUTPUT-CHANGED": "red bold",
+    "unchanged": "dim",
+    "machine-differs": "yellow",
+}
+
+
+def _fmt(n: float) -> str:
+    return f"{n:,.0f}"
+
+
+def _bench_panel(r: BenchResult) -> Panel:
+    t, e = r.throughput_rows_per_sec, r.environment
+    determinism = "deterministic" if r.deterministic else "[red]NONDETERMINISTIC[/red]"
+    lines = [
+        f"pipeline [bold]{r.pipeline}[/bold] · {r.trials} trials · tier {Tier(r.scale['tier']).name.lower()}",
+        f"scale rows={_fmt(r.scale['rows'])} batch={r.scale['batch']} keys={r.scale['keys']} "
+        f"parallelism={r.scale['parallelism']} workers={r.scale['workers']}",
+        "",
+        f"throughput [bold]{_fmt(t.median)}[/bold] rows/s (median)  ·  IQR {_fmt(t.iqr)}  ·  "
+        f"noise {t.rel_spread:.1%}  ·  range {_fmt(t.min)}–{_fmt(t.max)}",
+        f"digest {r.structural_digest[:12]} ({determinism})",
+        f"on {e.platform} · py {e.python_version} · nautilus {e.nautilus_version} · commit {e.commit or '—'}",
+    ]
+    return Panel.fit("\n".join(lines), title="nautilus bench")
+
+
+def _comparison_line(c: Comparison) -> str:
+    style = _STATUS_STYLE.get(c.status, "")
+    return (
+        f"vs baseline: [{style}]{c.status}[/{style}] {c.delta:+.1%} "
+        f"(median {_fmt(c.base_median)} → {_fmt(c.new_median)} rows/s; needs ±{c.threshold:.1%} to count)"
+    )
+
+
+@app.command()
+def bench(
+    pipeline: str = typer.Argument(..., help="A built-in example name, or 'module:function'."),
+    trials: int = typer.Option(DEFAULT_TRIALS, help="Measured runs reduced to a median + IQR."),
+    warmup: int = typer.Option(DEFAULT_WARMUP, help="Warmup runs, discarded (cold-cache)."),
+    rows: int = typer.Option(DEFAULT_ROWS, help="bench-* total rows (ignored by fixed pipelines)."),
+    batch: int = typer.Option(DEFAULT_BATCH, help="bench-* rows per batch."),
+    keys: int = typer.Option(DEFAULT_KEYS, help="bench-* distinct keys."),
+    wm_every: int = typer.Option(DEFAULT_WM_EVERY, "--wm-every", help="bench-* watermark cadence."),
+    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
+    workers: int = typer.Option(1, help="Worker processes (>1 deploys across them)."),
+    capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
+    telemetry: str = typer.Option("counters", help="Tier to measure at (>= counters; the digest needs it)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+    baseline: Path = typer.Option(DEFAULT_BASELINE, help="Baseline file to compare against / update."),
+    update: bool = typer.Option(False, "--update", help="Write this result into the baseline file."),
+) -> None:
+    """Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to the
+    baseline if one exists, and optionally update it. This is how to produce the before/after numbers a
+    PERFORMANCE_CHANGELOG.md entry records."""
+    tier = _tier(telemetry)
+    if tier <= Tier.OFF:
+        raise typer.BadParameter("bench needs telemetry >= counters (the structural digest needs it)")
+    try:
+        with console.status(f"measuring {pipeline} · {warmup}+{trials} runs…"):
+            result = measure(
+                pipeline, rows=rows, batch=batch, keys=keys, wm_every=wm_every,
+                parallelism=parallelism, workers=workers, capacity=capacity, tier=tier,
+                trials=trials, warmup=warmup,
+                recorded_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            )
+    except (KeyError, ImportError, AttributeError) as e:
+        console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
+        raise typer.Exit(code=2) from None
+
+    if json_out:
+        console.print_json(json.dumps(result.to_dict()))
+    else:
+        console.print(_bench_panel(result))
+        base = load_baseline(baseline) if baseline.exists() else {}
+        if pipeline in base:
+            console.print(_comparison_line(compare(base[pipeline], result)))
+
+    if update:
+        base = load_baseline(baseline) if baseline.exists() else {}
+        base[pipeline] = result
+        save_baseline(baseline, base)
+        console.print(f"[green]updated baseline[/green] {baseline} · [bold]{pipeline}[/bold]")
+
+
+@app.command(name="bench-check")
+def bench_check(
+    baseline: Path = typer.Option(DEFAULT_BASELINE, help="Baseline file to check against."),
+    threshold: float = typer.Option(DEFAULT_THRESHOLD, help="Floor (fraction) a change must clear to count."),
+    update: bool = typer.Option(False, "--update", help="Rewrite the baseline from this run instead of checking."),
+) -> None:
+    """Re-run every pipeline in the baseline at its recorded scale and fail (exit 1) on any regression or
+    output change — the regression ratchet for CI. A change counts only when it clears both the threshold
+    and twice the measured noise; an output change (digest mismatch) always fails, on any machine."""
+    if not baseline.exists():
+        console.print(
+            f"[red]no baseline at[/red] {baseline}  "
+            "(create one with `nautilus bench <pipeline> --update`)"
+        )
+        raise typer.Exit(code=2)
+    base = load_baseline(baseline)
+    if not base:
+        console.print(f"[yellow]baseline is empty[/yellow] {baseline}")
+        return
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    table = Table(title=f"bench-check vs {baseline}", header_style="bold")
+    table.add_column("pipeline")
+    for col in ("baseline rows/s", "now rows/s", "Δ", "noise"):
+        table.add_column(col, justify="right")
+    table.add_column("status")
+
+    failures: list[str] = []
+    drifted: list[str] = []
+    updated: dict[str, BenchResult] = {}
+    for name, b in base.items():
+        with console.status(f"re-running {name} · {b.trials} trials…"):
+            cur = measure_like(b, recorded_at=now)
+        cmp = compare(b, cur, min_threshold=threshold)
+        updated[name] = cur
+        style = _STATUS_STYLE.get(cmp.status, "")
+        table.add_row(
+            name, _fmt(cmp.base_median), _fmt(cmp.new_median), f"{cmp.delta:+.1%}",
+            f"{cur.throughput_rows_per_sec.rel_spread:.1%}", f"[{style}]{cmp.status}[/{style}]",
+        )
+        if is_failure(cmp.status):
+            failures.append(name)
+        if cmp.status == "machine-differs":
+            drifted.append(name)
+    console.print(table)
+
+    if update:
+        save_baseline(baseline, updated)
+        console.print(f"[green]rewrote baseline[/green] {baseline}")
+        return
+    if drifted:
+        console.print(
+            f"[yellow]note:[/yellow] {', '.join(drifted)} ran on different hardware than the baseline — "
+            "throughput is not comparable there (digest still checked). Re-baseline on this machine."
+        )
+    if failures:
+        console.print(f"[red bold]{len(failures)} failure(s):[/red bold] {', '.join(failures)}")
+        raise typer.Exit(code=1)
+    console.print("[green]no regressions[/green]")
 
 
 @app.command()
