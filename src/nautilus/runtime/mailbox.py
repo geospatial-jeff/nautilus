@@ -3,7 +3,9 @@
 Correctness of event-time handling depends on **per-channel FIFO**: a record must never be
 observed after a watermark that bounds it. The mailbox guarantees this by keeping *at most one*
 outstanding ``recv`` per input channel and a ``FIRST_COMPLETED`` merge that re-arms only the channel
-it just yielded from. It never reorders within a channel and never drops a ready frame.
+it just yielded from. It never reorders within a channel and never drops a ready frame. A single-input
+mailbox (a linear pipeline stage) has nothing to merge, so it awaits its one channel directly and skips
+the per-``get`` Task and ``asyncio.wait`` the fan-in path needs.
 
 Each ``get`` returns ``(input_index, frame)`` so the actor can attribute watermarks/EOS to the
 right input. Inputs close individually (on EOS); the mailbox is :attr:`exhausted` once all close.
@@ -37,6 +39,12 @@ class Mailbox:
         """Return the next ``(input_index, frame)`` preserving per-channel FIFO order."""
         if self.exhausted:
             raise RuntimeError("get() on an exhausted mailbox")
+
+        if len(self._channels) == 1:
+            # One input — the common linear case. Per-channel FIFO is just the channel's own order, so
+            # await it directly and skip the Task allocation + asyncio.wait merge the fan-in path needs.
+            # Nothing is left pending, so close_input(0) has no future to cancel.
+            return 0, await self._channels[0].recv()
 
         # Arm exactly one recv per open, unarmed channel.
         for i, ch in enumerate(self._channels):
