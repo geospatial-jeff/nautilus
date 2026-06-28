@@ -21,7 +21,7 @@ from nautilus.core.operator import (
     SourceOperator,
 )
 from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
-from nautilus.state import KeyContext, StateScope
+from nautilus.state import KeyContext
 from nautilus.windows import TimeWindow, TumblingEventTimeWindows
 
 
@@ -109,6 +109,8 @@ class KeyedCount(OneInputOperator):
     """Counts occurrences per key. A keyed *global* aggregation: results are emitted at EOS, when
     the watermark reaches ``WATERMARK_MAX``."""
 
+    _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
+
     def __init__(self, key_col: str, count_col: str = "count") -> None:
         self.key_col = key_col
         self.count_col = count_col
@@ -124,17 +126,17 @@ class KeyedCount(OneInputOperator):
         for value, count in zip(
             counts.field("values").to_pylist(), counts.field("counts").to_pylist(), strict=True
         ):
-            self._ctx.reducing_state("count", KeyContext((value,)), _add).add(int(count))
+            self._ctx.reducing_state(self._STATE, KeyContext((value,)), _add).add(int(count))
 
     def on_watermark(self, t: int, out: Collector) -> None:
         if t < WATERMARK_MAX:
             return  # global aggregation: only the terminal watermark fires it
         keys: list[object] = []
         totals: list[int] = []
-        for key, _ns, value in self._ctx.state_backend.entries(self._ctx.operator_id, "count"):
-            keys.append(key[0])
+        for kctx, value in self._ctx.entries(self._STATE):
+            keys.append(kctx.key[0])
             totals.append(cast(int, value))
-            self._ctx.state_backend.clear(StateScope(self._ctx.operator_id, "count", key, _ns))
+            self._ctx.clear_state(self._STATE, kctx)
         if keys:
             out.emit(
                 pa.RecordBatch.from_arrays(
@@ -149,6 +151,8 @@ class KeyedCount(OneInputOperator):
 class KeyedTumblingSum(OneInputOperator):
     """Sums a value column per key per tumbling event-time window. Each window fires when the
     operator watermark passes its end (and any still-open windows fire at EOS)."""
+
+    _STATE = "acc"  # state-backend name; the window is the namespace, the key the key
 
     def __init__(
         self,
@@ -200,24 +204,24 @@ class KeyedTumblingSum(OneInputOperator):
         partials = grouped.column("val_sum").to_pylist()
         for key, start, partial in zip(keys, starts, partials, strict=True):
             window = TimeWindow(start, start + size)
-            self._ctx.reducing_state("acc", KeyContext((key,), window), _add).add(partial)
+            self._ctx.reducing_state(self._STATE, KeyContext((key,), window), _add).add(partial)
 
     def on_watermark(self, t: int, out: Collector) -> None:
         keys: list[object] = []
         starts: list[int] = []
         ends: list[int] = []
         sums: list[int] = []
-        fired: list[tuple[tuple[object, ...], TimeWindow]] = []
-        for key, namespace, value in self._ctx.state_backend.entries(self._ctx.operator_id, "acc"):
-            window = cast(TimeWindow, namespace)
+        fired: list[KeyContext] = []
+        for kctx, value in self._ctx.entries(self._STATE):
+            window = cast(TimeWindow, kctx.namespace)
             if window.end <= t:
-                keys.append(key[0])
+                keys.append(kctx.key[0])
                 starts.append(window.start)
                 ends.append(window.end)
                 sums.append(cast(int, value))
-                fired.append((key, window))
-        for key, window in fired:
-            self._ctx.state_backend.clear(StateScope(self._ctx.operator_id, "acc", key, window))
+                fired.append(kctx)
+        for kctx in fired:
+            self._ctx.clear_state(self._STATE, kctx)
         if keys:
             out.emit(
                 pa.RecordBatch.from_arrays(

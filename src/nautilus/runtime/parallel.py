@@ -95,18 +95,6 @@ def graph_from_stages(source: SourceOperator, stages: Sequence[Stage]) -> Logica
     return linear_graph(_const_factory(source), vertices)
 
 
-def graph_from_ops(source: SourceOperator, transforms: Sequence[OneInputOperator]) -> LogicalGraph:
-    """Bridge the ``(source, operator instances)`` shape (all single-instance) to a
-    :class:`~nautilus.api.LogicalGraph`. Each instance becomes a parallelism-1 vertex wrapping it. A
-    pipeline that wants parallelism > 1 must supply factories via :func:`graph_from_stages` or
-    :func:`graph_from_pipeline`: one shared instance cannot be replicated across subtasks."""
-    vertices = [
-        LogicalVertex(id=f"op{k}", factory=_const_factory(op), kind="one_input", parallelism=1)
-        for k, op in enumerate(transforms)
-    ]
-    return linear_graph(_const_factory(source), vertices)
-
-
 def graph_from_pipeline(
     source: SourceOperator, transforms: Sequence[OneInputOperator], parallelism: int
 ) -> LogicalGraph:

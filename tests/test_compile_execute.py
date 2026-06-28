@@ -22,7 +22,7 @@ from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize
 from nautilus.pipelines import wordcount
 from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, graph_from_ops, graph_from_stages
+from nautilus.runtime.parallel import Stage, graph_from_pipeline, graph_from_stages
 from nautilus.runtime.result import RunResult
 from nautilus.runtime.run import run_compiled, run_plan
 from nautilus.testing import TestClock, data, wm
@@ -148,8 +148,8 @@ async def test_ops_bridge_matches_run_local_chain() -> None:
 
     serial = await run_local_chain(InMemorySource(list(frames)), transforms, clock=TestClock())
     compiled = await run_plan(
-        graph_from_ops(
-            InMemorySource(list(frames)), [Tokenize("line", "word"), KeyedCount("word")]
+        graph_from_pipeline(
+            InMemorySource(list(frames)), [Tokenize("line", "word"), KeyedCount("word")], 1
         ),
         clock=TestClock(),
     )
@@ -160,7 +160,7 @@ async def test_ops_bridge_matches_run_local_chain() -> None:
 async def test_real_pipelines_example_round_trips() -> None:
     # A real pipelines.py builder (source + instances) compiles, cloudpickle round-trips, and runs.
     source, transforms = wordcount()
-    plan = compile_graph(graph_from_ops(source, transforms))
+    plan = compile_graph(graph_from_pipeline(source, transforms, 1))
     restored = cloudpickle.loads(cloudpickle.dumps(plan))
     result = await run_compiled(restored, clock=TestClock())
     assert sum(rb.num_rows for rb in result) > 0

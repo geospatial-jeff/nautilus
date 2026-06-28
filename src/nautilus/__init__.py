@@ -3,13 +3,17 @@
 A fluent DSL is planned for a later stage; until then the curated names below are the public surface,
 importable straight from the top level::
 
+    import pyarrow as pa
     from nautilus import run, from_batches, Tokenize, KeyedCount
 
-    result = run(from_batches(...), [Tokenize("line", "word"), KeyedCount("word")])
+    source = from_batches(pa.record_batch({"line": ["the quick brown fox", "the lazy dog"]}))
+    result = run(source, [Tokenize("line", "word"), KeyedCount("word")])
     print(result.to_pylist(), result.telemetry.summary)
 
-Anything not re-exported here is still importable from its concrete module (e.g.
-``nautilus.runtime.local``, ``nautilus.operators``, ``nautilus.telemetry``) during early development.
+``from_batches`` wraps a bare ``pyarrow.RecordBatch`` for you; for an event-time stream, pass
+:class:`Batch` / :class:`Watermark` frames (and a terminal :data:`EOS_FRAME`) explicitly. Anything not
+re-exported here is still importable from its concrete module (e.g. ``nautilus.runtime.local``,
+``nautilus.operators``, ``nautilus.telemetry``) during early development.
 """
 
 __version__ = "0.0.1"
@@ -20,6 +24,7 @@ from nautilus.core.operator import (
     OperatorContext,
     SourceOperator,
 )
+from nautilus.core.records import EOS_FRAME, Batch, Watermark
 from nautilus.operators import (
     FilterRows,
     InMemorySource,
@@ -53,6 +58,10 @@ __all__ = [
     "Tokenize",
     "KeyedCount",
     "KeyedTumblingSum",
+    # data frames (for building event-time inputs by hand)
+    "Batch",
+    "Watermark",
+    "EOS_FRAME",
     # tensor columns (imagery + embeddings)
     "tensor_array",
     "embedding_array",

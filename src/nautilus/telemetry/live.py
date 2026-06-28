@@ -27,7 +27,7 @@ from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.runtime.meta import make_run_meta
-from nautilus.runtime.parallel import graph_from_ops
+from nautilus.runtime.parallel import graph_from_pipeline
 from nautilus.runtime.run import plan_to_topology, run_compiled
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import RunMeta, Topology, build_report
@@ -182,7 +182,7 @@ async def serve_local_chain(
     registry = RecorderRegistry()
     # Compile the chain to a plan and serve/run that — the same engine a non-live run uses — so the live
     # topology is exactly what executes (one topology builder, plan_to_topology).
-    plan = compile_graph(graph_from_ops(source, transforms))
+    plan = compile_graph(graph_from_pipeline(source, transforms, 1))
     topology = plan_to_topology(plan, capacity)
     loop = asyncio.get_running_loop()
     started_at = clk.now_micros()

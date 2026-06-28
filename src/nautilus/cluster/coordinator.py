@@ -52,9 +52,9 @@ def deploy(
     bootstrap_timeout: float = _DEFAULT_BOOTSTRAP_TIMEOUT,
 ) -> RunResult:
     """Compile ``graph`` and run it across ``num_workers`` spawned worker processes, returning the sink's
-    batches plus one aggregated telemetry report. ``num_workers`` is capped at the plan's maximum
-    parallelism (a wider W would only spawn idle workers). ``host`` is the address every worker's
-    listener binds — loopback by default; the seam for a real node-to-node address in Stage 4.
+    batches plus one aggregated telemetry report. ``num_workers`` must be >= 1 and is capped at the
+    plan's maximum parallelism (a wider W would only spawn idle workers). ``host`` is the address every
+    worker's listener binds — loopback by default; the seam for a real node-to-node address in Stage 4.
 
     ``bootstrap_timeout`` bounds only the bind/register phase, where a silent worker means a hang; once
     the job is running the wait is unbounded, because a healthy job runs as long as its data does. The
@@ -63,6 +63,8 @@ def deploy(
     Always reaps every worker. Raises :class:`WorkerError` (with the failing worker's traceback) on a
     caught operator error, :class:`WorkerCrashed` on a hard crash, or ``TimeoutError`` if a worker never
     registers."""
+    if num_workers < 1:
+        raise ValueError(f"num_workers must be >= 1, got {num_workers}")
     plan = compile_graph(graph, key_groups=key_groups)
     effective = min(num_workers, max_parallelism(plan))
     if effective < num_workers:

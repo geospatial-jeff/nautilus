@@ -119,4 +119,12 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
         spec = _spec_for(dst_op.parallelism, key_columns, key_groups)
         edges.append(PhysicalEdge(src.operator_id, dst_op.operator_id, spec))
 
+    if key_groups is not None and not any(isinstance(e.spec, KeyGroupSpec) for e in edges):
+        # key_groups only means anything for a keyed shuffle; if the graph has none, the argument was
+        # silently ignored — surface that instead, so a mistaken --key-groups can't pass unnoticed.
+        raise ValueError(
+            f"key_groups={key_groups} was given but no edge is keyed (no keyed operator at "
+            "parallelism > 1), so it would have no effect"
+        )
+
     return PhysicalPlan(tuple(operators), tuple(edges))

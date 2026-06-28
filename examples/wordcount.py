@@ -5,15 +5,15 @@ Run with:  python examples/wordcount.py
 
 from __future__ import annotations
 
-from nautilus.operators import KeyedCount, Tokenize
-from nautilus.runtime.local import run
-from nautilus.testing import data, from_batches
+import pyarrow as pa
+
+from nautilus import KeyedCount, Tokenize, from_batches, run
 
 
 def main() -> None:
     source = from_batches(
-        data(line=["the quick brown fox", "the lazy dog"]),
-        data(line=["the fox jumped", "the dog slept"]),
+        pa.record_batch({"line": ["the quick brown fox", "the lazy dog"]}),
+        pa.record_batch({"line": ["the fox jumped", "the dog slept"]}),
     )
     result = run(source, [Tokenize("line", "word"), KeyedCount("word")])
 

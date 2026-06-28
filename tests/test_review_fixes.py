@@ -89,3 +89,53 @@ def test_recorder_owner_gate():
         author.counter("operator.rows_out", operator_id="op0", subtask_index=0)
     with pytest.raises(KeyError):  # engine recorder may not write an author key
         engine.counter("window.fires", operator_id="op0")
+
+
+# --- C94: run() takes in-process parallelism ---------------------------------------------------
+
+
+def test_run_with_in_process_parallelism():
+    from nautilus import KeyedCount, Tokenize
+
+    src = from_batches(pa.record_batch({"line": ["a b a", "b c a"]}))
+    result = run(src, [Tokenize("line", "word"), KeyedCount("word")], parallelism=3)
+    counts = {r["word"]: r["count"] for r in result.to_pylist()}
+    assert counts == {"a": 3, "b": 2, "c": 1}  # keyed shuffle never splits a key across instances
+
+
+# --- C95: OperatorContext enumerates/clears keyed state without the raw backend -----------------
+
+
+def test_operator_context_entries_and_clear():
+    from nautilus.core.operator import OperatorContext
+    from nautilus.state import KeyContext
+
+    ctx = OperatorContext("op0")
+    ctx.value_state("s", KeyContext(("a",))).update(1)
+    ctx.value_state("s", KeyContext(("b",), "ns")).update(2)
+    assert {(kc.key, kc.namespace): v for kc, v in ctx.entries("s")} == {
+        (("a",), None): 1,
+        (("b",), "ns"): 2,
+    }
+    ctx.clear_state("s", KeyContext(("a",)))
+    assert {kc.key for kc, _ in ctx.entries("s")} == {("b",)}
+
+
+# --- C44 / C30: boundary validation ------------------------------------------------------------
+
+
+def test_deploy_rejects_nonpositive_workers():
+    from nautilus.cluster import deploy
+    from nautilus.operators import MapBatch
+
+    graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b))])
+    with pytest.raises(ValueError, match="num_workers"):
+        deploy(graph, num_workers=0)
+
+
+def test_key_groups_without_keyed_edge_rejected():
+    from nautilus.operators import MapBatch
+
+    graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b), 2)])
+    with pytest.raises(ValueError, match="key_groups"):
+        compile_graph(graph, key_groups=4)

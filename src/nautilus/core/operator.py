@@ -15,7 +15,7 @@ section, which the GIL makes safe without locks.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +30,7 @@ from nautilus.state import (
     KeyContext,
     ReducingState,
     StateBackend,
+    StateScope,
     ValueState,
 )
 from nautilus.telemetry.recorder import NULL_RECORDER, Recorder
@@ -75,6 +76,19 @@ class OperatorContext:
 
     def reducing_state(self, name: str, kctx: KeyContext, reducer: Any) -> ReducingState[Any]:
         return ReducingState(self.state_backend, self.operator_id, name, kctx, reducer)
+
+    def entries(self, name: str) -> Iterator[tuple[KeyContext, object]]:
+        """Iterate ``(KeyContext, value)`` for every entry of this operator's named state — the
+        flush-time counterpart to :meth:`value_state` / :meth:`reducing_state`. Operator code uses this
+        to enumerate all keys/windows at a watermark without naming its own ``operator_id`` or building a
+        ``StateScope`` by hand. The snapshot is stable to mutate during iteration (e.g. to clear)."""
+        for key, namespace, value in self.state_backend.entries(self.operator_id, name):
+            yield KeyContext(key, namespace), value
+
+    def clear_state(self, name: str, kctx: KeyContext) -> None:
+        """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key/window
+        enumerated via :meth:`entries`)."""
+        self.state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
 
 
 class SourceOperator(ABC):

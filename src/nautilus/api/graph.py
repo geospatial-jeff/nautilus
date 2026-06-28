@@ -85,6 +85,19 @@ class LogicalGraph:
             raise ValueError("the source vertex must have parallelism 1")
 
 
+def one_input(
+    id: str,
+    factory: VertexFactory,
+    *,
+    parallelism: int = 1,
+    key_columns: tuple[str, ...] | None = None,
+) -> LogicalVertex:
+    """Build a one-input transform vertex — the common case — without restating ``kind="one_input"``."""
+    return LogicalVertex(
+        id=id, factory=factory, kind=_ONE_INPUT, parallelism=parallelism, key_columns=key_columns
+    )
+
+
 def linear_graph(source_factory: VertexFactory, vertices: Sequence[LogicalVertex]) -> LogicalGraph:
     """Build a linear ``source -> vertices[0] -> ... -> vertices[-1]`` graph.
 
