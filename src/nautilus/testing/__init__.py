@@ -21,9 +21,9 @@ from nautilus.core.records import (
     Watermark,
 )
 from nautilus.core.time import TestClock
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.result import RunResult
 from nautilus.operators import InMemorySource, from_batches
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry.report import RunReport
 from nautilus.tensors import tensor_array
 

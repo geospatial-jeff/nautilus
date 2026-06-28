@@ -10,8 +10,8 @@ import pytest
 from nautilus.core.operator import SourceOperator
 from nautilus.core.records import Frame
 from nautilus.demos import DemoStreamSource
+from nautilus.driver.local import run_local_chain
 from nautilus.operators import KeyedTumblingSum
-from nautilus.runtime.local import run_local_chain
 from nautilus.telemetry.recorder import TelemetryConfig
 from nautilus.testing import data
 from nautilus.windows import TumblingEventTimeWindows

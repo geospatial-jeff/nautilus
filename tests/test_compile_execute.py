@@ -18,12 +18,12 @@ import cloudpickle
 from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.parallel import Stage, graph_from_pipeline, graph_from_stages
+from nautilus.driver.result import RunResult
+from nautilus.driver.run import run_compiled, run_plan
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize
 from nautilus.pipelines import wordcount
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, graph_from_pipeline, graph_from_stages
-from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_compiled, run_plan
 from nautilus.testing import TestClock, data, multiset, wm
 from nautilus.windows import TumblingEventTimeWindows
 

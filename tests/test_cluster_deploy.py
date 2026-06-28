@@ -25,11 +25,11 @@ import pytest
 from nautilus.cluster import WorkerError, deploy
 from nautilus.core.operator import Collector, OneInputOperator, OperatorContext
 from nautilus.core.records import EOS_FRAME
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.parallel import Stage, graph_from_stages
+from nautilus.driver.result import RunResult
+from nautilus.driver.run import run_plan
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, graph_from_stages
-from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_plan
 from nautilus.testing import data, op_counter
 
 # Ship this module's operator classes by value, so a spawned worker reconstructs them without importing

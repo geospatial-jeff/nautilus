@@ -17,7 +17,7 @@ from nautilus import run
 from nautilus.cluster import deploy
 from nautilus.operators import KeyedCount, Tokenize
 from nautilus.pipelines import wordcount
-from nautilus.runtime.parallel import Stage, graph_from_stages
+from nautilus.driver.parallel import Stage, graph_from_stages
 
 
 def _counts(rows: list[dict]) -> dict[str, int]:

@@ -4,8 +4,8 @@ The example module is loaded by file path (examples/ is not an installed package
 import importlib.util
 from pathlib import Path
 
+from nautilus.driver.local import run
 from nautilus.operators import KeyedCount, KeyedTumblingSum
-from nautilus.runtime.local import run
 from nautilus.testing import data, from_batches, wm
 from nautilus.windows import TumblingEventTimeWindows
 

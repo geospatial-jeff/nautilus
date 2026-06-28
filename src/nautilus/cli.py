@@ -36,8 +36,8 @@ from nautilus.bench import (
 )
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
 from nautilus.core.time import SystemClock
+from nautilus.driver.result import RunResult
 from nautilus.pipelines import EXAMPLES, load_pipeline
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport

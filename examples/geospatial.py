@@ -20,7 +20,7 @@ import pyarrow.compute as pc
 
 from nautilus.core.operator import Collector, OneInputOperator, OperatorContext
 from nautilus.operators import FilterRows, KeyedCount, KeyedTumblingSum
-from nautilus.runtime.local import run
+from nautilus.driver.local import run
 from nautilus.state import KeyContext
 from nautilus.testing import data, from_batches, wm
 from nautilus.windows import TumblingEventTimeWindows

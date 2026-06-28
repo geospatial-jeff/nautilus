@@ -1,11 +1,11 @@
 """The single-process in-memory entry points: ``run_local_chain`` and the synchronous ``run``.
 
 ``run_local_chain`` lowers a ``(source, transforms)`` chain to a :class:`~nautilus.compile.plan.PhysicalPlan`
-and runs it through the compiled executor (:func:`~nautilus.runtime.run.run_plan`) over in-process
+and runs it through the compiled executor (:func:`~nautilus.driver.run.run_plan`) over in-process
 channels — the *same* engine the parallel and multi-worker paths use, so the default run exercises one
 execution path, not a second hand-wired copy. ``run`` is the synchronous one-liner around it. The
-report-assembly boundary lives in :mod:`nautilus.runtime.run`; the shared run metadata in
-:mod:`nautilus.runtime.meta`.
+report-assembly boundary lives in :mod:`nautilus.driver.run`; the shared run metadata in
+:mod:`nautilus.driver.meta`.
 """
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from typing import Any
 
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import Clock
+from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.result import RunResult
+from nautilus.driver.run import run_plan
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.parallel import graph_from_pipeline
-from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_plan
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import Sink
 
@@ -40,7 +40,7 @@ async def run_local_chain(
     single-process run uses the same engine as a distributed one. ``parallelism`` runs every transform as
     that many in-process instances (keyed operators shuffle by their declared key) — for multiple worker
     *processes* use :func:`nautilus.cluster.deploy`. ``registry`` lets a caller read snapshots while the
-    run is in flight (the live dashboard does this via :func:`~nautilus.runtime.run.run_compiled`); the
+    run is in flight (the live dashboard does this via :func:`~nautilus.driver.run.run_compiled`); the
     default creates its own.
     """
     return await run_plan(

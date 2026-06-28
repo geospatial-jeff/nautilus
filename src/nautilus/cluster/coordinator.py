@@ -27,10 +27,10 @@ from nautilus.cluster.protocol import Done, Failed, decode_batches
 from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier, recv_event
 from nautilus.compile import compile_graph
 from nautilus.core.time import Clock, SystemClock
+from nautilus.driver.meta import make_run_meta
+from nautilus.driver.result import RunResult
+from nautilus.driver.run import plan_to_topology
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.meta import make_run_meta
-from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import plan_to_topology
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.telemetry.report import NullSink, Sink, build_report

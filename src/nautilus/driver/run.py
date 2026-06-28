@@ -22,11 +22,11 @@ from typing import Any
 from nautilus.api import LogicalGraph
 from nautilus.compile import PhysicalPlan, compile_graph
 from nautilus.core.time import Clock, SystemClock
+from nautilus.driver.meta import make_run_meta
+from nautilus.driver.result import RunResult
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.runtime.connector import Deployment, InProcessConnector
 from nautilus.runtime.execute import execute
-from nautilus.runtime.meta import make_run_meta
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import Edge, NullSink, OperatorNode, Sink, Topology, build_report
 

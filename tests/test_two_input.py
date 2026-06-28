@@ -16,8 +16,8 @@ import pyarrow as pa
 from nautilus.api import LogicalEdge, LogicalGraph, one_input, source, two_input
 from nautilus.core.operator import Collector, OperatorContext, TwoInputOperator
 from nautilus.core.records import WATERMARK_MAX
+from nautilus.driver.run import run_plan
 from nautilus.operators import InMemorySource, MapBatch
-from nautilus.runtime.run import run_plan
 from nautilus.testing import EOS_FRAME, data, wm
 
 

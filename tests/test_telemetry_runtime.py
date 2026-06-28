@@ -2,9 +2,9 @@
 
 from nautilus.core.records import EOS_FRAME
 from nautilus.core.time import TestClock
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.result import RunResult
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry.catalog import Tier
 from nautilus.telemetry.recorder import TelemetryConfig
 from nautilus.telemetry.report import BufferSink

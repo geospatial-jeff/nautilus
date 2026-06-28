@@ -12,8 +12,8 @@ from nautilus import from_batches, run
 from nautilus.api import LogicalVertex
 from nautilus.compile import compile_graph
 from nautilus.compile.plan import KeyGroupSpec, RoundRobinSpec
+from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
-from nautilus.runtime.parallel import Stage, graph_from_stages
 
 # --- C91: from_batches accepts a raw RecordBatch; unknown frames fail loudly --------------------
 
@@ -178,7 +178,7 @@ async def test_in_process_parallel_fail_fast():
     import asyncio
 
     from nautilus.core.operator import Collector, OneInputOperator
-    from nautilus.runtime.run import run_plan
+    from nautilus.driver.run import run_plan
 
     class Boom(OneInputOperator):
         def process(self, batch, out: Collector) -> None:

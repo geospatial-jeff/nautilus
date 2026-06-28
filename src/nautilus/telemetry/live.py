@@ -25,10 +25,10 @@ from typing import Any, Protocol
 from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
+from nautilus.driver.meta import make_run_meta
+from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.run import plan_to_topology, run_compiled
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.meta import make_run_meta
-from nautilus.runtime.parallel import graph_from_pipeline
-from nautilus.runtime.run import plan_to_topology, run_compiled
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import RunMeta, Topology, build_report
 

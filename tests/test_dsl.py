@@ -14,9 +14,9 @@ from collections import Counter
 import pytest
 
 from nautilus.api import linear_graph, one_input
+from nautilus.driver.run import run_plan
 from nautilus.dsl import Stream, source
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.runtime.run import run_plan
 from nautilus.testing import EOS_FRAME, data, multiset
 
 

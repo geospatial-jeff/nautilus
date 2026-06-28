@@ -1,8 +1,8 @@
 """Stage 0 demo: a bounded word-count returns a deterministic result in one process."""
 
 from nautilus.core.records import EOS_FRAME
+from nautilus.driver.local import run, run_local_chain
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize, from_batches
-from nautilus.runtime.local import run, run_local_chain
 from nautilus.testing import data
 
 _EXPECTED = {"the": 4, "cat": 3, "sat": 1, "dog": 1, "ran": 1}

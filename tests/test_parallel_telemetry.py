@@ -9,9 +9,9 @@ one process every row shares node ``local``, so the grouping is one row per subt
 from __future__ import annotations
 
 from nautilus.core.records import EOS_FRAME
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.parallel import Stage, run_parallel_chain
 from nautilus.operators import InMemorySource, KeyedCount
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, run_parallel_chain
 from nautilus.testing import TestClock, data, op_counter
 
 WORDS = [["the", "cat", "sat"], ["the", "dog", "ran"], ["the", "cat", "the", "cat", "fox"]]

@@ -37,7 +37,7 @@ from nautilus.windows import TumblingEventTimeWindows
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from nautilus.runtime.result import RunResult
+    from nautilus.driver.result import RunResult
 
 _Keys = str | Sequence[str]
 
@@ -209,7 +209,7 @@ class Stream:
     ) -> RunResult:
         """Compile and run this stream in the current event loop, single-process. For a synchronous
         caller or for multiple worker processes use :meth:`run`."""
-        from nautilus.runtime.run import run_plan
+        from nautilus.driver.run import run_plan
 
         return await run_plan(
             self.to_graph(parallelism=parallelism), key_groups=key_groups, **kwargs
@@ -234,7 +234,7 @@ class Stream:
             return deploy(graph, num_workers=workers, key_groups=key_groups, **kwargs)
         import asyncio
 
-        from nautilus.runtime.run import run_plan
+        from nautilus.driver.run import run_plan
 
         return asyncio.run(run_plan(graph, key_groups=key_groups, **kwargs))
 

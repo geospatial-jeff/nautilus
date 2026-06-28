@@ -125,31 +125,53 @@ source_modules = ["nautilus.compile"]
 forbidden_modules = [
   "nautilus.core",
   "nautilus.runtime",
+  "nautilus.driver",
   "nautilus.transport",
   "nautilus.telemetry",
   "nautilus.state",
   "nautilus.cluster",
+  "nautilus.operators",
+  "nautilus.dsl",
+  "nautilus.windows",
+  "nautilus.tensors",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Per-record data path must not import the telemetry report (boundary) layer"
 type = "forbidden"
-# The runners (nautilus.runtime.local, nautilus.runtime.parallel, nautilus.runtime.run) are the
-# boundary and MAY import the report layer; the per-record actors/channels/mailbox/partition/core, the
-# executor (runtime.execute) and connector, and the api/compile artifacts may not — so report assembly
-# can never reach the data path and compile.lower can never reach telemetry.report.Topology.
+# The boundary runners moved to nautilus.driver, so the whole of nautilus.runtime is now the per-record
+# data path and is forbidden the report layer as a package — no hand-maintained submodule list. The
+# report is assembled in nautilus.driver (and the cluster coordinator); core/api/compile may not reach it
+# either, so compile.lower can never reach telemetry.report.Topology.
 source_modules = [
   "nautilus.core",
-  "nautilus.runtime.actor",
-  "nautilus.runtime.channel",
-  "nautilus.runtime.mailbox",
-  "nautilus.runtime.partition",
-  "nautilus.runtime.execute",
-  "nautilus.runtime.connector",
+  "nautilus.runtime",
   "nautilus.api",
   "nautilus.compile",
 ]
 forbidden_modules = ["nautilus.telemetry.report", "nautilus.telemetry.live"]
+
+[[tool.importlinter.contracts]]
+name = "The IR (api) imports nothing else in nautilus"
+type = "forbidden"
+# api/graph.py is a pure value layer built from the standard library alone, so a LogicalGraph can be
+# built, diffed, and serialized without dragging in the runtime. Previously only documented; enforced
+# here so a stray import into the value layer is caught.
+source_modules = ["nautilus.api"]
+forbidden_modules = [
+  "nautilus.core",
+  "nautilus.operators",
+  "nautilus.dsl",
+  "nautilus.compile",
+  "nautilus.runtime",
+  "nautilus.driver",
+  "nautilus.transport",
+  "nautilus.telemetry",
+  "nautilus.state",
+  "nautilus.cluster",
+  "nautilus.windows",
+  "nautilus.tensors",
+]
 
 [[tool.importlinter.contracts]]
 name = "Telemetry data-path layer must not import the report (boundary) layer"

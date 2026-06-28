@@ -5,10 +5,10 @@ import asyncio
 
 from nautilus.core.operator import OperatorContext
 from nautilus.core.records import EOS, EOS_FRAME, Batch
+from nautilus.driver.local import run_local_chain
 from nautilus.operators import InMemorySource, KeyedTumblingSum
 from nautilus.runtime.actor import Output, run_transform
 from nautilus.runtime.channel import InProcChannel
-from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.runtime.partition import Forward
 from nautilus.testing import IDLE_FRAME, data, wm

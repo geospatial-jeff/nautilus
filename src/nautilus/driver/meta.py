@@ -1,7 +1,7 @@
 """Boundary helpers shared by every runner: the run metadata and its config digest.
 
 Building a :class:`~nautilus.telemetry.report.RunReport` is a boundary-time job done in three places —
-the single-process runner (:mod:`nautilus.runtime.run`), the live server (:mod:`nautilus.telemetry.live`),
+the single-process runner (:mod:`nautilus.driver.run`), the live server (:mod:`nautilus.telemetry.live`),
 and the Stage 2 coordinator (:mod:`nautilus.cluster.coordinator`). They share the :class:`RunMeta` these
 functions assemble, so it lives here rather than in any one of them: the ``config_digest`` in particular
 must be computed identically wherever a report is stamped, or two reports of the same run would not

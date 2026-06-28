@@ -19,8 +19,8 @@ from nautilus.api import LogicalEdge, LogicalGraph, source, two_input
 from nautilus.cluster import deploy
 from nautilus.core.operator import ListCollector, OperatorContext
 from nautilus.core.records import WATERMARK_MAX
+from nautilus.driver.run import run_plan
 from nautilus.operators import HashJoin, InMemorySource
-from nautilus.runtime.run import run_plan
 from nautilus.testing import EOS_FRAME, batch, data, multiset
 
 

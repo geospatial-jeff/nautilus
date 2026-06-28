@@ -8,6 +8,7 @@ import pyarrow as pa
 from nautilus.benchmarks import SlowMap, SyntheticKeyedSource, SyntheticTextSource, bench_params
 from nautilus.core.operator import ListCollector
 from nautilus.core.records import EOS, Batch, Watermark
+from nautilus.driver.local import run_local_chain
 from nautilus.pipelines import (
     bench_backpressure,
     bench_fanout,
@@ -16,7 +17,6 @@ from nautilus.pipelines import (
     bench_linear,
     bench_skew,
 )
-from nautilus.runtime.local import run_local_chain
 
 
 async def _drain(source):

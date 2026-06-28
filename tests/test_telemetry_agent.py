@@ -5,8 +5,8 @@ import re
 
 from nautilus.core.records import EOS_FRAME
 from nautilus.core.time import TestClock
+from nautilus.driver.local import run_local_chain
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
-from nautilus.runtime.local import run_local_chain
 from nautilus.testing import data, wm
 from nautilus.windows import TumblingEventTimeWindows
 

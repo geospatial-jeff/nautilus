@@ -7,8 +7,8 @@ import pytest
 
 from nautilus.core.records import EOS_FRAME
 from nautilus.core.time import TestClock
+from nautilus.driver.local import run_local_chain
 from nautilus.operators import InMemorySource, KeyedCount, MapBatch, Tokenize
-from nautilus.runtime.local import run_local_chain
 from nautilus.telemetry.catalog import STRUCTURAL_METRICS, Tier
 from nautilus.telemetry.recorder import InstanceRecorder, TelemetryConfig
 from nautilus.telemetry.system import SystemSampler

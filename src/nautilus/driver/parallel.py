@@ -2,7 +2,7 @@
 
 Stage 1.5 ran a parallel channel mesh here directly. Stage 2's compiler and executor subsumed it: a
 graph is now lowered to a :class:`~nautilus.compile.plan.PhysicalPlan` and run through
-:func:`~nautilus.runtime.run.run_plan` (single process) or :func:`~nautilus.cluster.deploy` (workers),
+:func:`~nautilus.driver.run.run_plan` (single process) or :func:`~nautilus.cluster.deploy` (workers),
 and the in-process-vs-socket choice the old ``ChannelFactory`` made is the
 :class:`~nautilus.runtime.connector.Connector`'s job.
 
@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from nautilus.api import LogicalGraph, LogicalVertex, linear_graph
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import Clock
+from nautilus.driver.result import RunResult
+from nautilus.driver.run import run_plan
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_plan
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import Sink
 
@@ -131,7 +131,7 @@ async def run_parallel_chain(
     registry: RecorderRegistry | None = None,
 ) -> RunResult:
     """Run a ``source → stages → sink`` chain single-process by compiling it and executing the plan. A
-    thin wrapper over :func:`~nautilus.runtime.run.run_plan` kept for existing callers; for multiple
+    thin wrapper over :func:`~nautilus.driver.run.run_plan` kept for existing callers; for multiple
     processes use :func:`nautilus.cluster.deploy`."""
     return await run_plan(
         graph_from_stages(source, stages),

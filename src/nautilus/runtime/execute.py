@@ -11,7 +11,7 @@ It is transport-agnostic and report-free by construction. It never names a socke
 implementation — the Connector resolves those — so the same plan slice runs unchanged in one process or
 across workers. And it never builds a :class:`~nautilus.telemetry.report.RunReport`: it returns
 :class:`~nautilus.telemetry.model.InstanceSnapshot`\\ s, and the boundary
-(:mod:`nautilus.runtime.run`, or the Stage 2 coordinator) aggregates them. An import-linter contract
+(:mod:`nautilus.driver.run`, or the Stage 2 coordinator) aggregates them. An import-linter contract
 forbids this module from importing the report layer, so report assembly can never reach the data path.
 
 It owns its registry and builds two recorders per one-input instance — the actor's built-in recorder

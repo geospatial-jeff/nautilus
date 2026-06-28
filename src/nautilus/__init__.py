@@ -14,7 +14,7 @@ importable straight from the top level::
 :data:`EOS_FRAME`; for an event-time stream it also accepts :class:`Batch` / :class:`Watermark` frames.
 Reach for ``InMemorySource([...])`` only when you need exact frame control (placing EOS yourself, or
 omitting it). Anything not re-exported here is still importable from its concrete module (e.g.
-``nautilus.runtime.local``, ``nautilus.operators``, ``nautilus.telemetry``) during early development.
+``nautilus.driver.local``, ``nautilus.operators``, ``nautilus.telemetry``) during early development.
 """
 
 __version__ = "0.0.1"
@@ -26,6 +26,8 @@ from nautilus.core.operator import (
     SourceOperator,
 )
 from nautilus.core.records import EOS_FRAME, Batch, Watermark
+from nautilus.driver.local import run, run_local_chain
+from nautilus.driver.result import RunResult
 from nautilus.operators import (
     FilterRows,
     HashJoin,
@@ -36,8 +38,6 @@ from nautilus.operators import (
     Tokenize,
     from_batches,
 )
-from nautilus.runtime.local import run, run_local_chain
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry import TelemetryConfig, Tier
 from nautilus.tensors import embedding_array, tensor_array, tensor_type, to_numpy
 

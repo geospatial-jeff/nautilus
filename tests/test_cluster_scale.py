@@ -13,9 +13,9 @@ import random
 
 from nautilus.cluster import deploy
 from nautilus.core.records import EOS_FRAME
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, graph_from_stages
 from nautilus.telemetry import TelemetryConfig, Tier
 from nautilus.testing import data, multiset, wm
 from nautilus.windows import TumblingEventTimeWindows

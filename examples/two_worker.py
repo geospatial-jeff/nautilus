@@ -16,8 +16,8 @@ import asyncio
 from nautilus.cluster import deploy
 from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import Stage, graph_from_stages
+from nautilus.driver.local import run_local_chain
+from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.testing import data
 
 
