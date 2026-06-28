@@ -12,7 +12,7 @@ from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import Stage, run_parallel_chain
-from nautilus.testing import TestClock, data
+from nautilus.testing import TestClock, data, op_counter
 
 WORDS = [["the", "cat", "sat"], ["the", "dog", "ran"], ["the", "cat", "the", "cat", "fox"]]
 
@@ -23,16 +23,6 @@ def _src() -> InMemorySource:
 
 def _kc(q: int) -> list[Stage]:
     return [Stage(lambda: KeyedCount("word"), q, ["word"])]
-
-
-def _op_counter(rep, op_id: str, name: str) -> int:
-    return sum(
-        p.value
-        for o in rep.operators
-        if o.operator_id == op_id
-        for p in o.counters
-        if p.name == name
-    )
 
 
 def _subtasks(rep, op_id: str) -> list[int]:
@@ -60,10 +50,10 @@ async def test_per_instance_rollup_sums_to_serial() -> None:
     # exactly N OperatorStats rows for the logical operator, numbered 0..N-1
     assert _subtasks(par, "op0") == [0, 1, 2]
     # the per-subtask structural counters sum to the serial totals
-    assert _op_counter(par, "op0", "operator.rows_in") == _op_counter(
+    assert op_counter(par, "op0", "operator.rows_in") == op_counter(
         serial, "op0", "operator.rows_in"
     )
-    assert _op_counter(par, "op0", "operator.rows_out") == _op_counter(
+    assert op_counter(par, "op0", "operator.rows_out") == op_counter(
         serial, "op0", "operator.rows_out"
     )
     assert par.summary.total_rows_out == serial.summary.total_rows_out
@@ -76,8 +66,8 @@ async def test_edge_conservation_over_channel_index() -> None:
     # Q EdgeStats, one per downstream channel_index, summing to the conserved row total
     assert sorted(e.channel_index for e in fanout) == [0, 1, 2]
     sent = sum(e.rows_sent_total for e in fanout)
-    assert sent == _op_counter(par, "source", "operator.rows_out")
-    assert sent == _op_counter(par, "op0", "operator.rows_in")
+    assert sent == op_counter(par, "source", "operator.rows_out")
+    assert sent == op_counter(par, "op0", "operator.rows_in")
 
 
 async def test_topology_carries_num_subtasks_and_q_edges() -> None:

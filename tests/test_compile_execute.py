@@ -12,7 +12,6 @@ identical digest, because a plan that lost or reshaped anything would route diff
 from __future__ import annotations
 
 import random
-from collections import Counter
 
 import cloudpickle
 
@@ -25,15 +24,10 @@ from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import Stage, graph_from_pipeline, graph_from_stages
 from nautilus.runtime.result import RunResult
 from nautilus.runtime.run import run_compiled, run_plan
-from nautilus.testing import TestClock, data, wm
+from nautilus.testing import TestClock, data, multiset, wm
 from nautilus.windows import TumblingEventTimeWindows
 
 _WORDS = ["the", "cat", "sat", "dog", "ran", "a", "fox", "jumped", "x", "y"]
-
-
-def _multiset(result: RunResult) -> Counter:
-    """Schema-agnostic multiset of result rows (sorted item tuples), so any pipeline's output compares."""
-    return Counter(tuple(sorted(row.items())) for row in result.to_pylist())
 
 
 def _digest(result: RunResult) -> str:
@@ -106,7 +100,7 @@ async def test_compiled_parallel_matches_serial_over_random_linear_graphs() -> N
             graph_from_stages(InMemorySource(list(frames)), stages), clock=TestClock()
         )
 
-        assert _multiset(serial) == _multiset(compiled), (trial, builder.__name__)
+        assert multiset(serial) == multiset(compiled), (trial, builder.__name__)
 
 
 # --- cloudpickle round-trip executes equivalently -----------------------------------------------
@@ -127,7 +121,7 @@ async def test_cloudpickle_roundtrip_executes_equivalently() -> None:
     original = await run_compiled(plan, clock=TestClock())
     roundtripped = await run_compiled(restored, clock=TestClock())
 
-    assert _multiset(original) == _multiset(roundtripped)
+    assert multiset(original) == multiset(roundtripped)
     assert _digest(original) == _digest(roundtripped)
 
     # Structural equivalence of factories — each rebuilds an operator of the same class (object == is
@@ -153,7 +147,7 @@ async def test_ops_bridge_matches_run_local_chain() -> None:
         ),
         clock=TestClock(),
     )
-    assert _multiset(serial) == _multiset(compiled)
+    assert multiset(serial) == multiset(compiled)
     assert _digest(serial) == _digest(compiled)
 
 
@@ -184,7 +178,7 @@ async def test_key_groups_preserve_results_for_g_ge_q() -> None:
         [Tokenize("line", "word"), KeyedCount("word")],
         clock=TestClock(),
     )
-    expected = _multiset(serial)
+    expected = multiset(serial)
     q = 3
     for g in (3, 4, 5, 7, 12):  # all >= Q, mixing multiples and non-multiples
         graph = graph_from_stages(
@@ -195,7 +189,7 @@ async def test_key_groups_preserve_results_for_g_ge_q() -> None:
             ],
         )
         result = await run_plan(graph, key_groups=g, clock=TestClock())
-        assert _multiset(result) == expected, g
+        assert multiset(result) == expected, g
 
 
 async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
@@ -218,7 +212,7 @@ async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
     default = await run_plan(graph(), clock=TestClock())  # G defaults to Q -> identity table
     for g, q_divides_g in [(3, True), (6, True), (12, True), (4, False), (5, False), (7, False)]:
         run = await run_plan(graph(), key_groups=g, clock=TestClock())
-        assert _multiset(run) == _multiset(default), g  # co-partitioning: result always preserved
+        assert multiset(run) == multiset(default), g  # co-partitioning: result always preserved
         assert (_digest(run) == _digest(default)) is q_divides_g, g  # digest matches iff Q | G
 
 

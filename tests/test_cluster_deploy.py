@@ -30,7 +30,7 @@ from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import Stage, graph_from_stages
 from nautilus.runtime.result import RunResult
 from nautilus.runtime.run import run_plan
-from nautilus.testing import data
+from nautilus.testing import data, op_counter
 
 # Ship this module's operator classes by value, so a spawned worker reconstructs them without importing
 # the test module (which it has no path to).
@@ -62,16 +62,6 @@ def _source() -> InMemorySource:
 
 def _wc(result: RunResult) -> Counter:
     return Counter((row["word"], row["count"]) for row in result.to_pylist())
-
-
-def _op_counter(report, operator_id: str, name: str) -> int:
-    return sum(
-        p.value
-        for o in report.operators
-        if o.operator_id == operator_id
-        for p in o.counters
-        if p.name == name
-    )
 
 
 # --- correctness over a genuine cross-worker edge ----------------------------------------------
@@ -106,7 +96,7 @@ def test_bidirectional_shuffle_matches_serial_and_completes_promptly() -> None:
     assert _wc(result) == _wc(serial)
     # Each of the 2 keyed instances fanned in BOTH map instances, so its mailbox had 2 inputs and saw
     # EOS on each — the full local+remote input set was wired before the actor started.
-    assert _op_counter(result.telemetry, "op1", "eos.received") == 4
+    assert op_counter(result.telemetry, "op1", "eos.received") == 4
 
 
 def test_same_plan_runs_under_inproc_and_socket_connectors() -> None:

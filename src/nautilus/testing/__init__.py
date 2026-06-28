@@ -6,6 +6,7 @@ deterministic tests against operators in isolation.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 import pyarrow as pa
@@ -23,6 +24,7 @@ from nautilus.core.time import TestClock
 from nautilus.operators import InMemorySource, from_batches
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.result import RunResult
+from nautilus.telemetry.report import RunReport
 from nautilus.tensors import tensor_array
 
 __all__ = [
@@ -35,6 +37,8 @@ __all__ = [
     "wm",
     "from_batches",
     "run_ops",
+    "op_counter",
+    "multiset",
 ]
 
 
@@ -61,6 +65,25 @@ def wm(t: int) -> Watermark:
 async def run_ops(frames: list[Frame], *transforms: OneInputOperator) -> RunResult:
     """Drive ``transforms`` over a fixed ``frames`` sequence and return the result (batches + telemetry)."""
     return await run_local_chain(InMemorySource(frames), list(transforms))
+
+
+def op_counter(report: RunReport, operator_id: str, name: str) -> int:
+    """Sum a named counter across *all* per-subtask ``OperatorStats`` sharing ``operator_id`` — unlike
+    :meth:`RunReport.operator`, which returns only the first match, so this is what a parallel run needs.
+    """
+    return sum(
+        p.value
+        for o in report.operators
+        if o.operator_id == operator_id
+        for p in o.counters
+        if p.name == name
+    )
+
+
+def multiset(result: RunResult) -> Counter[tuple[tuple[str, Any], ...]]:
+    """A schema-agnostic multiset of a result's rows (each a sorted tuple of items), so any pipeline's
+    output compares by content regardless of row or batch order."""
+    return Counter(tuple(sorted(row.items())) for row in result.to_pylist())
 
 
 def _column(value: Any) -> Any:

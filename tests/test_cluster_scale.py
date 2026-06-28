@@ -10,23 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections import Counter
 
 from nautilus.cluster import deploy
 from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import Stage, graph_from_stages
-from nautilus.runtime.result import RunResult
 from nautilus.telemetry import TelemetryConfig, Tier
-from nautilus.testing import data, wm
+from nautilus.testing import data, multiset, wm
 from nautilus.windows import TumblingEventTimeWindows
 
 _WORDS = ["the", "cat", "sat", "dog", "ran", "a", "fox", "x", "y", "z"]
-
-
-def _multiset(result: RunResult) -> Counter:
-    return Counter(tuple(sorted(row.items())) for row in result.to_pylist())
 
 
 def _wordcount_frames(rng: random.Random) -> list:
@@ -93,7 +87,7 @@ def test_distributed_matches_serial_over_random_workers_and_parallelism() -> Non
             )
             graph = graph_from_stages(InMemorySource(frames), [_windowed_stage(parallelism)])
         result = deploy(graph, num_workers=workers)
-        assert _multiset(result) == _multiset(serial), (trial, workers, parallelism)
+        assert multiset(result) == multiset(serial), (trial, workers, parallelism)
 
 
 def test_single_key_skew_terminates_across_workers() -> None:
@@ -111,7 +105,7 @@ def test_single_key_skew_terminates_across_workers() -> None:
         )
     )
     result = deploy(graph_from_stages(InMemorySource(frames), [_windowed_stage(4)]), num_workers=4)
-    assert _multiset(result) == _multiset(serial)
+    assert multiset(result) == multiset(serial)
 
 
 # --- placement invariance + capping -------------------------------------------------------------
@@ -145,7 +139,7 @@ def test_host_is_a_parameter_and_routing_is_address_independent() -> None:
     # explicit host gives the same result + digest as the default — the cross-host seam on one host.
     explicit = deploy(_wordcount_graph(), num_workers=2, host="127.0.0.1")
     default = deploy(_wordcount_graph(), num_workers=2)
-    assert _multiset(explicit) == _multiset(default)
+    assert multiset(explicit) == multiset(default)
     assert explicit.telemetry.structural_digest() == default.telemetry.structural_digest()
 
 
@@ -163,8 +157,8 @@ def test_cli_key_columns_bridge_matches_serial() -> None:
     serial = asyncio.run(run_local_chain(*wordcount()))
     in_process = _run("wordcount", Tier.COUNTERS, 16, workers=1, parallelism=3)
     distributed = _run("wordcount", Tier.COUNTERS, 16, workers=2, parallelism=2)
-    assert _multiset(in_process) == _multiset(serial)
-    assert _multiset(distributed) == _multiset(serial)
+    assert multiset(in_process) == multiset(serial)
+    assert multiset(distributed) == multiset(serial)
 
 
 def test_one_process_row_per_worker_and_rows_conserved() -> None:

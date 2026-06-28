@@ -17,7 +17,7 @@ from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import Stage, run_parallel_chain
-from nautilus.testing import TestClock, data, wm
+from nautilus.testing import TestClock, data, op_counter, wm
 from nautilus.windows import TumblingEventTimeWindows
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -34,16 +34,6 @@ def _wc_counts(result) -> Counter:
 def _ts_counts(result) -> Counter:
     return Counter(
         (r["key"], r["window_start"], r["window_end"], r["sum"]) for r in result.to_pylist()
-    )
-
-
-def _op_counter(rep, op_id: str, name: str) -> int:
-    return sum(
-        p.value
-        for o in rep.operators
-        if o.operator_id == op_id
-        for p in o.counters
-        if p.name == name
     )
 
 
@@ -191,7 +181,7 @@ async def test_roundrobin_out_of_parallel_stage_conserves_rows() -> None:
         clock=TestClock(),
     )
     assert sum(rb.num_rows for rb in res) == total
-    assert _op_counter(res.telemetry, "op1", "operator.rows_in") == total
+    assert op_counter(res.telemetry, "op1", "operator.rows_in") == total
 
 
 # --- skew / empty-partition liveness -----------------------------------------------------------
@@ -228,9 +218,9 @@ async def test_single_key_skew_terminates_and_conserves() -> None:
     )
     assert _ts_counts(par) == _ts_counts(serial)
     rep = par.telemetry
-    assert _op_counter(rep, "op0", "operator.rows_in") == 8  # summed over 4 subtasks
-    assert _op_counter(rep, "op0", "eos.received") == 4  # every instance got its EOS via broadcast
-    assert _op_counter(rep, "sink", "eos.received") == 4  # the sink fanned in all 4 instances
+    assert op_counter(rep, "op0", "operator.rows_in") == 8  # summed over 4 subtasks
+    assert op_counter(rep, "op0", "eos.received") == 4  # every instance got its EOS via broadcast
+    assert op_counter(rep, "sink", "eos.received") == 4  # the sink fanned in all 4 instances
 
 
 # --- stateless row conservation ----------------------------------------------------------------
@@ -254,8 +244,8 @@ async def test_stateless_map_conserves_rows() -> None:
             )
             assert sum(rb.num_rows for rb in res) == total
             rep = res.telemetry
-            assert _op_counter(rep, "op0", "operator.rows_in") == total
-            assert _op_counter(rep, "sink", "operator.rows_in") == total
+            assert op_counter(rep, "op0", "operator.rows_in") == total
+            assert op_counter(rep, "sink", "operator.rows_in") == total
 
 
 # --- degenerate (all-serial) -------------------------------------------------------------------
