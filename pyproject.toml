@@ -103,7 +103,11 @@ root_package = "nautilus"
 [[tool.importlinter.contracts]]
 name = "Data path must not import the control plane (cluster)"
 type = "forbidden"
-# nautilus.transport landed in Stage 1; the IR (api) and compiler landed in Stage 2a.
+# Every package that runs in a worker (the data path + operator-authoring packages) is a source here, so
+# a forbidden chain is caught no matter which one starts it. nautilus.transport landed in Stage 1; the IR
+# (api) and compiler landed in Stage 2a; the operator/state/window/tensor packages are listed so new
+# operator code cannot import the control plane and pass CI. (nautilus.dsl is excluded: its terminal
+# legitimately reaches cluster.deploy, lazily, and it is the value layer above the data path, not in it.)
 source_modules = [
   "nautilus.runtime",
   "nautilus.core",
@@ -111,6 +115,10 @@ source_modules = [
   "nautilus.transport",
   "nautilus.api",
   "nautilus.compile",
+  "nautilus.operators",
+  "nautilus.state",
+  "nautilus.windows",
+  "nautilus.tensors",
 ]
 forbidden_modules = ["nautilus.cluster"]
 
@@ -141,13 +149,18 @@ name = "Per-record data path must not import the telemetry report (boundary) lay
 type = "forbidden"
 # The boundary runners moved to nautilus.driver, so the whole of nautilus.runtime is now the per-record
 # data path and is forbidden the report layer as a package — no hand-maintained submodule list. The
-# report is assembled in nautilus.driver (and the cluster coordinator); core/api/compile may not reach it
-# either, so compile.lower can never reach telemetry.report.Topology.
+# report is assembled in nautilus.driver (and the cluster coordinator); core/api/compile and the
+# operator-authoring packages (operators/state/windows/tensors) may not reach it either, so report
+# assembly can never creep onto the hot path and compile.lower can never reach telemetry.report.Topology.
 source_modules = [
   "nautilus.core",
   "nautilus.runtime",
   "nautilus.api",
   "nautilus.compile",
+  "nautilus.operators",
+  "nautilus.state",
+  "nautilus.windows",
+  "nautilus.tensors",
 ]
 forbidden_modules = ["nautilus.telemetry.report", "nautilus.telemetry.live"]
 

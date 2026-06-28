@@ -216,10 +216,11 @@ the set of frame types is fixed.
   id, subtask index and count, state backend, clock, and a metrics recorder (`OperatorContext`).
 - **Runner (driver)** — The `nautilus.driver` component that executes a job single-process — the
   boundary that compiles, runs, and builds the report. `run_local_chain` runs a `(source, transforms)`
-  chain in-memory (`run()` is its synchronous one-line wrapper); `run_plan` compiles a `LogicalGraph` and
-  runs it (what the CLI uses at `--parallelism > 1`, `--workers 1`), and `run_compiled` runs an
-  already-compiled `PhysicalPlan` (e.g. a cloudpickle round-trip). All three go through the same compiled
-  executor. The fluent `Stream`'s `.run()` terminal lands here.
+  chain in-memory (`run()` is its synchronous one-line wrapper; this is what the CLI's single-process path
+  uses, including at `--parallelism > 1 --workers 1`); `run_plan` compiles a `LogicalGraph` and runs it —
+  the shared engine beneath `run_local_chain` and the direct target of the `Stream` DSL's `.run()`
+  terminal; and `run_compiled` runs an already-compiled `PhysicalPlan` (e.g. a cloudpickle round-trip).
+  All go through the same compiled executor.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
   (`nautilus.driver.RunResult`; `result.telemetry`).
 - **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and

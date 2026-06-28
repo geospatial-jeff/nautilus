@@ -146,7 +146,13 @@ class Stream:
         """Append an arbitrary one-input operator — the escape hatch for operators without a verb. The
         edge is keyed by ``key_columns`` if given, else the operator's own
         :meth:`~nautilus.core.operator.OneInputOperator.key_columns`. At parallelism > 1 the instance is
-        deep-copied per subtask, so it must be deep-copyable."""
+        deep-copied per subtask, so it must be deep-copyable.
+
+        Because a parallelism-1 ``apply`` shares the single given instance, a later uniform
+        ``run(parallelism=N)`` / ``to_graph(parallelism=N)`` cannot scale *this* vertex up (the shared
+        instance cannot be replicated). To run an applied operator in parallel, pass its ``parallelism``
+        here. The verb combinators build a fresh operator per subtask, so they have no such limit.
+        """
         keys = _norm(key_columns) if key_columns is not None else operator.key_columns()
         factory: Callable[[], object] = (
             (lambda: operator) if parallelism == 1 else (lambda: copy.deepcopy(operator))
@@ -196,7 +202,8 @@ class Stream:
     def to_graph(self, *, parallelism: int | None = None) -> LogicalGraph:
         """The :class:`~nautilus.api.LogicalGraph` this stream describes. ``parallelism`` overrides every
         non-source vertex's parallelism uniformly (the simple scale-up knob); omit it to keep each
-        vertex's own."""
+        vertex's own. A vertex added via :meth:`apply` at parallelism 1 shares one instance and cannot be
+        scaled this way — give that ``apply`` its own ``parallelism`` instead."""
         if parallelism is None:
             return LogicalGraph(self._vertices, self._edges)
         vertices = tuple(

@@ -3,14 +3,17 @@
 An :class:`Output` routes one upstream instance's frames to a downstream operator's instances: data
 batches go through a partitioner, control frames are broadcast to *all* downstream instances.
 
-``run_source`` and ``run_transform`` are the two actor loops. The transform loop encodes the
-core streaming semantics:
+There are three actor-loop entry points: ``run_source`` drives a source, and ``run_transform`` (one
+input) and ``run_two_input`` (a join's two inputs) are thin wrappers over the shared ``_run_operator_loop``
+— differing only in how each data batch is dispatched to the operator (``process`` vs
+``process_left``/``process_right`` by the input's side). ``_run_operator_loop`` encodes the core streaming
+semantics:
 
-* per-input watermark combination (min over non-idle inputs),
+* per-input watermark combination (min over non-idle inputs — a join's is therefore ``min(left, right)``),
 * fire windows/timers when the combined watermark advances, *then* forward the watermark,
-* on EOS of all inputs, advance to ``WATERMARK_MAX`` to flush every pending window, then send EOS.
+* once *every* input has sent EOS, advance to ``WATERMARK_MAX`` to flush every pending window, then send EOS.
 
-The operator's ``process``/``on_watermark`` are synchronous; this loop performs every ``await``
+The operator's ``process``/``on_watermark`` are synchronous; the loop performs every ``await``
 (backpressured send) *between* those calls, so each operator step is a race-free critical section.
 
 Telemetry: each actor holds one :class:`~nautilus.telemetry.recorder.Recorder`, the sole writer of its

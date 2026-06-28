@@ -97,11 +97,10 @@ real event times are kept strictly below that sentinel so they can never collide
    instance from either side. Its watermark is the same min-over-inputs combination as any fan-in
    (`min(left, right)`), and it forwards EOS only after *both* inputs close — the existing termination
    rule, unchanged for a second input. (A linear graph carries no edges; the compiler reads its positional
-   adjacency, so it lowers byte-for-byte as before.) The built-in `HashJoin` is an inner equi-join: it
-   buffers both sides by key and emits each match when the later side arrives, so the result is
-   independent of arrival order. Its per-key buffers grow until EOS — the same unbounded-state tradeoff
-   the keyed aggregations carry, fine for the bounded inputs here — and `on_watermark` is the seam a
-   future windowed variant would use to bound and evict that state on the watermark.
+   adjacency, so it lowers byte-for-byte as before.) The built-in `HashJoin` is an inner equi-join whose
+   result is independent of the order the two sides arrive; like the keyed aggregations it holds unbounded
+   state until EOS — an accepted MVP tradeoff, since the inputs here are bounded. How it buffers and the
+   `on_watermark` eviction seam for a future windowed variant are the operator's concern.
 
 ## Deployment (`nautilus.cluster`)
 
