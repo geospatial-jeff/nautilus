@@ -22,10 +22,13 @@ from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, Protocol
 
+from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.local import build_topology, make_run_meta, run_local_chain
+from nautilus.runtime.meta import make_run_meta
+from nautilus.runtime.parallel import graph_from_ops
+from nautilus.runtime.run import plan_to_topology, run_compiled
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import RunMeta, Topology, build_report
 
@@ -177,7 +180,10 @@ async def serve_local_chain(
     if config.run_id is None:
         config = replace(config, run_id=f"run-{clk.now_micros()}")
     registry = RecorderRegistry()
-    topology = build_topology(source, transforms, capacity)
+    # Compile the chain to a plan and serve/run that — the same engine a non-live run uses — so the live
+    # topology is exactly what executes (one topology builder, plan_to_topology).
+    plan = compile_graph(graph_from_ops(source, transforms))
+    topology = plan_to_topology(plan, capacity)
     loop = asyncio.get_running_loop()
     started_at = clk.now_micros()
     started_ns = perf_counter_ns()
@@ -212,7 +218,7 @@ async def serve_local_chain(
         webbrowser.open(server.url)
 
     run_task = asyncio.create_task(
-        run_local_chain(source, transforms, capacity=capacity, telemetry=config, registry=registry)
+        run_compiled(plan, capacity=capacity, clock=clk, telemetry=config, registry=registry)
     )
 
     async def drive() -> None:

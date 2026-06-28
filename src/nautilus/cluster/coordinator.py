@@ -28,7 +28,7 @@ from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier
 from nautilus.compile import compile_graph
 from nautilus.core.time import Clock, SystemClock
 from nautilus.runtime.channel import DEFAULT_CAPACITY
-from nautilus.runtime.local import make_run_meta
+from nautilus.runtime.meta import make_run_meta
 from nautilus.runtime.result import RunResult
 from nautilus.runtime.run import plan_to_topology
 from nautilus.telemetry import TelemetryConfig

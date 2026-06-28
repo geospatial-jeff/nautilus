@@ -30,6 +30,7 @@ from typing import Any
 
 import nautilus
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
+from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.pipelines import load_pipeline
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import graph_from_pipeline
@@ -178,12 +179,18 @@ def _scaled_env(rows: int, batch: int, keys: int, wm_every: int) -> Iterator[Non
                 os.environ[k] = v
 
 
-def run_once(
-    pipeline: str, *, parallelism: int, workers: int, capacity: int, tier: Tier
+def run_pipeline(
+    source: SourceOperator,
+    transforms: list[OneInputOperator],
+    *,
+    parallelism: int,
+    workers: int,
+    capacity: int,
+    tier: Tier,
 ) -> RunResult:
-    """Build and run the pipeline once at the given topology (single-process, in-process parallel, or
-    deployed across workers — the same dispatch the CLI's ``run`` uses)."""
-    source, transforms = load_pipeline(pipeline)
+    """Run an already-loaded ``(source, transforms)`` at the given topology — single-process, in-process
+    parallel, or deployed across workers. The single topology-selection dispatch shared by the CLI's
+    ``run`` and this bench harness, so the two cannot drift."""
     config = TelemetryConfig(tier=tier)
     if workers == 1 and parallelism == 1:
         return asyncio.run(run_local_chain(source, transforms, capacity=capacity, telemetry=config))
@@ -193,6 +200,16 @@ def run_once(
     from nautilus.cluster import deploy
 
     return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
+
+
+def run_once(
+    pipeline: str, *, parallelism: int, workers: int, capacity: int, tier: Tier
+) -> RunResult:
+    """Build the named pipeline and run it once at the given topology (a fresh source per call)."""
+    source, transforms = load_pipeline(pipeline)
+    return run_pipeline(
+        source, transforms, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+    )
 
 
 def measure(

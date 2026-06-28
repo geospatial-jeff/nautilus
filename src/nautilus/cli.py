@@ -31,16 +31,13 @@ from nautilus.bench import (
     load_baseline,
     measure,
     measure_like,
+    run_pipeline,
     save_baseline,
 )
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
-from nautilus.cluster import deploy
 from nautilus.core.time import SystemClock
 from nautilus.pipelines import EXAMPLES, load_pipeline
-from nautilus.runtime.local import run_local_chain
-from nautilus.runtime.parallel import graph_from_pipeline
 from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_plan
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport
@@ -75,15 +72,11 @@ def _run(
     except (KeyError, ImportError, AttributeError) as e:
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
-    config = TelemetryConfig(tier=tier, clock=SystemClock())
-    if workers == 1 and parallelism == 1:
-        return asyncio.run(run_local_chain(source, transforms, capacity=capacity, telemetry=config))
-    # Parallel / distributed: lower the pipeline to a graph (each transform at `parallelism`, keyed by
-    # its declared key columns). One worker runs it in-process; more workers spawn and deploy it.
-    graph = graph_from_pipeline(source, transforms, parallelism)
-    if workers == 1:
-        return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
-    return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
+    # The single-process / in-process-parallel / multi-worker dispatch is shared with the bench harness
+    # (run_pipeline), so the CLI and bench can't drift on how a topology is selected.
+    return run_pipeline(
+        source, transforms, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+    )
 
 
 def _summary_table(report: RunReport) -> Table:
@@ -384,11 +377,12 @@ def bench(
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
 
+    base = load_baseline(baseline) if baseline.exists() else {}  # loaded once, reused below
+
     if json_out:
         console.print_json(json.dumps(result.to_dict()))
     else:
         console.print(_bench_panel(result))
-        base = load_baseline(baseline) if baseline.exists() else {}
         if key in base:
             console.print(_comparison_line(compare(base[key], result)))
 
@@ -400,7 +394,6 @@ def bench(
                 "(its structural digest differed across trials)"
             )
             raise typer.Exit(code=1)
-        base = load_baseline(baseline) if baseline.exists() else {}
         base[key] = result
         save_baseline(baseline, base)
         console.print(f"[green]updated baseline[/green] {baseline} · [bold]{key}[/bold]")

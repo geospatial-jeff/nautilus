@@ -25,7 +25,7 @@ from nautilus.core.time import Clock, SystemClock
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.runtime.connector import Deployment, InProcessConnector
 from nautilus.runtime.execute import execute
-from nautilus.runtime.local import make_run_meta  # reused verbatim (it calls config_digest)
+from nautilus.runtime.meta import make_run_meta
 from nautilus.runtime.result import RunResult
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import Edge, NullSink, OperatorNode, Sink, Topology, build_report

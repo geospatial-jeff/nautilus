@@ -109,15 +109,14 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
         )
     )
 
-    # One edge per adjacent pair. The spec is chosen from the *downstream* vertex (its width and key
-    # columns); the edge into the sink is a single-owner forward.
+    # One edge per adjacent pair, its spec chosen from the *downstream* operator's width and key columns.
+    # The synthesized sink (dst_vertex is None) has parallelism 1, and _spec_for returns ForwardSpec for
+    # any width-1 edge before it reads key_columns, so the sink falls out of that case — no special-case.
     edges: list[PhysicalEdge] = []
     downstream = list(graph.vertices[1:]) + [None]  # None marks the sink (width 1, unkeyed)
     for src, dst_op, dst_vertex in zip(operators[:-1], operators[1:], downstream, strict=True):
-        if dst_vertex is None:
-            spec: PartitionerSpec = ForwardSpec()
-        else:
-            spec = _spec_for(dst_op.parallelism, dst_vertex.key_columns, key_groups)
+        key_columns = dst_vertex.key_columns if dst_vertex is not None else None
+        spec = _spec_for(dst_op.parallelism, key_columns, key_groups)
         edges.append(PhysicalEdge(src.operator_id, dst_op.operator_id, spec))
 
     return PhysicalPlan(tuple(operators), tuple(edges))
