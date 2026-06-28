@@ -1,8 +1,8 @@
 """The per-worker executor: run one worker's slice of a :class:`~nautilus.compile.plan.PhysicalPlan`.
 
 ``execute`` consumes a plan and, for every instance this worker hosts, builds the actor — wiring its
-:class:`~nautilus.runtime.mailbox.Mailbox` from the inbound channels and its
-:class:`~nautilus.runtime.actor.Output` from the outbound channels, all obtained from the injected
+:class:`~nautilus.runtime.mailbox.Mailbox` from every inbound edge (a join has two, ordered port 0 then
+port 1) and one :class:`~nautilus.runtime.actor.Output` per outbound edge, all obtained from the injected
 :class:`~nautilus.runtime.connector.Connector` — instantiates a fresh
 :class:`~nautilus.runtime.partition.Partitioner` from each edge's spec, runs the actor loops in one
 TaskGroup, and returns raw recorder snapshots plus the sink's collected batches.
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections import defaultdict
 from dataclasses import dataclass
 from time import perf_counter_ns
 from typing import cast
@@ -38,11 +39,16 @@ from nautilus.compile.plan import (
     PhysicalPlan,
     RoundRobinSpec,
 )
-from nautilus.core.operator import OneInputOperator, OperatorContext, SourceOperator
+from nautilus.core.operator import (
+    OneInputOperator,
+    OperatorContext,
+    SourceOperator,
+    TwoInputOperator,
+)
 from nautilus.core.records import EOS, Batch
 from nautilus.core.time import Clock, SystemClock
-from nautilus.runtime.actor import Output, run_source, run_transform
-from nautilus.runtime.channel import DEFAULT_CAPACITY
+from nautilus.runtime.actor import Output, run_source, run_transform, run_two_input
+from nautilus.runtime.channel import DEFAULT_CAPACITY, Channel
 from nautilus.runtime.connector import ChannelId, Connector, Deployment
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.runtime.partition import Forward, KeyGroupPartitioner, Partitioner, RoundRobin
@@ -122,8 +128,14 @@ async def execute(
     registry = registry or RecorderRegistry()
 
     width = {op.operator_id: op.parallelism for op in plan.operators}
-    out_edge: dict[str, PhysicalEdge] = {e.src_operator_id: e for e in plan.edges}
-    in_edge: dict[str, PhysicalEdge] = {e.dst_operator_id: e for e in plan.edges}
+    # An operator can have several inbound edges (a join: one per input port) and several outbound (a
+    # fan-out), so these are list-valued — a single-edge map would silently drop the second join input
+    # or fan-out destination.
+    out_edges: dict[str, list[PhysicalEdge]] = defaultdict(list)
+    in_edges: dict[str, list[PhysicalEdge]] = defaultdict(list)
+    for e in plan.edges:
+        out_edges[e.src_operator_id].append(e)
+        in_edges[e.dst_operator_id].append(e)
 
     def rec(
         operator_id: str, op_class: str, kind: str, subtask: int, owner: Owner = Owner.ENGINE
@@ -140,30 +152,44 @@ async def execute(
             )
         )
 
-    async def build_output(operator_id: str, subtask: int, recorder: Recorder) -> Output:
-        edge = out_edge[operator_id]
-        fanout = width[edge.dst_operator_id]
-        channels = [
-            await connector.outbound(ChannelId(operator_id, subtask, edge.dst_operator_id, d))
-            for d in range(fanout)
-        ]
-        return Output(
-            channels,
-            partitioner_from_spec(edge.spec),
-            recorder=recorder,
-            edge_src=operator_id,
-            edge_dst=edge.dst_operator_id,
-            capacity=capacity,
-        )
+    async def build_outputs(operator_id: str, subtask: int, recorder: Recorder) -> list[Output]:
+        outs: list[Output] = []
+        for edge in out_edges[operator_id]:
+            fanout = width[edge.dst_operator_id]
+            channels = [
+                await connector.outbound(ChannelId(operator_id, subtask, edge.dst_operator_id, d))
+                for d in range(fanout)
+            ]
+            outs.append(
+                Output(
+                    channels,
+                    partitioner_from_spec(edge.spec),
+                    recorder=recorder,
+                    edge_src=operator_id,
+                    edge_dst=edge.dst_operator_id,
+                    capacity=capacity,
+                )
+            )
+        return outs
 
-    async def build_mailbox(operator_id: str, subtask: int) -> Mailbox:
-        edge = in_edge[operator_id]
-        fanin = width[edge.src_operator_id]
-        channels = [
-            await connector.inbound(ChannelId(edge.src_operator_id, u, operator_id, subtask))
-            for u in range(fanin)
-        ]
-        return Mailbox(channels)
+    async def build_mailbox(operator_id: str, subtask: int) -> tuple[Mailbox, int]:
+        # Inbound channels concatenated in input-port order (port 0, then port 1), so a two-input
+        # operator's left inputs occupy mailbox indices [0, left_input_count) and its right inputs the
+        # rest — which is how the actor tells a batch's side apart. A one-input operator or the sink has a
+        # single port-0 edge, so left_input_count is just its fan-in (and the actor ignores it).
+        channels: list[Channel] = []
+        left_input_count = 0
+        for edge in sorted(in_edges[operator_id], key=lambda e: e.dst_input_port):
+            fanin = width[edge.src_operator_id]
+            for u in range(fanin):
+                channels.append(
+                    await connector.inbound(
+                        ChannelId(edge.src_operator_id, u, operator_id, subtask)
+                    )
+                )
+            if edge.dst_input_port == 0:
+                left_input_count += fanin
+        return Mailbox(channels), left_input_count
 
     # The outermost try begins before wiring so connector.close() runs even if Phase A/B raises (a
     # dial/accept failure on a cross-worker edge): a partial mesh is still abortively torn down.
@@ -176,7 +202,7 @@ async def execute(
         # could wait on a peer that is itself waiting to be dialed.
         hosted: list[tuple[PhysicalOperator, int]] = []
         instances: dict[tuple[str, int], object] = {}
-        outputs: dict[tuple[str, int], Output] = {}
+        outputs: dict[tuple[str, int], list[Output]] = {}
         op_recorders: dict[tuple[str, int], Recorder] = {}
         metrics_recorders: dict[tuple[str, int], Recorder] = {}
         for op in plan.operators:
@@ -189,8 +215,8 @@ async def execute(
                 if op.kind == "sink":
                     continue  # the sink has no outbound edge; its mailbox is wired in phase B
                 instances[key] = _instantiate(op)
-                outputs[key] = await build_output(op.operator_id, subtask, op_recorders[key])
-                if op.kind == "one_input":
+                outputs[key] = await build_outputs(op.operator_id, subtask, op_recorders[key])
+                if op.kind in ("one_input", "two_input"):
                     # A SEPARATE recorder for operator-author custom metrics (ctx.metrics), preserving
                     # the single-writer invariant; both carry the same (operator_id, subtask) and merge
                     # at build. owner=AUTHOR so it can only write author-owned metrics, never engine keys.
@@ -213,12 +239,12 @@ async def execute(
                     run_source(
                         cast(SourceOperator, instances[key]),
                         ctx,
-                        [outputs[key]],
+                        outputs[key],
                         recorder=op_recorders[key],
                     )
                 )
             elif op.kind == "one_input":
-                mailbox = await build_mailbox(op.operator_id, subtask)
+                mailbox, _ = await build_mailbox(op.operator_id, subtask)
                 ctx = OperatorContext(
                     op.operator_id,
                     subtask_index=subtask,
@@ -231,12 +257,31 @@ async def execute(
                         cast(OneInputOperator, instances[key]),
                         ctx,
                         mailbox,
-                        [outputs[key]],
+                        outputs[key],
+                        recorder=op_recorders[key],
+                    )
+                )
+            elif op.kind == "two_input":
+                mailbox, left_input_count = await build_mailbox(op.operator_id, subtask)
+                ctx = OperatorContext(
+                    op.operator_id,
+                    subtask_index=subtask,
+                    num_subtasks=op.parallelism,
+                    clock=clk,
+                    metrics=metrics_recorders[key],
+                )
+                coros.append(
+                    run_two_input(
+                        cast(TwoInputOperator, instances[key]),
+                        ctx,
+                        mailbox,
+                        outputs[key],
+                        left_input_count=left_input_count,
                         recorder=op_recorders[key],
                     )
                 )
             elif op.kind == "sink":
-                mailbox = await build_mailbox(op.operator_id, subtask)
+                mailbox, _ = await build_mailbox(op.operator_id, subtask)
                 coros.append(_collect_sink(mailbox, sink_batches, op_recorders[key]))
             else:
                 raise ValueError(f"unknown operator kind {op.kind!r} for {op.operator_id!r}")

@@ -53,9 +53,12 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   list with per-edge input ports and keying, so a two-input join is expressible; `compile_graph` lowers
   the DAG (deterministic topological order, position-derived ids, the join's two edges sharing one
   group table). A linear graph carries no edges and compiles byte-for-byte as before.
-- **3.2 — Two-input actor + executor wiring · Next.** A `run_two_input` actor loop (left/right dispatch,
-  `min(left, right)` watermark, EOS after both ports) and the executor's two-port mailbox wiring.
-- **3.3 — `HashJoin` operator.** The concrete inner symmetric-hash equi-join.
+- **3.2 — Two-input actor + executor wiring · Done.** `run_transform` and a new `run_two_input` share one
+  loop core; the two-input one dispatches each batch to `process_left`/`process_right` by its input's
+  side, combines watermarks as `min(left, right)`, and forwards EOS after both ports close. The executor
+  wires a port-ordered mailbox and one Output per outbound edge (list-valued edge maps — also the latent
+  fan-out edge-loss fix).
+- **3.3 — `HashJoin` operator · Next.** The concrete inner symmetric-hash equi-join.
 - **3.4 — Fluent `Stream` DSL.** The `nautilus.dsl` builder, the `nautilus.driver` boundary package, and
   retiring the Stage-2 API sprawl.
 

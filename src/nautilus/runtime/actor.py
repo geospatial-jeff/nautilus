@@ -21,17 +21,19 @@ entirely.
 from __future__ import annotations
 
 import traceback
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
 
 import pyarrow as pa
 
 from nautilus.core.operator import (
+    Collector,
     ListCollector,
     OneInputOperator,
     OperatorContext,
     SourceOperator,
+    TwoInputOperator,
 )
 from nautilus.core.records import (
     EOS,
@@ -320,15 +322,22 @@ async def run_source(
         )
 
 
-async def run_transform(
-    op: OneInputOperator,
+async def _run_operator_loop(
+    op: OneInputOperator | TwoInputOperator,
     ctx: OperatorContext,
     mailbox: Mailbox,
     outputs: list[Output],
+    dispatch: Callable[[int, pa.RecordBatch, Collector], None],
     *,
     recorder: Recorder = NULL_RECORDER,
 ) -> None:
-    """Drive a one-input operator to completion, then forward EOS."""
+    """Drive a one- or two-input operator to completion, then forward EOS.
+
+    The one- and two-input loops are identical but for how a data batch is handled, so they share this
+    core: ``dispatch(input_index, batch, collector)`` routes the batch to the operator's handler —
+    ``process`` for one input, ``process_left``/``process_right`` chosen by the input's side for two.
+    Watermark combination is the minimum over *all* inputs (a join's is therefore ``min(left, right)``),
+    and EOS is forwarded only once every input — both ports — has closed."""
     op_id, opcls, loc = ctx.operator_id, type(op).__name__, _source_location(op)
     sub, n = ctx.subtask_index, mailbox.num_inputs
 
@@ -433,7 +442,7 @@ async def run_transform(
                     input_index=i,
                     batch_rows=rows,
                 ):
-                    op.process(frame.data, collector)
+                    dispatch(i, frame.data, collector)
                 dt_ns = perf_counter_ns() - p0
                 proc_hist.observe(dt_ns // 1000)
                 step.add_ns(dt_ns)
@@ -491,3 +500,42 @@ async def run_transform(
         "eos.forwarded", operator_id=op_id, wall_micros=(perf_counter_ns() - started) // 1000
     )
     await _broadcast(EOS_FRAME, outputs)
+
+
+async def run_transform(
+    op: OneInputOperator,
+    ctx: OperatorContext,
+    mailbox: Mailbox,
+    outputs: list[Output],
+    *,
+    recorder: Recorder = NULL_RECORDER,
+) -> None:
+    """Drive a one-input operator to completion, then forward EOS — every batch goes to ``process``."""
+    await _run_operator_loop(
+        op, ctx, mailbox, outputs, lambda _i, batch, out: op.process(batch, out), recorder=recorder
+    )
+
+
+async def run_two_input(
+    op: TwoInputOperator,
+    ctx: OperatorContext,
+    mailbox: Mailbox,
+    outputs: list[Output],
+    *,
+    left_input_count: int,
+    recorder: Recorder = NULL_RECORDER,
+) -> None:
+    """Drive a two-input operator (a join) to completion, then forward EOS.
+
+    The mailbox concatenates the left input's channels before the right's, so input indices
+    ``[0, left_input_count)`` are the left side (``process_left``) and the rest are the right
+    (``process_right``). The shared loop combines watermarks as the minimum over all of them
+    (``min(left, right)``) and forwards EOS only after every channel of both sides has closed."""
+
+    def dispatch(i: int, batch: pa.RecordBatch, out: Collector) -> None:
+        if i < left_input_count:
+            op.process_left(batch, out)
+        else:
+            op.process_right(batch, out)
+
+    await _run_operator_loop(op, ctx, mailbox, outputs, dispatch, recorder=recorder)

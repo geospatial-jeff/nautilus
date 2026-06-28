@@ -161,19 +161,32 @@ class OneInputOperator(ABC):
 
 
 class TwoInputOperator(ABC):
-    """Combines two input streams (e.g. a join). **Reserved** — implemented in Stage 3.
+    """An operator with two input streams and one output — a join. The actor drives it like a one-input
+    operator (see :func:`~nautilus.runtime.actor.run_two_input`), with one difference: a data batch
+    arrives on the **left** input (:meth:`process_left`) or the **right** (:meth:`process_right`). Event
+    time and termination stay the actor's job: the operator watermark is the minimum over *both* inputs
+    (``min(left, right)``), :meth:`on_watermark` fires at that combined watermark, and the actor forwards
+    EOS downstream only after both inputs have closed — advancing to ``WATERMARK_MAX`` first, so a final
+    :meth:`on_watermark` flushes any buffered state.
 
-    The operator watermark is ``min(left, right)``; EOS is emitted only after *both* inputs close.
+    Both inputs are co-partitioned on the join key by the keyed shuffle, so every row of a given key
+    reaches the same instance from either side; the operator buffers and matches per key locally.
     """
 
-    def open(self, ctx: OperatorContext) -> None: ...
+    def open(self, ctx: OperatorContext) -> None:
+        """Called once before any record. Override to set up the per-side buffers / state / resources."""
 
     @abstractmethod
-    def process_left(self, batch: pa.RecordBatch, out: Collector) -> None: ...
+    def process_left(self, batch: pa.RecordBatch, out: Collector) -> None:
+        """Handle a batch from the left input. Synchronous; emit results via ``out``; must not block/await."""
 
     @abstractmethod
-    def process_right(self, batch: pa.RecordBatch, out: Collector) -> None: ...
+    def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
+        """Handle a batch from the right input. Synchronous; emit results via ``out``; must not block/await."""
 
-    def on_watermark(self, t: int, out: Collector) -> None: ...
+    def on_watermark(self, t: int, out: Collector) -> None:
+        """Event-time progress reached ``t`` (the minimum over both inputs). Fire due windows/timers and
+        emit via ``out``. Default: no-op (a global join emits matches as they arrive)."""
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Called once after EOS on both inputs. Override to release resources / clear buffers."""
