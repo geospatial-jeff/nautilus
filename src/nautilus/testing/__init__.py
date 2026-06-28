@@ -11,7 +11,8 @@ from typing import Any
 
 import pyarrow as pa
 
-from nautilus.core.operator import OneInputOperator
+from nautilus.api import LogicalGraph
+from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.records import (
     ACTIVE_FRAME,
     EOS_FRAME,
@@ -37,6 +38,7 @@ __all__ = [
     "wm",
     "from_batches",
     "run_ops",
+    "staged_graph",
     "op_counter",
     "multiset",
 ]
@@ -65,6 +67,22 @@ def wm(t: int) -> Watermark:
 async def run_ops(frames: list[Frame], *transforms: OneInputOperator) -> RunResult:
     """Drive ``transforms`` over a fixed ``frames`` sequence and return the result (batches + telemetry)."""
     return await run_local_chain(InMemorySource(frames), list(transforms))
+
+
+def staged_graph(
+    src: SourceOperator,
+    specs: list[tuple[OneInputOperator, int, tuple[str, ...] | None]],
+) -> LogicalGraph:
+    """Build a linear :class:`~nautilus.api.LogicalGraph` from ``(operator, parallelism, key_columns)``
+    specs via the :class:`~nautilus.dsl.Stream` DSL — a test builder for graphs with per-stage
+    parallelism (the DSL is what the retired ``graph_from_stages`` became). A ``key_columns`` of ``None``
+    keys the edge by the operator's own declaration."""
+    from nautilus.dsl import source
+
+    stream = source(src)
+    for operator, parallelism, key_columns in specs:
+        stream = stream.apply(operator, key_columns=key_columns, parallelism=parallelism)
+    return stream.to_graph()
 
 
 def op_counter(report: RunReport, operator_id: str, name: str) -> int:

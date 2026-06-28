@@ -14,10 +14,8 @@ The ``if __name__ == "__main__"`` guard below is required: ``deploy`` uses ``mul
 from __future__ import annotations
 
 from nautilus import run
-from nautilus.cluster import deploy
-from nautilus.operators import KeyedCount, Tokenize
+from nautilus.dsl import source
 from nautilus.pipelines import wordcount
-from nautilus.driver.parallel import Stage, graph_from_stages
 
 
 def _counts(rows: list[dict]) -> dict[str, int]:
@@ -28,14 +26,16 @@ def main() -> None:
     # Baseline: the whole pipeline in one process.
     single = _counts(run(*wordcount()).to_pylist())
 
-    # Same word-count across two workers: Tokenize feeds a parallelism-2 KeyedCount through a keyed
-    # shuffle, so each word's count is computed on exactly one worker.
-    source, _ = wordcount()
-    graph = graph_from_stages(
-        source,
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+    # Same word-count across two workers: tokenize feeds a parallelism-2 count_by through a keyed
+    # shuffle, so each word's count is computed on exactly one worker. .run(workers=2) is the only
+    # change from the single-process run — the same graph, deployed.
+    src, _ = wordcount()
+    result = (
+        source(src)
+        .tokenize("line", "word")
+        .count_by("word", parallelism=2)
+        .run(workers=2, capacity=4)
     )
-    result = deploy(graph, num_workers=2, capacity=4)
     across = _counts(result.to_pylist())
 
     for word, count in sorted(across.items(), key=lambda kv: (-kv[1], kv[0])):

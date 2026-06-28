@@ -19,15 +19,18 @@ from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import Stage, graph_from_pipeline, graph_from_stages
+from nautilus.driver.parallel import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_compiled, run_plan
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize
 from nautilus.pipelines import wordcount
-from nautilus.testing import TestClock, data, multiset, wm
+from nautilus.testing import TestClock, data, multiset, staged_graph, wm
 from nautilus.windows import TumblingEventTimeWindows
 
 _WORDS = ["the", "cat", "sat", "dog", "ran", "a", "fox", "jumped", "x", "y"]
+
+# (operator, parallelism, key_columns) specs for staged_graph.
+_Specs = list[tuple[OneInputOperator, int, "tuple[str, ...] | None"]]
 
 
 def _digest(result: RunResult) -> str:
@@ -39,25 +42,21 @@ def _digest(result: RunResult) -> str:
 # digest (compiled-vs-compiled across worker counts) is proven in tests/test_cluster_scale.py.
 
 
-def _wordcount_chain(
-    rng: random.Random,
-) -> tuple[list, list[Stage], list[OneInputOperator]]:
+def _wordcount_chain(rng: random.Random) -> tuple[list, _Specs, list[OneInputOperator]]:
     lines = [
         " ".join(rng.choice(_WORDS) for _ in range(rng.randint(0, 4)))
         for _ in range(rng.randint(1, 4))
     ]
     frames = [data(line=[ln]) for ln in lines] + [EOS_FRAME]
-    stages = [
-        Stage(lambda: Tokenize("line", "word"), rng.choice([1, 2, 3])),  # keyless -> RoundRobin
-        Stage(lambda: KeyedCount("word"), rng.choice([1, 2, 3, 5]), ["word"]),  # keyed shuffle
+    specs: _Specs = [
+        (Tokenize("line", "word"), rng.choice([1, 2, 3]), None),  # keyless -> RoundRobin
+        (KeyedCount("word"), rng.choice([1, 2, 3, 5]), ("word",)),  # keyed shuffle
     ]
     serial = [Tokenize("line", "word"), KeyedCount("word")]
-    return frames, stages, serial
+    return frames, specs, serial
 
 
-def _windowed_chain(
-    rng: random.Random,
-) -> tuple[list, list[Stage], list[OneInputOperator]]:
+def _windowed_chain(rng: random.Random) -> tuple[list, _Specs, list[OneInputOperator]]:
     frames: list = []
     clock_t = 0
     for _ in range(rng.randint(2, 4)):
@@ -72,32 +71,32 @@ def _windowed_chain(
         clock_t += 10
         frames.append(wm(clock_t))
     frames.append(EOS_FRAME)
-    stages = [
-        Stage(lambda: MapBatch(lambda b: b), rng.choice([1, 2])),  # keyless rebalance/forward
-        Stage(
-            lambda: KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
+    specs: _Specs = [
+        (MapBatch(lambda b: b), rng.choice([1, 2]), None),  # keyless rebalance/forward
+        (
+            KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
             rng.choice([1, 2, 3]),
-            ["key"],
+            ("key",),
         ),
     ]
     serial = [
         MapBatch(lambda b: b),
         KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
     ]
-    return frames, stages, serial
+    return frames, specs, serial
 
 
 async def test_compiled_parallel_matches_serial_over_random_linear_graphs() -> None:
     rng = random.Random(2024)
     for trial in range(24):
         builder = rng.choice([_wordcount_chain, _windowed_chain])
-        frames, stages, serial_transforms = builder(rng)
+        frames, specs, serial_transforms = builder(rng)
 
         serial = await run_local_chain(
             InMemorySource(list(frames)), serial_transforms, clock=TestClock()
         )
         compiled = await run_plan(
-            graph_from_stages(InMemorySource(list(frames)), stages), clock=TestClock()
+            staged_graph(InMemorySource(list(frames)), specs), clock=TestClock()
         )
 
         assert multiset(serial) == multiset(compiled), (trial, builder.__name__)
@@ -108,12 +107,9 @@ async def test_compiled_parallel_matches_serial_over_random_linear_graphs() -> N
 
 async def test_cloudpickle_roundtrip_executes_equivalently() -> None:
     plan = compile_graph(
-        graph_from_stages(
+        staged_graph(
             InMemorySource([data(line=["the quick fox"]), data(line=["the lazy fox"]), EOS_FRAME]),
-            [
-                Stage(lambda: Tokenize("line", "word")),
-                Stage(lambda: KeyedCount("word"), 3, ["word"]),
-            ],
+            [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 3, ("word",))],
         )
     )
     restored = cloudpickle.loads(cloudpickle.dumps(plan))
@@ -181,12 +177,9 @@ async def test_key_groups_preserve_results_for_g_ge_q() -> None:
     expected = multiset(serial)
     q = 3
     for g in (3, 4, 5, 7, 12):  # all >= Q, mixing multiples and non-multiples
-        graph = graph_from_stages(
+        graph = staged_graph(
             InMemorySource(list(frames)),
-            [
-                Stage(lambda: Tokenize("line", "word")),
-                Stage(lambda: KeyedCount("word"), q, ["word"]),
-            ],
+            [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), q, ("word",))],
         )
         result = await run_plan(graph, key_groups=g, clock=TestClock())
         assert multiset(result) == expected, g
@@ -201,12 +194,9 @@ async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
     q = 3
 
     def graph():
-        return graph_from_stages(
+        return staged_graph(
             InMemorySource(list(frames)),
-            [
-                Stage(lambda: Tokenize("line", "word")),
-                Stage(lambda: KeyedCount("word"), q, ["word"]),
-            ],
+            [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), q, ("word",))],
         )
 
     default = await run_plan(graph(), clock=TestClock())  # G defaults to Q -> identity table
@@ -222,9 +212,9 @@ async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
 async def test_window_fires_survives_compile_execute() -> None:
     # KeyedCount emits a custom ctx.metrics counter (window.fires) when it flushes at EOS. The executor
     # must give each instance its own metrics recorder, so the counter reaches the report.
-    graph = graph_from_stages(
+    graph = staged_graph(
         InMemorySource([data(line=["the fox the dog the"]), EOS_FRAME]),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 2, ("word",))],
     )
     result = await run_plan(graph, clock=TestClock())
     fires = sum(

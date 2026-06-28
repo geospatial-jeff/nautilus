@@ -20,12 +20,11 @@ import asyncio
 from collections import Counter
 
 from nautilus.core.records import EOS_FRAME
-from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.driver.parallel import Stage, graph_from_stages
-from nautilus.driver.run import run_plan
+from nautilus.dsl import source
+from nautilus.operators import InMemorySource
 from nautilus.testing import data
 
-_Q = 3  # the KeyedCount stage runs as 3 instances
+_Q = 3  # the count_by stage runs as 3 instances
 
 
 def _source() -> InMemorySource:
@@ -43,20 +42,14 @@ def _counts(result) -> dict[str, int]:
 
 
 async def main() -> None:
-    def graph():
-        return graph_from_stages(
-            _source(),
-            [
-                Stage(lambda: Tokenize("line", "word")),
-                Stage(lambda: KeyedCount("word"), _Q, ["word"]),
-            ],
-        )
+    def stream():
+        return source(_source()).tokenize("line", "word").count_by("word", parallelism=_Q)
 
     baseline_counts: Counter | None = None
     baseline_digest: str | None = None
-    print(f"KeyedCount runs as Q={_Q} instances; routing each run through G key groups:\n")
+    print(f"count_by runs as Q={_Q} instances; routing each run through G key groups:\n")
     for g in (_Q, _Q, 6, 7, 12):  # G == Q (identity), then G > Q (multiples and non-multiples)
-        result = await run_plan(graph(), key_groups=g)
+        result = await stream().run_async(key_groups=g)
         counts = Counter(_counts(result))
         digest = result.telemetry.structural_digest()
         if baseline_counts is None:

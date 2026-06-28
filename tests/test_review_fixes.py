@@ -12,8 +12,8 @@ from nautilus import from_batches, run
 from nautilus.api import LogicalVertex
 from nautilus.compile import compile_graph
 from nautilus.compile.plan import KeyGroupSpec, RoundRobinSpec
-from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
+from nautilus.testing import staged_graph
 
 # --- C91: from_batches accepts a raw RecordBatch; unknown frames fail loudly --------------------
 
@@ -48,29 +48,26 @@ def test_empty_key_columns_rejected():
         )
 
 
-# --- C93: graph_from_stages keys from the operator, never silently round-robins a keyed op ------
+# --- C93: a keyed operator is never silently round-robined; a keyless one rebalances -------------
+# (The Stage builder this originally guarded is retired; the DSL's .apply carries the same property —
+# a keyed operator with no explicit key shuffles by its own declared key.)
 
 
 def _edge(plan, src, dst):
     return next(e for e in plan.edges if e.src_operator_id == src and e.dst_operator_id == dst)
 
 
-def test_graph_from_stages_keys_from_operator_declaration():
-    # A keyed operator at parallelism 2 with NO explicit Stage.key_columns must still shuffle by key.
-    graph = graph_from_stages(from_batches(), [Stage(lambda: KeyedCount("word"), 2)])
+def test_keyed_operator_with_no_explicit_key_still_shuffles_by_key():
+    # A keyed operator at parallelism 2 with NO explicit key_columns must still shuffle by its own key.
+    graph = staged_graph(from_batches(), [(KeyedCount("word"), 2, None)])
     plan = compile_graph(graph)
     assert isinstance(_edge(plan, "source", "op0").spec, KeyGroupSpec)
 
 
-def test_graph_from_stages_explicit_keys_must_match_operator():
-    with pytest.raises(ValueError, match="disagrees"):
-        graph_from_stages(from_batches(), [Stage(lambda: KeyedCount("word"), 2, ["other"])])
-
-
-def test_graph_from_stages_keyless_op_still_round_robins():
+def test_keyless_operator_round_robins():
     from nautilus.operators import MapBatch
 
-    graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b), 2)])
+    graph = staged_graph(from_batches(), [(MapBatch(lambda b: b), 2, None)])
     plan = compile_graph(graph)
     assert isinstance(_edge(plan, "source", "op0").spec, RoundRobinSpec)
 
@@ -131,7 +128,7 @@ def test_deploy_rejects_nonpositive_workers():
     from nautilus.cluster import deploy
     from nautilus.operators import MapBatch
 
-    graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b))])
+    graph = staged_graph(from_batches(), [(MapBatch(lambda b: b), 1, None)])
     with pytest.raises(ValueError, match="num_workers"):
         deploy(graph, num_workers=0)
 
@@ -139,7 +136,7 @@ def test_deploy_rejects_nonpositive_workers():
 def test_key_groups_without_keyed_edge_rejected():
     from nautilus.operators import MapBatch
 
-    graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b), 2)])
+    graph = staged_graph(from_batches(), [(MapBatch(lambda b: b), 2, None)])
     with pytest.raises(ValueError, match="key_groups"):
         compile_graph(graph, key_groups=4)
 
@@ -184,9 +181,7 @@ async def test_in_process_parallel_fail_fast():
         def process(self, batch, out: Collector) -> None:
             raise RuntimeError("boom")
 
-    graph = graph_from_stages(
-        from_batches(pa.record_batch({"k": [1, 2, 3]})), [Stage(lambda: Boom(), 2)]
-    )
+    graph = staged_graph(from_batches(pa.record_batch({"k": [1, 2, 3]})), [(Boom(), 2, None)])
     with pytest.raises((RuntimeError, ExceptionGroup)):
         await asyncio.wait_for(run_plan(graph), timeout=10)
 
@@ -237,7 +232,7 @@ def test_source_vertex_rejects_key_columns():
 
 
 def test_key_groups_upper_bound_rejected():
-    graph = graph_from_stages(from_batches(), [Stage(lambda: KeyedCount("w"), 2)])
+    graph = staged_graph(from_batches(), [(KeyedCount("w"), 2, None)])
     with pytest.raises(ValueError, match="exceeds the maximum"):
         compile_graph(graph, key_groups=10**6)
 

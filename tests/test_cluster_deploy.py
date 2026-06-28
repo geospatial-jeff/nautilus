@@ -26,11 +26,10 @@ from nautilus.cluster import WorkerError, deploy
 from nautilus.core.operator import Collector, OneInputOperator, OperatorContext
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_plan
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.testing import data, op_counter
+from nautilus.testing import data, op_counter, staged_graph
 
 # Ship this module's operator classes by value, so a spawned worker reconstructs them without importing
 # the test module (which it has no path to).
@@ -69,9 +68,9 @@ def _wc(result: RunResult) -> Counter:
 
 def test_two_worker_keyed_wordcount_matches_serial() -> None:
     serial = asyncio.run(run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")]))
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 2, ("word",))],
     )
     result = deploy(graph, num_workers=2)
     assert _wc(result) == _wc(serial)
@@ -85,12 +84,9 @@ def test_bidirectional_shuffle_matches_serial_and_completes_promptly() -> None:
     # and an inbound consumer end of the other — the layout where finish-then-close would deadlock.
     # Symmetric teardown drains it, so the whole run finishes well under the 5s per-channel drain timeout.
     serial = asyncio.run(run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")]))
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [
-            Stage(lambda: Tokenize("line", "word"), 2),
-            Stage(lambda: KeyedCount("word"), 2, ["word"]),
-        ],
+        [(Tokenize("line", "word"), 2, None), (KeyedCount("word"), 2, ("word",))],
     )
     result = deploy(graph, num_workers=2)
     assert _wc(result) == _wc(serial)
@@ -102,9 +98,9 @@ def test_bidirectional_shuffle_matches_serial_and_completes_promptly() -> None:
 def test_same_plan_runs_under_inproc_and_socket_connectors() -> None:
     # HARD CONSTRAINT: one graph runs identically single-process (InProcessConnector) and across workers
     # (SocketConnector), by multiset.
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 2, ("word",))],
     )
     in_process = asyncio.run(run_plan(graph))
     distributed = deploy(graph, num_workers=2)
@@ -118,9 +114,9 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
     from nautilus.telemetry.catalog import Tier
     from nautilus.telemetry.recorder import TelemetryConfig
 
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 2, ("word",))],
     )
     rep = deploy(graph, num_workers=2, telemetry=TelemetryConfig(tier=Tier.FULL)).telemetry
 
@@ -160,9 +156,9 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
 
 
 def test_failure_at_process_reraises_child_traceback_and_reaps() -> None:
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: _RaiseOnProcess(), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (_RaiseOnProcess(), 2, ("word",))],
     )
     with pytest.raises(WorkerError) as exc:
         deploy(graph, num_workers=2)
@@ -171,9 +167,9 @@ def test_failure_at_process_reraises_child_traceback_and_reaps() -> None:
 
 
 def test_failure_at_open_reraises_child_traceback_and_reaps() -> None:
-    graph = graph_from_stages(
+    graph = staged_graph(
         _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: _RaiseOnOpen(), 2, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (_RaiseOnOpen(), 2, ("word",))],
     )
     with pytest.raises(WorkerError) as exc:
         deploy(graph, num_workers=2)

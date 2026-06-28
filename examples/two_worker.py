@@ -11,13 +11,9 @@ Run with:  python examples/two_worker.py
 
 from __future__ import annotations
 
-import asyncio
-
-from nautilus.cluster import deploy
 from nautilus.core.records import EOS_FRAME
-from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import Stage, graph_from_stages
+from nautilus.dsl import source
+from nautilus.operators import InMemorySource
 from nautilus.testing import data
 
 
@@ -32,11 +28,11 @@ def _source() -> InMemorySource:
 
 
 def main() -> None:
-    graph = graph_from_stages(
-        _source(),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 2, ["word"])],
+    # .run(workers=2) spawns the workers, runs, and aggregates one report — the same graph the
+    # single-process run below builds, just deployed across processes.
+    result = (
+        source(_source()).tokenize("line", "word").count_by("word", parallelism=2).run(workers=2)
     )
-    result = deploy(graph, num_workers=2)  # spawns the workers, runs, aggregates one report
 
     counts = {row["word"]: row["count"] for row in result.to_pylist()}
     print("word counts:")
@@ -45,9 +41,9 @@ def main() -> None:
 
     # The keyed operator genuinely ran on both workers — the shuffle crossed a socket.
     nodes = sorted({o.node for o in result.telemetry.operators if o.operator_id == "op1"})
-    print(f"\nKeyedCount ran on: {nodes}")
+    print(f"\ncount_by ran on: {nodes}")
 
-    serial = asyncio.run(run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")]))
+    serial = source(_source()).tokenize("line", "word").count_by("word").run()
     serial_counts = {row["word"]: row["count"] for row in serial.to_pylist()}
     print(f"matches the single-process result: {counts == serial_counts}")
 

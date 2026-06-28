@@ -17,9 +17,8 @@ from __future__ import annotations
 import asyncio
 
 from nautilus.core.records import EOS_FRAME
-from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import Stage, run_parallel_chain
+from nautilus.dsl import source
+from nautilus.operators import InMemorySource
 from nautilus.testing import data
 
 
@@ -35,20 +34,19 @@ def _source() -> InMemorySource:
 
 async def main() -> None:
     parallelism = 3
-    # source -> Tokenize (1 instance) -> [keyed shuffle on "word"] -> KeyedCount (N instances) -> sink
-    result = await run_parallel_chain(
-        _source(),
-        [
-            Stage(lambda: Tokenize("line", "word")),
-            Stage(lambda: KeyedCount("word"), parallelism, ["word"]),
-        ],
+    # source -> tokenize (1 instance) -> [keyed shuffle on "word"] -> count_by (N instances) -> sink
+    result = await (
+        source(_source())
+        .tokenize("line", "word")
+        .count_by("word", parallelism=parallelism)
+        .run_async()
     )
     counts = {row["word"]: row["count"] for row in result.to_pylist()}
     for word, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
         print(f"{count:3d}  {word}")
 
     # The parallel result matches the single-instance baseline.
-    serial = await run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")])
+    serial = await source(_source()).tokenize("line", "word").count_by("word").run_async()
     serial_counts = {row["word"]: row["count"] for row in serial.to_pylist()}
     print(f"\nmatches single-instance result: {counts == serial_counts}")
 

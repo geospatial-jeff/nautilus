@@ -12,13 +12,15 @@ import asyncio
 import random
 
 from nautilus.cluster import deploy
+from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import Stage, graph_from_stages
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
 from nautilus.telemetry import TelemetryConfig, Tier
-from nautilus.testing import data, multiset, wm
+from nautilus.testing import data, multiset, staged_graph, wm
 from nautilus.windows import TumblingEventTimeWindows
+
+_Spec = tuple[OneInputOperator, int, "tuple[str, ...] | None"]
 
 _WORDS = ["the", "cat", "sat", "dog", "ran", "a", "fox", "x", "y", "z"]
 
@@ -49,10 +51,8 @@ def _windowed_frames(rng: random.Random) -> list:
     return frames
 
 
-def _windowed_stage(p: int) -> Stage:
-    return Stage(
-        lambda: KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)), p, ["key"]
-    )
+def _windowed_spec(p: int) -> _Spec:
+    return (KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)), p, ("key",))
 
 
 # --- correctness across random W x parallelism --------------------------------------------------
@@ -70,12 +70,9 @@ def test_distributed_matches_serial_over_random_workers_and_parallelism() -> Non
                     InMemorySource(frames), [Tokenize("line", "word"), KeyedCount("word")]
                 )
             )
-            graph = graph_from_stages(
+            graph = staged_graph(
                 InMemorySource(frames),
-                [
-                    Stage(lambda: Tokenize("line", "word")),
-                    Stage(lambda: KeyedCount("word"), parallelism, ["word"]),
-                ],
+                [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), parallelism, ("word",))],
             )
         else:
             frames = _windowed_frames(rng)
@@ -85,7 +82,7 @@ def test_distributed_matches_serial_over_random_workers_and_parallelism() -> Non
                     [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
                 )
             )
-            graph = graph_from_stages(InMemorySource(frames), [_windowed_stage(parallelism)])
+            graph = staged_graph(InMemorySource(frames), [_windowed_spec(parallelism)])
         result = deploy(graph, num_workers=workers)
         assert multiset(result) == multiset(serial), (trial, workers, parallelism)
 
@@ -104,7 +101,7 @@ def test_single_key_skew_terminates_across_workers() -> None:
             [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
         )
     )
-    result = deploy(graph_from_stages(InMemorySource(frames), [_windowed_stage(4)]), num_workers=4)
+    result = deploy(staged_graph(InMemorySource(frames), [_windowed_spec(4)]), num_workers=4)
     assert multiset(result) == multiset(serial)
 
 
@@ -112,9 +109,9 @@ def test_single_key_skew_terminates_across_workers() -> None:
 
 
 def _wordcount_graph():
-    return graph_from_stages(
+    return staged_graph(
         InMemorySource([data(line=["the cat the dog the fox a cat a dog"]), EOS_FRAME]),
-        [Stage(lambda: Tokenize("line", "word")), Stage(lambda: KeyedCount("word"), 3, ["word"])],
+        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 3, ("word",))],
     )
 
 
