@@ -7,10 +7,9 @@ inbound ones. The barrier is what makes the connect deadlock-free: by the time a
 destination listener exists, and because each worker dials every outbound before it accepts any inbound,
 no central ordering of individual connections is needed.
 
-This runs once, at startup. The coordinator reads no data channel and grants no credit; it only moves
-these control messages. ``recv_event`` is the shared, fail-fast receiver — it surfaces a worker that
-crashed (a bad exit code) instead of letting the coordinator block forever on a peer that will never
-report.
+This runs once, at startup, moving only these control messages. ``recv_event`` is the shared, fail-fast
+receiver — it surfaces a worker that crashed (a bad exit code) instead of letting the coordinator block
+forever on a peer that will never report.
 """
 
 from __future__ import annotations

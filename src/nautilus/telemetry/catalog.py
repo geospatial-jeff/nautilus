@@ -3,9 +3,9 @@
 Every metric and event nautilus emits is declared here exactly once. Instruments are created *by
 catalog key*, so an undeclared metric cannot be emitted and the report schema can never drift from the
 data. For each number it states what it measures (a fact) and which other metrics relate to it — never
-what a value indicates, never a cause, never a remedy. A unit test checks every catalog string against
-:data:`BANNED_ANALYSIS_WORDS`, so analysis language cannot creep into the catalog: nautilus records the
-data; the analysis is done separately.
+what a value indicates, never a cause, never a remedy. A unit test checks every metric/event name,
+meaning, and derivation string against :data:`BANNED_ANALYSIS_WORDS`, so analysis language cannot creep
+into the catalog: nautilus records the data; the analysis is done separately.
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ class MetricKind(StrEnum):
 
 
 class Reduction(StrEnum):
-    """How a series is reduced when rolled up across instances/subtasks."""
+    """How a series *should* roll up across instances/subtasks. Advisory metadata exported in the JSON
+    catalog and the reference table for report consumers — ``build_report`` does NOT read it: its merge
+    is fixed by instrument kind (counters sum, gauges keep last + min/max, histograms add buckets)."""
 
     SUM = "sum"
     MAX = "max"

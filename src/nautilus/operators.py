@@ -1,9 +1,9 @@
 """Built-in operators used by the Stage 0 demos, tests and examples.
 
-These are concrete, vectorized-where-cheap operators that exercise the streaming semantics:
-stateless transforms, a keyed global aggregation (flushed at EOS), and a keyed tumbling-window sum
-(fired on watermark advance). In Stage 3 these become the implementations behind the fluent
-``map``/``key_by``/``window``/``reduce`` combinators.
+Concrete operators that exercise the streaming semantics — each follows the synchronous
+``process``/``on_watermark`` contract (emit into the ``Collector``, never await; see
+:mod:`nautilus.core.operator`). In Stage 3 these become the implementations behind the fluent
+``map``/``key_by``/``window``/``reduce`` combinators. What each one does is on its own class.
 """
 
 from __future__ import annotations

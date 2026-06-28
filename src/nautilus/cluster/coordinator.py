@@ -2,8 +2,8 @@
 
 The coordinator is the control plane and nothing more. It compiles the graph once, computes placement,
 spawns the workers, drives the two-phase bootstrap, and waits at the job boundary for one ``Done`` per
-worker. It reads no data channel and grants no credit — backpressure and routing are entirely the
-workers' local concern — so "no central scheduler on the data path" holds even with a coordinator.
+worker (it moves only control messages — see ``DESIGN.md`` for why this keeps the data path
+scheduler-free).
 
 As the telemetry boundary it does the report assembly the workers don't: it translates the plan into a
 :class:`Topology` and aggregates every worker's raw snapshots into the single :class:`RunReport`. It is

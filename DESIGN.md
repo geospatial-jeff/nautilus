@@ -84,7 +84,7 @@ real event times are kept strictly below that sentinel so they can never collide
    table maps groups to instances, so changing the instance count `Q` is a new table over the same
    groups — no key changes group. Stage 2 never moves live state: a rescale is a new job, not an online
    migration, so the table is computed once at compile and immutable for the run. At `G == Q` the table
-   is the identity and routing is identical to a direct `hash(key) mod Q`.
+   is the identity (the routing-level equivalence to a direct hash lives on `KeyGroupPartitioner`).
 
 ## Deployment (`nautilus.cluster`)
 

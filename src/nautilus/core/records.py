@@ -11,9 +11,7 @@ downstream instance. The class-level :attr:`Frame.is_control` flag distinguishes
 
 Event time is represented as an integer number of **microseconds** since the Unix epoch. This is a
 deliberate, stable choice (it survives serialization and a future multi-node / cross-language wire
-format without float rounding). Real event times must be strictly less than
-:data:`MAX_LEGAL_EVENT_TIME` so a genuine timestamp can never collide with the
-:data:`WATERMARK_MAX` "stream complete" sentinel.
+format without float rounding). The exact legal range lives on :func:`check_event_time`.
 """
 
 from __future__ import annotations
@@ -25,7 +23,10 @@ import pyarrow as pa
 
 # --- Event-time domain (integer microseconds since the Unix epoch) -----------------------------
 
-#: Smallest representable watermark; a fresh stream starts here ("nothing seen yet").
+#: Smallest representable watermark; a fresh stream starts here ("nothing seen yet"). It is a *legal*
+#: real event time: unlike WATERMARK_MAX (an active completion sentinel that EOS/close pins to, where a
+#: colliding real time would falsely signal stream-complete), a real watermark at WATERMARK_MIN is inert
+#: — it equals the tracker's initial state and conveys no lost progress — so the bottom is not reserved.
 WATERMARK_MIN: Final[int] = -(2**62)
 #: Watermark value meaning "stream complete" — advanced past every possible real event time.
 WATERMARK_MAX: Final[int] = 2**62

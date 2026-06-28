@@ -36,9 +36,8 @@ class Stage:
     ``factory`` builds a *fresh* operator (and, through its ``OperatorContext``, a fresh state backend)
     for each of the ``parallelism`` instances; it must be a side-effect-free constructor (resource
     acquisition belongs in ``open()``), because the compiler also calls it to read the operator class
-    name. ``key_columns`` is the source of truth for the edge *feeding this stage*: set, it selects a
-    keyed shuffle on those columns; unset with ``parallelism > 1``, a round-robin rebalance;
-    ``parallelism == 1`` forwards.
+    name. ``key_columns`` overrides the edge keying; leave it unset to use the operator's own
+    ``key_columns()`` (the usual case — see :func:`_resolve_stage_keys`).
     """
 
     factory: Callable[[], OneInputOperator]
@@ -103,8 +102,8 @@ def graph_from_pipeline(
 
     This is the CLI's builder→IR bridge. At ``parallelism > 1`` each instance is replicated per subtask
     by :func:`copy.deepcopy` (a fresh, unopened operator — the operator must be deep-copyable), since one
-    shared instance cannot be replicated. A keyed operator's declared columns select the keyed shuffle; a
-    keyless operator (``None``) rebalances round-robin, so a key is never silently split."""
+    shared instance cannot be replicated. Each vertex carries the operator's own ``key_columns()``, so a
+    keyed operator is never silently round-robined (the compiler turns that into the partitioner)."""
     if parallelism < 1:
         raise ValueError(f"parallelism must be >= 1, got {parallelism}")
     vertices = [

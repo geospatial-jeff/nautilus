@@ -2,8 +2,9 @@
 
 The report is a tree of frozen dataclasses. The schema is treated as a public API from day one
 (:data:`REPORT_SCHEMA_VERSION`) so a future benchmark/diff tool can consume it. Only *raw* facts are
-stored — derived ratios (selectivity, rows/sec, busy %) are computed on demand in the query/serialize
-layer, never persisted, so warmup differences cannot create false regressions in a diff.
+stored — ratios like rows/sec and busy % are computed on demand by the query helpers, never persisted,
+so warmup differences cannot create false regressions in a diff. (Selectivity is not computed here at
+all; it is emitted only as a derivation hint for consumers — see the markdown digest.)
 """
 
 from __future__ import annotations
@@ -227,10 +228,10 @@ class RunReport:
         return self.summary.total_rows_out / (self.meta.wall_micros / 1_000_000) if self.meta.wall_micros else 0.0
 
     def by_occupancy(self) -> list[tuple[str, float]]:
-        """Per-instance occupancy — self-time as a fraction of wall — highest first (derived on demand,
-        never persisted). Returns ``(operator_id, busy_fraction)``. A stage that gates the run yet shows
-        low occupancy has its wall going somewhere unattributed by step_micros: the keyed shuffle
-        (``partition.route_micros``), input waiting (``edge.input_wait_micros``), or cross-process I/O."""
+        """Per-instance occupancy — self-time (``runtime.step_micros``) as a fraction of wall — highest
+        first (derived on demand, never persisted). Returns ``(operator_id, busy_fraction)``. The wall
+        not captured here appears in ``partition.route_micros``, ``edge.input_wait_micros``, or
+        cross-process I/O."""
         wall = self.meta.wall_micros
         ranked = [
             (s.operator_id, (s.busy_micros_total / wall if wall else 0.0))

@@ -1,6 +1,7 @@
 """Run a pipeline across worker processes with ``deploy``.
 
-The same word-count as ``examples/wordcount.py``, but run across two spawned workers: ``KeyedCount`` at
+The same word-count topology as ``examples/wordcount.py`` (on its own input), but run across two spawned
+workers: ``KeyedCount`` at
 parallelism 2 forces a keyed shuffle that genuinely crosses a worker boundary over a socket, while
 co-located edges stay in-process. The distributed result matches the single-process one.
 

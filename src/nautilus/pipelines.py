@@ -22,9 +22,14 @@ from nautilus.benchmarks import (
     passthrough,
 )
 from nautilus.core.operator import OneInputOperator, SourceOperator
-from nautilus.core.records import EOS_FRAME, Batch, Frame
 from nautilus.demos import DemoStreamSource
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize
+from nautilus.operators import (
+    KeyedCount,
+    KeyedTumblingSum,
+    MapBatch,
+    Tokenize,
+    from_batches,
+)
 from nautilus.tensors import embedding_array, tensor_array, to_numpy
 from nautilus.testing import data, wm
 from nautilus.windows import TumblingEventTimeWindows
@@ -35,26 +40,22 @@ Builder = Callable[[], Pipeline]
 
 def wordcount() -> Pipeline:
     """Bounded word-count over a small in-memory text stream."""
-    frames: list[Frame] = [
+    source = from_batches(
         data(line=["the quick brown fox", "the lazy dog"]),
         data(line=["the fox jumped", "the lazy fox ran"]),
-        EOS_FRAME,
-    ]
-    return InMemorySource(frames), [Tokenize("line", "word"), KeyedCount("word")]
+    )
+    return source, [Tokenize("line", "word"), KeyedCount("word")]
 
 
 def windowed_sum() -> Pipeline:
     """Keyed tumbling-window sum over an event-time stream (windows fire on watermarks)."""
-    frames: list[Frame] = [
+    source = from_batches(
         data(key=["a", "a", "b"], val=[1, 2, 5], ts=[1, 5, 7]),
         wm(10),
         data(key=["a", "b"], val=[10, 3], ts=[12, 14]),
         wm(20),
-        EOS_FRAME,
-    ]
-    return InMemorySource(frames), [
-        KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))
-    ]
+    )
+    return source, [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))]
 
 
 def demo_stream() -> Pipeline:
@@ -83,8 +84,8 @@ def _embed_tiles(batch: pa.RecordBatch) -> pa.RecordBatch:
 
 def image_embed() -> Pipeline:
     """Image tiles in, one embedding per tile out, using fixed_shape_tensor columns."""
-    frames: list[Frame] = [Batch(_image_tiles(4, 0)), Batch(_image_tiles(3, 100)), EOS_FRAME]
-    return InMemorySource(frames), [MapBatch(_embed_tiles)]
+    source = from_batches(_image_tiles(4, 0), _image_tiles(3, 100))
+    return source, [MapBatch(_embed_tiles)]
 
 
 def bench_keyed() -> Pipeline:

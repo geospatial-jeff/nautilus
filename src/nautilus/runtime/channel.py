@@ -5,10 +5,10 @@ backpressure: a full queue suspends the sender until the consumer drains it, so 
 propagates backpressure to its upstream. Frames (data and control) share one ordered FIFO within a
 process — there is no head-of-line hazard because the single consumer drains strictly in order.
 
-The cross-process :class:`SocketChannel` (Stage 1) keeps the same ``send``/``recv`` interface but
-gates data frames with credit while control frames stay credit-exempt. It runs over a TCP socket: the
-loopback interface between two local processes today, a node-to-node connection between machines with
-no interface change.
+The cross-process :class:`~nautilus.transport.socket_channel.SocketChannel` (Stage 1) keeps the same
+``send``/``recv`` FIFO contract, but its backpressure is a credit window rather than a queue bound. It
+runs over TCP — loopback between two local processes today, a node-to-node connection between machines
+with no interface change.
 """
 
 from __future__ import annotations

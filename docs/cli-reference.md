@@ -27,8 +27,8 @@ The `--telemetry` option accepts one of:
 |---|---|
 | `off` | no telemetry |
 | `counters` (default) | counters, gauges, histograms, and lifecycle/error events |
-| `events` | counters plus verbose events |
-| `full` | counters plus byte-accounting metrics (walks Arrow buffers) |
+| `events` | everything in `counters` plus verbose events |
+| `full` | everything in `events` plus byte-accounting metrics (walks Arrow buffers) |
 
 ## Commands
 
@@ -150,10 +150,51 @@ Print the nautilus version. No arguments.
 nautilus version
 ```
 
+### bench
+
+Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to a
+baseline if one exists, and optionally update it. Telemetry must be at least `counters` (the structural
+digest is the correctness anchor). This produces the before/after numbers a `PERFORMANCE_CHANGELOG.md`
+entry records.
+
+```
+nautilus bench PIPELINE [options]
+```
+
+| option | default | description |
+|---|---|---|
+| `--trials` | `5` | measured runs (median + IQR over these) |
+| `--warmup` | `1` | discarded warmup runs |
+| `--rows` / `--batch` / `--keys` / `--wm-every` | per env | synthetic-source scale |
+| `--parallelism` | `1` | instances per operator |
+| `--workers` | `1` | worker processes (>1 deploys) |
+| `--capacity` | `16` | channel capacity |
+| `--telemetry` | `counters` | tier (must be ≥ `counters`) |
+| `--json` | `false` | print the result as JSON |
+| `--baseline PATH` | `benchmarks/baseline.json` | baseline to compare against / update |
+| `--update` | `false` | write this result into the baseline (refused if nondeterministic) |
+| `--label` | the pipeline | baseline entry name (keep a `--workers` variant alongside the serial one) |
+
+### bench-check
+
+Re-run every pipeline in the baseline at its recorded scale and fail on any regression or output change
+— the CI regression gate. A change counts only when it clears both the threshold and twice the run-to-run
+noise.
+
+```
+nautilus bench-check [options]
+```
+
+| option | default | description |
+|---|---|---|
+| `--baseline PATH` | `benchmarks/baseline.json` | baseline to check against |
+| `--threshold` | `0.07` | floor (fraction) a change must clear to count |
+| `--update` | `false` | rewrite the baseline from this run instead of checking |
+
 ## Exit codes
 
 | code | meaning |
 |---|---|
 | `0` | success |
-| `1` | could not bind `host:port` (`dashboard`, `serve`) |
-| `2` | could not load the pipeline (`run`, `task`, `dashboard`) |
+| `1` | could not bind `host:port` (`dashboard`, `serve`); a regression / output change (`bench-check`); or a nondeterministic `--update` (`bench`) |
+| `2` | could not load the pipeline (`run`, `task`, `dashboard`, `bench`); or a missing baseline entry (`bench-check`) |

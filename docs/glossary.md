@@ -43,15 +43,14 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   (0…*N*−1).
 - **Parallelism** — The number of instances an operator is split into.
 - **Partitioner** — A pure function on the sending side that decides which downstream instance each
-  row of a batch goes to. The kinds are `Forward` (1:1), `Broadcast` (every instance gets a copy),
-  `HashPartitioner` and `KeyGroupPartitioner` (the keyed shuffle — see below), and `RoundRobin`
-  (rotates whole batches for keyless rebalancing). Control frames skip the partitioner and are
-  always broadcast.
+  row of a batch goes to. The kinds the runtime builds are `Forward` (1:1), `KeyGroupPartitioner` (the
+  keyed shuffle — see below), and `RoundRobin` (rotates whole batches for keyless rebalancing). Control
+  frames skip the partitioner and are always broadcast.
 - **Keyed shuffle** — Routing that sends every row with a given key to the same downstream instance,
   so a key's rows and state are never split across instances. The hash (`stable_bucket`) is process-,
-  seed-, and platform-stable, so the same key maps to the same instance in any process. Two forms: a
-  direct hash (`HashPartitioner`, `hash(key) mod Q`) and a key-group shuffle (`KeyGroupPartitioner`,
-  below) that adds a `group → instance` indirection.
+  seed-, and platform-stable, so the same key maps to the same instance in any process. The runtime
+  uses `KeyGroupPartitioner`, which adds a `group → instance` indirection over the hash; `HashPartitioner`
+  (direct `hash(key) mod Q`) is the form it generalizes, kept only as the `G == Q` test oracle.
 - **Key group** — One of *G* fixed buckets a key hashes to (`hash(key) mod G`) before being mapped to
   an instance through a static `group → instance` table the plan carries (`KeyGroupPartitioner`). A key
   never moves between groups, so rescaling the instance count is a table swap, not a re-hash of state.
@@ -191,8 +190,11 @@ the set of frame types is fixed.
 - **Operator context** — The object handed to an operator at `open` time holding its dependencies: its
   id, subtask index and count, state backend, clock, config, and a metrics recorder
   (`OperatorContext`).
-- **Runner (runtime)** — The component that executes a graph. Stage 0's runner is `run_local_chain`
-  (single process, in-memory channels); `run()` is the synchronous one-line wrapper around it.
+- **Runner (runtime)** — The component that executes a job single-process. `run_local_chain` runs a
+  `(source, transforms)` chain in-memory (`run()` is its synchronous one-line wrapper); `run_plan`
+  compiles a `LogicalGraph` and runs it (what the CLI uses at `--parallelism > 1`, `--workers 1`), and
+  `run_compiled` runs an already-compiled `PhysicalPlan` (e.g. a cloudpickle round-trip). All three go
+  through the same compiled executor.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
   (`RunResult`; `result.telemetry`).
 - **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and

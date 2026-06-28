@@ -9,8 +9,8 @@ central scheduler.
   bounded and unbounded inputs.
 - **Backpressure end to end.** Operators are joined by bounded channels with credit-based flow
   control, so a slow sink slows the source instead of growing memory without bound.
-- **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar, micro-batched, and zero-copy
-  across processes.
+- **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar and micro-batched, passed by
+  reference in-process and serialized once to Arrow IPC across a socket.
 
 For the vocabulary and data model (operators, frames, watermarks, …) see `docs/glossary.md`; for the
 architecture and the reasons behind it, `DESIGN.md`; for what's built and what's next,

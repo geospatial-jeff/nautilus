@@ -38,10 +38,9 @@ class LogicalVertex:
 
     ``id`` is a stable logical handle (an explicit edge list will reference it later); the compiler
     derives the *physical* operator id from topological position, so two graphs that differ only in
-    vertex ids compile to the same plan. ``key_columns`` is the source of truth for the shuffle feeding
-    this vertex: set with ``parallelism > 1``, the compiler selects a keyed (hash) partitioner on those
-    columns; unset with ``parallelism > 1``, a round-robin rebalance; at ``parallelism == 1`` the input
-    is forwarded and the key columns do not affect routing.
+    vertex ids compile to the same plan. ``key_columns`` is the source of truth for the keyed shuffle
+    feeding this vertex — the columns its input is co-partitioned on, or ``None`` for keyless. How the
+    compiler turns that and the parallelism into a partitioner spec is ``compile.lower._spec_for``'s job.
     """
 
     id: str

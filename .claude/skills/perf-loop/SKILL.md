@@ -92,9 +92,10 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
 
 ## 3. Form one hypothesis
 
-State it as a falsifiable sentence tied to a metric and a line of code, e.g. "`KeyedTumblingSum` self-time
-is X% of wall because `process` loops in Python over every row (operators.py:159); vectorizing the
-per-key sum with Arrow `group_by` will cut `operator.process_micros` and raise throughput." If the real
+State it as a falsifiable sentence tied to a metric and a line of code, e.g. "`Tokenize` self-time is X%
+of wall because `process` loops in Python over every row (the `for s in ...to_pylist(): ...split()` in
+`Tokenize.process`); vectorizing with Arrow string kernels will cut `operator.process_micros` and raise
+throughput." If the real
 cost is invisible — wall greatly exceeds every accounted metric and no lens explains it — the gap is in
 the *telemetry*, not the code: add the instrument first (a fact, declared in `telemetry/catalog.py`,
 never a verdict; see the `writing-docs` standards and the catalog's banned-words lint), re-run, then

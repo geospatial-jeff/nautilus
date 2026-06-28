@@ -13,9 +13,9 @@ open:
   final stage is the compiler's, pinned to one instance.
 
 A keyed shuffle routes through key groups: each keyed edge gets a ``group → instance`` table of length
-``G`` (the ``key_groups`` argument, defaulting to the operator's parallelism ``Q`` — the identity table,
-byte-identical to a direct hash). A ``key_groups`` above ``Q`` makes a later rescale a table swap, not a
-reshuffle; ``G < Q`` is rejected here, because then some instance would own no group.
+``G`` (the ``key_groups`` argument, defaulting to the operator's parallelism ``Q`` — the identity table).
+A ``key_groups`` above ``Q`` makes a later rescale a table swap, not a reshuffle; ``G < Q`` is rejected
+here, because then some instance would own no group.
 
 It also rejects a parallel vertex whose factory hands back one shared instance, because the executor
 must build a *fresh* operator per subtask — at parallelism > 1 a shared instance's ``open()`` would

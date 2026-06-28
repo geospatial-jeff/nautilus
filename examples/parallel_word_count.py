@@ -1,6 +1,7 @@
 """A parallel keyed word-count via the keyed shuffle, in a single process.
 
-The same word-count as ``examples/wordcount.py``, but ``KeyedCount`` runs as several instances. The keyed
+The same word-count topology as ``examples/wordcount.py`` (on its own input), but ``KeyedCount`` runs as
+several instances. The keyed
 shuffle (a ``KeyGroupPartitioner`` — the identity table at G == N, so byte-identical to a direct hash)
 routes every occurrence of a word to the one instance that owns it, so each instance counts a disjoint
 key range and the union is the full result — identical, as a multiset, to the single-instance run.

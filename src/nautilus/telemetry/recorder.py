@@ -243,8 +243,10 @@ class InstanceRecorder(Recorder):
 
 
 class NullRecorder(Recorder):
-    """A no-op recorder: every verb does nothing and skips the catalog lookup. Used for the OFF tier and
-    as the default ``ctx.metrics`` for operators that emit no custom metrics."""
+    """A no-op recorder: every verb does nothing and skips the catalog lookup. Used for the OFF tier, and
+    as the :attr:`OperatorContext.metrics` field default when no recorder is supplied (direct
+    instantiation / tests) — when telemetry is on, the runtime always wires a real per-operator metrics
+    recorder."""
 
     def counter(self, name: str, **labels: object) -> Counter:
         return NOOP_COUNTER

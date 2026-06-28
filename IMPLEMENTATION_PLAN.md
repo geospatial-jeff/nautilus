@@ -59,5 +59,6 @@ catalog keys fill in as Stages 1.5–4 land.
 ## CLI · **Done**
 
 `nautilus` (also `python -m nautilus`): `run`, `examples`, `catalog`, `reference`, `dashboard` and
-`serve`, `version`, and `task` (prints a ready-to-paste agent prompt). A pipeline is a built-in name
-or `module:function`.
+`serve`, `version`, `task` (prints a ready-to-paste agent prompt), and the benchmarking pair `bench` /
+`bench-check` (median-of-trials throughput vs. a baseline; the CI regression gate). A pipeline is a
+built-in name or `module:function`.

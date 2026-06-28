@@ -222,10 +222,11 @@ async def serve_local_chain(
     )
 
     async def drive() -> None:
-        # A natural finish (a bounded run completing, or an error) flips to "completed" and — if
-        # lingering — holds the frozen snapshot until cancelled. An *external* cancel (Ctrl-C /
-        # shutdown) must propagate, NOT get swallowed into the linger wait: otherwise drive() is
-        # uncancellable and serve_local_chain's shutdown gather hangs forever.
+        # A bounded run completing flips to "completed" and — if lingering — holds the frozen snapshot
+        # until cancelled. A run *error* re-raises out of drive() (the finally still freezes/flips) and
+        # propagates to serve_local_chain's shutdown, so an errored run does NOT linger. An external
+        # cancel (Ctrl-C) likewise propagates rather than being swallowed into the linger wait, so the
+        # shutdown gather never hangs.
         try:
             await run_task  # bounded completes; unbounded blocks until cancelled
         finally:

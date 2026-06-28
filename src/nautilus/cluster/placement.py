@@ -8,9 +8,10 @@ is per-operator round-robin over the sorted worker ids: subtask ``i`` of every o
   same-width keyed edge between them stays an in-process channel — only edges that genuinely cross
   workers become sockets. A true keyed shuffle (e.g. one instance fanning out to several) is
   many-to-many and still crosses.
-* **It is deterministic and W-aware.** The same plan and worker set always yield the same map, so a
-  worker can be told only its own id and recompute nothing; and capping ``W`` at the plan's maximum
-  parallelism (:func:`max_parallelism`) keeps round-robin from ever assigning an empty worker.
+* **It is deterministic and W-aware.** The coordinator computes the map once and ships it whole to every
+  worker as plain data — each worker reads its own slice and recomputes nothing; determinism is what
+  lets any reader reproduce the same map. Capping ``W`` at the plan's maximum parallelism
+  (:func:`max_parallelism`) keeps round-robin from ever assigning an empty worker.
 """
 
 from __future__ import annotations

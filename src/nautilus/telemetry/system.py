@@ -20,7 +20,9 @@ from nautilus.telemetry.recorder import Recorder, TelemetryConfig, make_recorder
 
 
 def make_system_recorder(config: TelemetryConfig, *, node: str = "local") -> Recorder:
-    """A recorder dedicated to one process's resource samples (the sole writer is the SystemSampler)."""
+    """A recorder for one process's resource samples. The SystemSampler is its only writer once running;
+    the executor records the one-time ``placement.instances_per_worker`` gauge on it before sampling
+    starts, so there is never a concurrent writer."""
     return make_recorder(
         operator_id="process", op_class="SystemSampler", kind="process", node=node, config=config
     )
@@ -34,7 +36,8 @@ def _guard(fn: Callable[[], None]) -> None:
 
 
 class SystemSampler:
-    """Periodically samples this process's resources into a recorder. The sole writer of that recorder."""
+    """Periodically samples this process's resources into a recorder. The only writer once its task runs
+    (see :func:`make_system_recorder` for the one-time placement gauge written before it starts)."""
 
     def __init__(
         self,

@@ -20,7 +20,7 @@ from nautilus.api import LogicalVertex, linear_graph
 from nautilus.compile import compile_graph
 from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.runtime.run import run_compiled, run_plan
+from nautilus.runtime.run import run_compiled
 from nautilus.testing import data
 
 
@@ -65,7 +65,7 @@ async def main() -> None:
             f"  edge {edge.src_operator_id} -> {edge.dst_operator_id} via {edge.spec.partitioner_name}"
         )
 
-    result = await run_plan(graph)
+    result = await run_compiled(plan)  # run the plan we just compiled and printed (not a recompile)
     counts = {row["word"]: row["count"] for row in result.to_pylist()}
     print("\nword counts:")
     for word, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):

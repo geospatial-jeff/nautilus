@@ -40,7 +40,9 @@ class ChannelId:
 
 class Connector(ABC):
     """Resolves a :class:`ChannelId` to its send/recv :class:`~nautilus.runtime.channel.Channel` and
-    owns mesh teardown. One implementation per transport."""
+    owns mesh teardown. One implementation per transport. :meth:`outbound` / :meth:`inbound` must be
+    called at most once per ``ChannelId`` (the executor wires each edge exactly once); a transport may
+    rely on that and need not guard a duplicate."""
 
     @abstractmethod
     async def outbound(self, channel_id: ChannelId) -> Channel:
@@ -52,9 +54,9 @@ class Connector(ABC):
 
     @abstractmethod
     async def finish(self) -> None:
-        """Graceful symmetric teardown: drain this connector's outbound edges and close its inbound
-        edges *concurrently* (one gather), so every worker emits its FIN at once and a bidirectional
-        mesh cannot circular-wait on each peer's drain. A no-op in-process."""
+        """Graceful teardown on a clean stop: drain outbound edges and close inbound edges concurrently,
+        so an implementation that talks to peers cannot deadlock. A no-op in-process. (The socket
+        connector's FIN/half-close mechanics are documented on its own ``finish``.)"""
 
     @abstractmethod
     async def close(self) -> None:
@@ -72,8 +74,8 @@ class Deployment:
 
     @staticmethod
     def single_worker(node: str = "local") -> Deployment:
-        """One worker hosting the whole plan; its hardware telemetry is attributed to ``node`` (pinned
-        to ``"local"`` so a single-process report is identical to the legacy single-process run)."""
+        """One worker hosting the whole plan; its hardware telemetry is attributed to ``node``, which
+        defaults to ``"local"`` so a default single-process report reads the same as it always has."""
         return Deployment(node=node, hosted=None)
 
     def hosts(self, operator_id: str, subtask_index: int) -> bool:
