@@ -22,6 +22,32 @@ Measured on **macOS-12.3-arm64-arm-64bit · Python 3.12.11 · nautilus 0.0.1**, 
 
 ---
 
+## 2026-06-28 — Vectorized keyed shuffle (route via Arrow dictionary-encode)
+
+- **Commit:** `8be9259`
+- **Change:** `_route_keyed` (`src/nautilus/runtime/partition.py`) no longer loops over rows in Python
+  (build a key tuple, dict-look-up its owning instance, append the row index to a per-instance list). It
+  `dictionary_encode`s the key column(s) so the owning instance is computed **once per distinct key**,
+  expands that to a per-row `int32` bucket column with `pc.take`, and forms each instance's sub-batch
+  with one `pc.filter`. `stable_bucket` and the key-scalar validation are byte-for-byte unchanged — they
+  just run once per distinct key instead of once per row — so cross-process routing is identical. A
+  multi-column key folds each column's per-row dictionary index into one compact combo id (re-encoded
+  after each column so it can never overflow `int64`), reconstructing each distinct key from a
+  representative row.
+- **Impact (harness; Linux x86_64 · Python 3.12.3):** `bench-keyed` at parallelism 4 (1M rows,
+  batch 4096): **1000 keys 284k → 352k rows/s (1.24×)**; **50 keys 649k → 1.50M rows/s (2.32×)** — the
+  win grows as key cardinality falls, where the per-row Python loop dominated. Parallelism 8, 1000 keys:
+  **257k → 311k rows/s (1.21×)**. (The shuffle only runs at parallelism > 1; a single-owner edge
+  short-circuits unchanged.)
+- **Correctness:** structural digest identical before and after at every scale measured (`5cf30d1e…`
+  for P4/1000 keys, `d2215cab…` for P8/1000, `84f69ee3…` for P4/50). A new byte-identical fuzz oracle
+  (`tests/test_partition.py::test_route_matches_per_row_reference_byte_identical_under_fuzz`) pins the
+  vectorized rid→instance map — and the within-bucket row order — to the original per-row loop across
+  single/multi-column str/int/bool/bytes/null keys, with a dedicated high-cardinality multi-column case
+  for the overflow guard. (Tokenize was left per-row: the columnar `utf8_split_whitespace`/`list_flatten`
+  form split correctly but corrupted transiently under load — a pyarrow buffer-lifetime issue — and a
+  streaming engine cannot ship a nondeterministic tokenizer.)
+
 ## 2026-06-27 — Mailbox single-input fast path
 
 - **Commit:** `fadcb2c`
