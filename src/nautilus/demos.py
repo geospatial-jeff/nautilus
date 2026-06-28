@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 
 import pyarrow as pa
 
-from nautilus.core.operator import OperatorContext, SourceOperator
+from nautilus.core.operator import SourceOperator
 from nautilus.core.records import EOS_FRAME, Batch, Frame, Watermark
 
 
@@ -36,13 +36,6 @@ class DemoStreamSource(SourceOperator):
         self.rows_per_batch = rows_per_batch
         self.keys = keys
         self.window_micros = window_micros
-        self.closed = False
-
-    def open(self, ctx: OperatorContext) -> None:
-        self.closed = False
-
-    def close(self) -> None:
-        self.closed = True
 
     async def frames(self) -> AsyncIterator[Frame]:
         n = 0

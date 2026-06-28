@@ -41,11 +41,18 @@ async def test_demo_stream_stays_loop_responsive():
     proc = rep.operator("process")
     lag = next((h for h in proc.histograms if h.name == "runtime.loop_lag_micros"), None)
     assert lag is not None and lag.count >= 1
-    assert src.closed
 
 
 async def test_unbounded_demo_cancels_cleanly():
-    src = DemoStreamSource(interval_s=0.01, max_batches=None)  # never ends on its own
+    # A source subclass that records close() via an Event, so we can assert the operator's close() ran
+    # on the cancellation unwind without the demo carrying a test-only flag.
+    closed = asyncio.Event()
+
+    class ClosingDemo(DemoStreamSource):
+        def close(self) -> None:
+            closed.set()
+
+    src = ClosingDemo(interval_s=0.01, max_batches=None)  # never ends on its own
     task = asyncio.create_task(
         run_local_chain(src, [_window_op()], telemetry=TelemetryConfig(sample_interval_micros=5000))
     )
@@ -53,7 +60,7 @@ async def test_unbounded_demo_cancels_cleanly():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert src.closed  # close() still ran in finally; no phantom operator.error, no hang
+    assert closed.is_set()  # close() still ran in finally; no phantom operator.error, no hang
 
 
 async def test_source_generator_finalized_on_cancel():

@@ -176,14 +176,14 @@ class KeyedTumblingSum(OneInputOperator):
         return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
-        # A tumbling window assigns each row to exactly one window [start, start+size) with
-        # start = ts - ts % size, so the window can be computed columnar (ts >= 0, so floor-div * size
-        # equals ts - ts % size). Partial-summing this batch per (key, window) in Arrow first turns the
-        # old per-row state write into one write per distinct (key, window) — far fewer Python-level
-        # state ops — and the per-batch partial folds into the running sum because addition is associative.
+        # A tumbling window assigns each row to exactly one window [start, start+size); the assigner owns
+        # that boundary formula (computed columnar here). Partial-summing this batch per (key, window) in
+        # Arrow first turns the old per-row state write into one write per distinct (key, window) — far
+        # fewer Python-level state ops — and each per-batch partial folds into the running sum because
+        # addition is associative.
         size = self.window.size
         ts = pc.cast(batch.column(self.ts_col), pa.int64()).to_numpy(zero_copy_only=False)
-        window_start = (ts // size) * size
+        window_start = self.window.assign_starts(ts)
         grouped = (
             pa.table(
                 {

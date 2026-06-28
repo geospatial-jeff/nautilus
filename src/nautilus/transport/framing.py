@@ -61,7 +61,10 @@ def decode(kind: Kind, payload: bytes) -> Frame | int:
 
 
 def split(message: bytes) -> tuple[Kind, bytes]:
-    """Parse a complete in-memory wire message into ``(kind, payload)`` (used by tests)."""
+    """Parse one complete in-memory wire message into ``(kind, payload)`` — the synchronous counterpart
+    to :func:`read_message` for a message already fully in a buffer (e.g. the output of
+    :func:`encode_frame` / :func:`encode_credit`), without a stream. ``payload`` then decodes via
+    :func:`decode`."""
     kind = Kind(message[0])
     length = int.from_bytes(message[1:_HEADER], "big")
     return kind, message[_HEADER : _HEADER + length]

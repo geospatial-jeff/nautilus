@@ -4,11 +4,12 @@ A partitioner decides, on the *sender*, which downstream instance(s) each row go
 function of the batch and the downstream fan-out — no central entity is consulted. Routing each batch
 is therefore a local decision, which is what "no central scheduler on the data path" means here.
 
-Stage 0 ships :class:`Forward` (1:1) and :class:`Broadcast`. Stage 1.5 added the keyed shuffle
-(:class:`HashPartitioner`, direct ``hash(key) mod Q``) and :class:`RoundRobin` rebalancing, which
-multi-instance parallelism needs. Stage 2 adds :class:`KeyGroupPartitioner`, the keyed shuffle with a
-``group → instance`` indirection table — the rescale seam (its class docstring has the mechanism;
-``DESIGN.md`` has the decision).
+Stage 0 ships :class:`Forward` (1:1). Stage 1.5 added :class:`RoundRobin` rebalancing and the keyed
+shuffle, generalized in Stage 2 to :class:`KeyGroupPartitioner` — the keyed shuffle with a
+``group → instance`` indirection table that is the rescale seam (its class docstring has the mechanism;
+``DESIGN.md`` has the decision). :class:`HashPartitioner` is the direct ``hash(key) mod Q`` form it
+generalizes; it is kept only as the ``G == Q`` equivalence oracle for tests and is not wired into the
+runtime (the compiler emits a :class:`~nautilus.compile.plan.KeyGroupSpec`, never a hash spec).
 """
 
 from __future__ import annotations
@@ -126,18 +127,12 @@ class Forward(Partitioner):
         return [(0, batch)]
 
 
-class Broadcast(Partitioner):
-    """Sends a full copy of every batch to every downstream instance."""
-
-    def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
-        return [(i, batch) for i in range(num_downstream)]
-
-
 class HashPartitioner(_KeyedPartitioner):
-    """The keyed shuffle: route each row to the instance that owns ``hash(key) mod Q``, so every row
-    with a given key lands on the same instance (co-location) and that instance owns the whole key
+    """The direct keyed shuffle: route each row to the instance that owns ``hash(key) mod Q``, so every
+    row with a given key lands on the same instance (co-location) and that instance owns the whole key
     range ``{k : stable_bucket(k, Q) == i}``. :class:`KeyGroupPartitioner` generalizes it with a
-    ``group → instance`` indirection table.
+    ``group → instance`` indirection table and is what the runtime actually builds; this class is kept
+    only as the ``G == Q`` equivalence oracle for tests (no spec maps to it).
     """
 
     def __init__(self, key_columns: Sequence[str]) -> None:

@@ -205,45 +205,7 @@ class ReducingState(_Handle, Generic[T]):
         self._backend.clear(self._scope())
 
 
-class ListState(_Handle, Generic[T]):
-    """An append-only list per key/namespace."""
-
-    def add(self, value: T) -> None:
-        scope = self._scope()
-        current = cast("list[T] | None", self._backend.get(scope))
-        if current is None:
-            self._backend.put(scope, [value])
-        else:
-            current.append(value)
-
-    def get(self) -> list[T]:
-        return cast("list[T]", self._backend.get(self._scope()) or [])
-
-    def clear(self) -> None:
-        self._backend.clear(self._scope())
-
-
-class MapState(_Handle, Generic[T]):
-    """A dict per key/namespace."""
-
-    def _dict(self) -> dict[object, T] | None:
-        return cast("dict[object, T] | None", self._backend.get(self._scope()))
-
-    def get(self, map_key: object) -> T | None:
-        d = self._dict()
-        return None if d is None else d.get(map_key)
-
-    def put(self, map_key: object, value: T) -> None:
-        scope = self._scope()
-        d = self._dict()
-        if d is None:
-            self._backend.put(scope, {map_key: value})
-        else:
-            d[map_key] = value
-
-    def items(self) -> list[tuple[object, T]]:
-        d = self._dict()
-        return [] if d is None else list(d.items())
-
-    def clear(self) -> None:
-        self._backend.clear(self._scope())
+# ListState / MapState were removed: they had no callers or accessors and their in-place mutation
+# (append/setitem without a re-put) violated the StateBackend get-then-put contract a future copying or
+# spilling backend will rely on. Add them back — backend-correct, with OperatorContext accessors and
+# tests — when an operator actually needs list/map state.

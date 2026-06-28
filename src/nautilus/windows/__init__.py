@@ -1,15 +1,18 @@
 """Windowing primitives: window definitions and assigners.
 
-A :class:`WindowAssigner` maps a record's event time to the set of windows it belongs to. Triggering
-(when to compute a window) is, for Stage 0, implicitly *on watermark*: a window fires once the
-operator watermark passes its end. Sliding/session windows and pluggable triggers arrive in Stage 3;
-the assigner abstraction is shaped to accommodate them (``assign`` already returns a *list*).
+A :class:`WindowAssigner` maps a record's event time to the window(s) it belongs to and owns the
+boundary math, so an operator never recomputes it. Triggering (when to compute a window) is, for
+Stage 0, implicitly *on watermark*: a window fires once the operator watermark passes its end.
+Sliding/session windows and pluggable triggers arrive in Stage 3; the assigner abstraction is shaped to
+accommodate them (``assign`` already returns a *list*).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,10 +21,6 @@ class TimeWindow:
 
     start: int
     end: int
-
-    def max_timestamp(self) -> int:
-        """The last timestamp belonging to this window (inclusive)."""
-        return self.end - 1
 
 
 class WindowAssigner(ABC):
@@ -41,3 +40,9 @@ class TumblingEventTimeWindows(WindowAssigner):
     def assign(self, timestamp: int) -> list[TimeWindow]:
         start = timestamp - (timestamp % self.size)
         return [TimeWindow(start, start + self.size)]
+
+    def assign_starts(self, timestamps: np.ndarray) -> np.ndarray:
+        """The window start for each event time, vectorized — the columnar form the keyed window
+        operator uses, so the tumbling-boundary formula lives only here. Floor division matches the
+        scalar ``ts - ts % size`` in :meth:`assign` for negative event times too (both floor)."""
+        return (timestamps // self.size) * self.size

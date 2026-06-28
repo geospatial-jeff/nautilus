@@ -95,9 +95,3 @@ class PhysicalPlan:
 
     operators: tuple[PhysicalOperator, ...]
     edges: tuple[PhysicalEdge, ...]
-
-    def operator(self, operator_id: str) -> PhysicalOperator:
-        for op in self.operators:
-            if op.operator_id == operator_id:
-                return op
-        raise KeyError(f"no operator {operator_id!r} in plan")

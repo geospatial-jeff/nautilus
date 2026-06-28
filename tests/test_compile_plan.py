@@ -29,9 +29,10 @@ def test_names_operators_by_position_with_synthesized_sink() -> None:
         ("op1", "one_input", 3),
         ("sink", "sink", 1),
     ]
-    sink = plan.operator("sink")
+    by_id = {o.operator_id: o for o in plan.operators}
+    sink = by_id["sink"]
     assert sink.op_class == "CollectSink" and sink.factory is None
-    assert plan.operator("op0").op_class == "Tokenize"
+    assert by_id["op0"].op_class == "Tokenize"
 
 
 def test_edge_specs_come_from_the_downstream_operator() -> None:

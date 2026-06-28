@@ -15,7 +15,7 @@ section, which the GIL makes safe without locks.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -59,14 +59,13 @@ class ListCollector(Collector):
 
 @dataclass
 class OperatorContext:
-    """The state backend, clock, config, and metrics recorder passed to an operator at ``open`` time."""
+    """The state backend, clock, and metrics recorder passed to an operator at ``open`` time."""
 
     operator_id: str
     subtask_index: int = 0
     num_subtasks: int = 1
     state_backend: StateBackend = field(default_factory=_InMemoryStateBackend)
     clock: Clock = field(default_factory=SystemClock)
-    config: Mapping[str, Any] = field(default_factory=dict)
     #: Operator-author custom-metric recorder — a SEPARATE recorder from the actor's built-in one, so
     #: the single-writer invariant is never violated. Defaults to a zero-cost no-op.
     metrics: Recorder = NULL_RECORDER
