@@ -14,7 +14,7 @@ import hashlib
 import json
 import platform
 
-import nautilus
+from nautilus._version import __version__
 from nautilus.core.time import Clock
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.report import RunMeta, Topology
@@ -53,7 +53,7 @@ def make_run_meta(
         ended_at_micros=ended_at,
         wall_micros=wall_micros,
         clock_kind=type(clk).__name__,
-        nautilus_version=nautilus.__version__,
+        nautilus_version=__version__,
         python_version=platform.python_version(),
         config_digest=config_digest(topology, config, capacity),
         capacity=capacity,

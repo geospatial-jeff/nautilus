@@ -22,8 +22,7 @@ exact frame control. Anything not re-exported here is still importable from its 
 ``nautilus.dsl``, ``nautilus.operators``, ``nautilus.telemetry``).
 """
 
-__version__ = "0.0.1"
-
+from nautilus._version import __version__
 from nautilus.core.operator import (
     Collector,
     OneInputOperator,
