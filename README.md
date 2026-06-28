@@ -22,6 +22,30 @@ Early development. A single-process streaming engine runs today, plus the compil
 deployer that runs a graph across worker processes over a mix of in-process and socket edges. Multi-node
 validation is designed but not yet built. See `IMPLEMENTATION_PLAN.md`.
 
+## Python
+
+The fluent `Stream` DSL builds and runs a pipeline; each combinator returns a new stream.
+
+```python
+import pyarrow as pa
+from nautilus import source
+
+lines = pa.record_batch({"line": ["the quick brown fox", "the lazy dog"]})
+result = source(lines).tokenize("line", "word").count_by("word").run()
+print(result.to_pylist())              # [{'word': 'the', 'count': 2}, ...]
+```
+
+`.run(workers=N)` deploys the *same* graph across N worker processes — the only change from the
+single-process run. `.join` combines two streams into an inner equi-join (both sides shuffled on the key,
+so equal keys meet on one instance):
+
+```python
+joined = source(orders).join(source(customers), on="customer_id").run(workers=2)
+```
+
+For the simplest case the one-liner `run(src, [op, ...])` takes a source and a list of operators
+directly. See [`docs/dsl-reference.md`](docs/dsl-reference.md) for every combinator.
+
 ## CLI
 
 ```bash

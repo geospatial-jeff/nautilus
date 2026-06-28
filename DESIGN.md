@@ -20,18 +20,22 @@ dataflow: the dataflow graph defines the computation, and no central component s
 Each layer produces a single artifact for the next; no layer bypasses its neighbor to reach another.
 
 ```
-nautilus.api        LogicalGraph (frozen IR)      fluent DSL  (Stage 3)
+nautilus.dsl        Stream → LogicalGraph         fluent builder, value layer above the IR
+nautilus.api        LogicalGraph (frozen IR)      explicit-edge DAG (linear chain or join)
 nautilus.compile    PhysicalPlan                  one-time lowering  (Stage 2)
 nautilus.runtime    actors, channels, mailboxes   the data path
+nautilus.driver     RunResult                     the boundary: compile, run, build the report
 nautilus.transport  framed Arrow-IPC + control    TCP, loopback now / cross-host  (Stage 1/4)
 nautilus.cluster    placement, launcher, …        CONTROL PLANE ONLY  (Stage 2)
 ```
 
 "No central scheduler" is scoped precisely: a Compiler, Deployer, startup barrier, `CollectSink`,
 and completion detector are deliberate, bounded centralizations confined to the one-time control
-phase or to job boundaries; none grant data credits or gate per-record progress. The boundary is
-enforced mechanically — `nautilus.runtime`/`core`/`transport` may not import `nautilus.cluster`
-(an import-linter contract in CI).
+phase or to job boundaries; none grant data credits or gate per-record progress. The boundaries are
+enforced mechanically by import-linter contracts in CI: `nautilus.runtime`/`core`/`transport` may not
+import `nautilus.cluster`; the report layer is assembled only in `nautilus.driver` (and the coordinator),
+so the whole data-path package `nautilus.runtime` may not import it; and the IR (`nautilus.api`) imports
+nothing else in nautilus, so a `LogicalGraph` stays a pure, serializable value.
 
 The compiler's output, the `PhysicalPlan`, is the unit of distribution: a worker is handed a plan it
 never compiled. So the plan is kept neutral — it carries operator factories and stateless partitioner
@@ -39,8 +43,9 @@ never compiled. So the plan is kept neutral — it carries operator factories an
 That is why `compile` imports neither the runtime nor the report layer (also an import-linter contract):
 a plan must cloudpickle to a process that has only the data path, so a `RoundRobin`'s rotation cursor or
 a report type must never ride along. A worker runs its slice of the plan and returns raw measurements;
-the boundary — the single-process runner today, the coordinator in a cluster — translates the plan's
-neutral structure into the report topology and aggregates the workers' snapshots into one report.
+the boundary — the single-process driver (`nautilus.driver`) today, the coordinator in a cluster —
+translates the plan's neutral structure into the report topology and aggregates the workers' snapshots
+into one report.
 
 ## The Frame model (`nautilus.core.records`)
 
@@ -150,7 +155,7 @@ cause-and-effect. See `docs/telemetry-reference.md`.
 
 ## Status
 
-The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, and
-the compiler + cluster control plane (compile a graph and deploy it across worker processes) run today.
-The full DSL and multi-node validation are designed but not built. `IMPLEMENTATION_PLAN.md` has the
-stage-by-stage detail.
+The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, the
+compiler + cluster control plane (compile a graph and deploy it across worker processes), the fluent
+`Stream` DSL, and the two-input inner equi-join run today. Multi-node validation (Stage 4) is designed
+but not built. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.

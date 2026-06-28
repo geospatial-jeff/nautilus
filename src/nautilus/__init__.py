@@ -1,20 +1,25 @@
 """Nautilus: a decentralized, entirely-streaming parallel compute framework.
 
-A fluent DSL is planned for a later stage; until then the curated names below are the public surface,
-importable straight from the top level::
+The fluent :class:`~nautilus.dsl.Stream` DSL is the readable way to build and run a pipeline::
 
     import pyarrow as pa
-    from nautilus import run, from_batches, Tokenize, KeyedCount
+    from nautilus import source
 
-    source = from_batches(pa.record_batch({"line": ["the quick brown fox", "the lazy dog"]}))
-    result = run(source, [Tokenize("line", "word"), KeyedCount("word")])
-    print(result.to_pylist(), result.telemetry.summary)
+    lines = pa.record_batch({"line": ["the quick brown fox", "the lazy dog"]})
+    result = source(lines).tokenize("line", "word").count_by("word").run()
+    print(result.to_pylist())
 
-``from_batches`` wraps a bare ``pyarrow.RecordBatch`` for you and appends the terminal
-:data:`EOS_FRAME`; for an event-time stream it also accepts :class:`Batch` / :class:`Watermark` frames.
-Reach for ``InMemorySource([...])`` only when you need exact frame control (placing EOS yourself, or
-omitting it). Anything not re-exported here is still importable from its concrete module (e.g.
-``nautilus.driver.local``, ``nautilus.operators``, ``nautilus.telemetry``) during early development.
+``.run(workers=N)`` deploys the *same* graph across N worker processes; ``.join`` combines two streams
+into an inner equi-join::
+
+    joined = source(orders).join(source(customers), on="customer_id").run()
+
+For the simplest case the one-liner :func:`run` takes a source and a list of operators directly —
+``run(from_batches(lines), [Tokenize("line", "word"), KeyedCount("word")])``. ``from_batches`` wraps a
+bare ``pyarrow.RecordBatch`` and appends the terminal :data:`EOS_FRAME`; for an event-time stream it also
+accepts :class:`Batch` / :class:`Watermark` frames. Reach for ``InMemorySource([...])`` only when you need
+exact frame control. Anything not re-exported here is still importable from its concrete module (e.g.
+``nautilus.dsl``, ``nautilus.operators``, ``nautilus.telemetry``).
 """
 
 __version__ = "0.0.1"
@@ -28,6 +33,7 @@ from nautilus.core.operator import (
 from nautilus.core.records import EOS_FRAME, Batch, Watermark
 from nautilus.driver.local import run, run_local_chain
 from nautilus.driver.result import RunResult
+from nautilus.dsl import Stream, source
 from nautilus.operators import (
     FilterRows,
     HashJoin,
@@ -43,6 +49,9 @@ from nautilus.tensors import embedding_array, tensor_array, tensor_type, to_nump
 
 __all__ = [
     "__version__",
+    # the fluent DSL (the primary way to build a pipeline)
+    "Stream",
+    "source",
     # runners
     "run",
     "run_local_chain",

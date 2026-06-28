@@ -28,8 +28,9 @@ through the `Connector`); on its own it does not yet exercise operator paralleli
 An operator runs as N instances, each owning a key range, with the keyed shuffle (`HashPartitioner`,
 generalized to `KeyGroupPartitioner` in Stage 2) routing each batch to the owning instance and `Mailbox`
 fan-in conserving rows. The per-instance report groups by `(operator_id, subtask_index, node)`. Stage 2
-subsumed the original single-process channel mesh into the compiler and executor; `run_parallel_chain` is
-now a thin wrapper over them, and `nautilus run --parallelism`/`--workers` drives parallelism from the CLI.
+subsumed the original single-process channel mesh into the compiler and executor, and `nautilus run
+--parallelism`/`--workers` drives parallelism from the CLI; Stage 3 made the fluent `Stream` DSL
+(`.run(parallelism=, workers=)`) the way to express it.
 
 ### Stage 2 — Compile, deploy, decentralized control plane · **Done**
 
@@ -40,9 +41,9 @@ and symmetric EOS-draining teardown (`nautilus.cluster.deploy`). Co-located edge
 true shuffle crosses workers, over the Stage 1 `SocketChannel` reached by a node address. `nautilus run
 --workers/--parallelism` drives it; telemetry aggregates at the coordinator with per-worker attribution.
 
-### Stage 3 — Full DSL, two-input join, Arrow hot path · **In progress**
+### Stage 3 — Full DSL, two-input join, Arrow hot path · **Done**
 
-A fluent graph-building API, an inner streaming equi-join, and a columnar shuffle. Landing in
+A fluent graph-building API, an inner streaming equi-join, and a columnar shuffle. Landed in
 independently-shippable sub-stages, each green across pytest / mypy / ruff / black / import-linter:
 
 - **3.0 — Arrow hot path · Done.** The keyed shuffle (`runtime.partition._route_keyed`) routes by
@@ -62,10 +63,15 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   by key, emits each match as the later side arrives (order-independent), drops the right's key columns
   and rejects an output column-name collision, clears at EOS. Verified in-process, parallel (co-partition),
   and across worker processes (distributed result + digest match single-process).
-- **3.4 — Fluent `Stream` DSL · Next.** The `nautilus.dsl` builder, the `nautilus.driver` boundary
-  package, and retiring the Stage-2 API sprawl.
+- **3.4 — Fluent `Stream` DSL · Done.** `nautilus.dsl.Stream` (`source(...)` → `map`/`filter`/`tokenize`/
+  `count_by`/`tumbling_sum`/`apply`/`join` → `.run(workers=, parallelism=)`/`.collect()`) is the public
+  surface for building a pipeline — immutable, join-capable, the same graph in-process and across workers.
+  The boundary runners moved into a new `nautilus.driver` package (making the report-layer firewall a
+  package-level import-linter contract, plus a fifth contract enforcing IR purity), and the redundant
+  Stage-2 builder path (`Stage`/`graph_from_stages`/`run_parallel_chain`) is retired.
 
-See `CODE_REVIEW.md` for the design forks these settle (join semantics, DSL surface, the hot path).
+See `CODE_REVIEW.md` for the design forks these settled (join semantics, DSL surface, the hot path) and
+the Stage-3 API-consolidation note.
 
 ### Stage 4 — Validate multi-node seams · Planned
 

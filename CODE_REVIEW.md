@@ -261,3 +261,16 @@ Post-round-2 ground truth: **pytest 276 passed**, mypy --strict clean, ruff clea
   scale tradeoffs; real optimizations, not defects, deferred until measured.
 - A handful of cosmetic items (C11/R11 transport-telemetry on the Channel ABC, example consolidation,
   `OperatorNode.subtask_index` vestigiality) — low value vs. churn.
+
+## Stage 3 — API consolidation (resolves C92, C74)
+
+The Stage-2 API-sprawl findings are resolved by the Stage 3 fluent DSL. `nautilus.dsl.Stream` — build with
+`source(...)`, chain `map`/`filter`/`tokenize`/`count_by`/`tumbling_sum`/`apply`/`join`, run with
+`.run(workers=, parallelism=)` / `.collect()` — is the single public surface for building a pipeline, and
+it builds its own examples (C74: `source` and `from_batches` are top-level exports). The redundant
+`Stage` / `graph_from_stages` / `run_parallel_chain` builder path (C92) is deleted, its callers migrated
+to the DSL. The boundary runners (`run`, `run_local_chain`, `run_plan`, `run_compiled`, `RunResult`,
+`make_run_meta`) moved into a new `nautilus.driver` package, which turned the report-layer firewall into a
+package-level import-linter contract (no more hand-maintained submodule list) and added a fifth contract
+mechanically enforcing IR purity (`nautilus.api` imports nothing else in nautilus). The two-input join's
+self-join is rejected loudly (threading an input port through `ChannelId` is the documented deferral).

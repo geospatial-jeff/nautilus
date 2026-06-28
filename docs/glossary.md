@@ -80,11 +80,19 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 
 *Source: `nautilus.api`, `nautilus.compile`.* How a described job becomes a runnable artifact.
 
+- **Stream** — The fluent builder (`nautilus.dsl.Stream`): an immutable handle on a dataflow under
+  construction. Each *combinator* (`map`, `tokenize`, `count_by`, `join`, `apply`, …) returns a new
+  Stream that adds one operator; a *terminal* (`run`, `run_async`, `collect`) executes it. It produces a
+  **logical graph** and nothing more — the readable, join-capable way to build one. Start one with
+  `source(...)`.
+- **Combinator / terminal** — A combinator is a `Stream` method that adds an operator and returns a new
+  stream; a terminal (`run`/`collect`) is the method that compiles and runs the stream. `run(workers=N)`
+  deploys the same graph across N processes.
 - **Logical graph** — The job as you describe it: operators with their parallelism and keying wired into
   a dataflow, and nothing physical — no instances, no channels, no operator ids (`LogicalGraph`). With no
   explicit edges it is the linear shape (a source then a chain, built with `linear_graph`); with explicit
   edges it is any DAG — the shape a join needs (two sources into one two-input vertex). It is the input to
-  the compiler and what the fluent DSL will produce **(planned)**.
+  the compiler, and what the fluent `Stream` DSL produces.
 - **Vertex** — One operator in a logical graph: the factory that builds it, its kind (source, one-input,
   or two-input), its parallelism, and (on a one-input vertex, for the linear shape) its key columns
   (`LogicalVertex`).
