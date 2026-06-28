@@ -42,9 +42,6 @@ class KeyContext:
     key: Key
     namespace: Namespace = None
 
-    def with_namespace(self, namespace: Namespace) -> KeyContext:
-        return KeyContext(self.key, namespace)
-
 
 # --- Backend -----------------------------------------------------------------------------------
 

@@ -43,14 +43,14 @@ class SystemSampler:
         self,
         recorder: Recorder,
         *,
-        node: str = "local",
         interval_micros: int = 500_000,
         host: bool = False,
         proc: Any = None,
         psutil_mod: Any = None,
     ) -> None:
+        # node is not stored here: the recorder already carries it (make_system_recorder), and every
+        # sample is written through that recorder, so the sampler never needs node of its own.
         self._rec = recorder
-        self._node = node
         self._interval_micros = interval_micros
         self._host = host
         self._proc = proc

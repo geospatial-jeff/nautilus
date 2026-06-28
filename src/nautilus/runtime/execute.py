@@ -254,9 +254,7 @@ async def execute(
             # per-process recorder (independent of system sampling) so it lands in this node's row.
             proc_rec.set_gauge("placement.instances_per_worker", len(hosted), node=deployment.node)
             if cfg.sample_system:
-                sampler = SystemSampler(
-                    proc_rec, node=deployment.node, interval_micros=cfg.sample_interval_micros
-                )
+                sampler = SystemSampler(proc_rec, interval_micros=cfg.sample_interval_micros)
                 sampler_task = asyncio.create_task(sampler.run())
 
         try:
