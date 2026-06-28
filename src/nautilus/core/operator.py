@@ -81,7 +81,8 @@ class OperatorContext:
         """Iterate ``(KeyContext, value)`` for every entry of this operator's named state — the
         flush-time counterpart to :meth:`value_state` / :meth:`reducing_state`. Operator code uses this
         to enumerate all keys/windows at a watermark without naming its own ``operator_id`` or building a
-        ``StateScope`` by hand. The snapshot is stable to mutate during iteration (e.g. to clear)."""
+        ``StateScope`` by hand. The snapshot is stable to mutate during iteration (e.g. to clear).
+        """
         for key, namespace, value in self.state_backend.entries(self.operator_id, name):
             yield KeyContext(key, namespace), value
 

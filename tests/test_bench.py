@@ -1,6 +1,5 @@
 """The benchmark harness: robust statistics, noise-aware comparison, measurement, and baseline I/O."""
 
-
 import pytest
 
 from nautilus import bench
@@ -24,7 +23,15 @@ def test_summarize_single_sample_has_zero_spread():
 def _result(median, *, spread=0.02, digest="A", platform="linux", pipeline="p"):
     stats = Stats((median,), median, median * spread, spread, median, median)
     env = Environment("0.0.1", "3.12", platform, "cpu", "abc1234")
-    scale = {"rows": 1, "batch": 1, "keys": 1, "wm_every": 1, "parallelism": 1, "workers": 1, "tier": 1}
+    scale = {
+        "rows": 1,
+        "batch": 1,
+        "keys": 1,
+        "wm_every": 1,
+        "parallelism": 1,
+        "workers": 1,
+        "tier": 1,
+    }
     return BenchResult(pipeline, scale, 1, stats, digest, True, env, "")
 
 
@@ -66,9 +73,13 @@ def test_compare_does_not_judge_perf_across_machines_but_still_checks_output():
 
 
 def test_measure_reduces_trials_to_a_stable_deterministic_result():
-    env = Environment("0.0.1", "3.12", "test", "cpu", None)  # fixed env: no git subprocess in the test
+    env = Environment(
+        "0.0.1", "3.12", "test", "cpu", None
+    )  # fixed env: no git subprocess in the test
     r = bench.measure("wordcount", trials=3, warmup=1, tier=Tier.COUNTERS, environment=env)
-    assert r.deterministic and r.structural_digest  # bounded pipeline -> identical results each trial
+    assert (
+        r.deterministic and r.structural_digest
+    )  # bounded pipeline -> identical results each trial
     assert r.throughput_rows_per_sec.median > 0
     assert len(r.throughput_rows_per_sec.samples) == 3
 
@@ -83,7 +94,9 @@ def test_baseline_round_trips_through_json(tmp_path):
     original = {"p": _result(12345.0, digest="deadbeef")}
     bench.save_baseline(path, original)
     loaded = bench.load_baseline(path)
-    assert loaded == original  # frozen dataclasses compare by value; samples survive the JSON tuple/list
+    assert (
+        loaded == original
+    )  # frozen dataclasses compare by value; samples survive the JSON tuple/list
 
 
 def test_compare_is_symmetric_about_the_threshold_definition():

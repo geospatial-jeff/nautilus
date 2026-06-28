@@ -145,9 +145,7 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
     assert any(v > 0 for v in edge_bytes.values())
 
     # edge.credit_wait_micros is recorded (>= 0) on those same socket edges, never on in-process ones.
-    assert any(
-        p.name == "edge.credit_wait_micros" for o in rep.operators for p in o.counters
-    )
+    assert any(p.name == "edge.credit_wait_micros" for o in rep.operators for p in o.counters)
 
     # Arrow IPC serialization is timed on both ends: encode on the producer's edge, decode on the
     # receiving instance. Both only appear because data genuinely crossed a socket.
@@ -163,7 +161,9 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
     }
     assert set(placements) == {"worker-0", "worker-1"}
     instances = {(o.operator_id, o.subtask_index) for o in rep.operators if o.kind != "process"}
-    assert sum(placements.values()) == len(instances)  # every instance is placed on exactly one worker
+    assert sum(placements.values()) == len(
+        instances
+    )  # every instance is placed on exactly one worker
 
 
 # --- fail-fast: re-raise the child traceback and reap every worker -----------------------------

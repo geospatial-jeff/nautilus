@@ -41,6 +41,18 @@ def test_close_input_pins_to_max():
     assert t.close_input(0) == WATERMARK_MAX
 
 
+def test_set_active_rejoins_input_without_regression():
+    # C110: an idle input rejoining via set_active (the StatusActive seam) must not move the combined
+    # watermark backward, even though it rejoins behind the current combined.
+    t = WatermarkTracker(2)
+    t.update(0, 10)
+    t.update(1, 20)
+    assert t.combined == 10
+    assert t.set_idle(0) == 20  # input 0 idle -> combined advances to follow input 1 alone
+    assert t.set_active(0) is None  # input 0 rejoins at 10 (behind 20) -> no advance, no regression
+    assert t.combined == 20
+
+
 def test_watermark_strategies():
     assert MonotonicTimestamps().watermark_for(100) == 100
     assert BoundedOutOfOrder(5).watermark_for(100) == 95

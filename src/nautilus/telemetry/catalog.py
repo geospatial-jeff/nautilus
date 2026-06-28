@@ -23,7 +23,8 @@ class MetricKind(StrEnum):
 class Reduction(StrEnum):
     """How a series *should* roll up across instances/subtasks. Advisory metadata exported in the JSON
     catalog and the reference table for report consumers — ``build_report`` does NOT read it: its merge
-    is fixed by instrument kind (counters sum, gauges keep last + min/max, histograms add buckets)."""
+    is fixed by instrument kind (counters sum, gauges keep last + min/max, histograms add buckets).
+    """
 
     SUM = "sum"
     MAX = "max"

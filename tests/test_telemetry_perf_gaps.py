@@ -110,7 +110,9 @@ async def test_queue_depth_histogram_records_a_distribution():
 def test_backend_sizes_count_entries_and_distinct_keys():
     be = InMemoryStateBackend()
     be.put(StateScope("op", "acc", ("a",), "w0"), 1)
-    be.put(StateScope("op", "acc", ("a",), "w1"), 1)  # same key, new namespace -> +1 entry, same key
+    be.put(
+        StateScope("op", "acc", ("a",), "w1"), 1
+    )  # same key, new namespace -> +1 entry, same key
     be.put(StateScope("op", "acc", ("b",), "w0"), 1)
     assert be.sizes() == {("op", "acc"): (3, 2)}  # 3 entries, 2 distinct keys
     be.put(StateScope("op", "acc", ("a",), "w0"), 99)  # update existing slot -> counts unchanged

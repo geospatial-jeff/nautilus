@@ -40,7 +40,10 @@ def test_in_memory_source_rejects_non_frame():
 def test_empty_key_columns_rejected():
     with pytest.raises(ValueError, match="key_columns"):
         LogicalVertex(
-            id="op0", factory=lambda: KeyedCount("w"), kind="one_input", parallelism=2,
+            id="op0",
+            factory=lambda: KeyedCount("w"),
+            kind="one_input",
+            parallelism=2,
             key_columns=(),
         )
 
@@ -150,3 +153,39 @@ def test_partitioner_name_matches_runtime_class():
 
     for spec in (ForwardSpec(), RoundRobinSpec(), KeyGroupSpec(("k",), (0,))):
         assert spec.partitioner_name == type(partitioner_from_spec(spec)).__name__
+
+
+# --- C70: the report query helpers return descending-sorted derived ratios ---------------------
+
+
+def test_report_occupancy_and_rows_per_sec_queries():
+    from nautilus import KeyedCount, Tokenize
+
+    rep = run(
+        from_batches(pa.record_batch({"line": ["a b", "a"]})),
+        [Tokenize("line", "word"), KeyedCount("word")],
+    ).telemetry
+    for ranked in (rep.by_occupancy(), rep.by_rows_per_sec()):
+        assert ranked and all(len(t) == 2 for t in ranked)
+        values = [v for _, v in ranked]
+        assert values == sorted(values, reverse=True)  # highest first
+
+
+# --- C112: in-process parallel fail-fast surfaces the error instead of hanging -----------------
+
+
+async def test_in_process_parallel_fail_fast():
+    import asyncio
+
+    from nautilus.core.operator import Collector, OneInputOperator
+    from nautilus.runtime.run import run_plan
+
+    class Boom(OneInputOperator):
+        def process(self, batch, out: Collector) -> None:
+            raise RuntimeError("boom")
+
+    graph = graph_from_stages(
+        from_batches(pa.record_batch({"k": [1, 2, 3]})), [Stage(lambda: Boom(), 2)]
+    )
+    with pytest.raises((RuntimeError, ExceptionGroup)):
+        await asyncio.wait_for(run_plan(graph), timeout=10)

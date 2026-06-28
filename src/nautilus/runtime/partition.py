@@ -112,7 +112,9 @@ class _KeyedPartitioner(Partitioner):
 
             def bucket_of(key: tuple[object, ...]) -> int:
                 idx = cache.get(key)
-                if idx is None:  # a key never seen: validate and compute its owner once, then memoize
+                if (
+                    idx is None
+                ):  # a key never seen: validate and compute its owner once, then memoize
                     _validate_key(key)
                     idx = self._bucket(key, num_downstream)
                     cache[key] = idx
@@ -152,7 +154,9 @@ class HashPartitioner(_KeyedPartitioner):
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
             return [(0, batch)]  # one owner: skip per-row hashing entirely
-        return _route_keyed(batch, num_downstream, self._key_columns, self._bucket_of(num_downstream))
+        return _route_keyed(
+            batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
+        )
 
 
 class KeyGroupPartitioner(_KeyedPartitioner):
@@ -184,7 +188,9 @@ class KeyGroupPartitioner(_KeyedPartitioner):
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
             return [(0, batch)]  # one owner: skip per-row hashing entirely
-        return _route_keyed(batch, num_downstream, self._key_columns, self._bucket_of(num_downstream))
+        return _route_keyed(
+            batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
+        )
 
 
 class RoundRobin(Partitioner):

@@ -66,7 +66,9 @@ def test_extra_value_cols_widen_the_schema():
 
 def test_skew_concentrates_rows_on_a_few_hot_keys():
     counts = Counter()
-    for b in _batches(SyntheticKeyedSource(num_batches=8, batch_rows=4096, key_cardinality=200, skew=1.2)):
+    for b in _batches(
+        SyntheticKeyedSource(num_batches=8, batch_rows=4096, key_cardinality=200, skew=1.2)
+    ):
         counts.update(b.column("key").to_pylist())
     total = sum(counts.values())
     assert counts.most_common(1)[0][1] / total > 0.05  # hottest key >> uniform 1/200 = 0.5%
@@ -86,7 +88,11 @@ def test_jitter_makes_timestamps_out_of_order():
 
 def test_watermark_lag_holds_the_watermark_behind_the_latest_event():
     frames = asyncio.run(
-        _drain(SyntheticKeyedSource(num_batches=2, batch_rows=10, key_cardinality=4, wm_every=2, watermark_lag=5))
+        _drain(
+            SyntheticKeyedSource(
+                num_batches=2, batch_rows=10, key_cardinality=4, wm_every=2, watermark_lag=5
+            )
+        )
     )
     wms = [f.t for f in frames if isinstance(f, Watermark)]
     assert wms == [20 - 1 - 5]  # without lag it would be the latest index, 19
@@ -95,8 +101,12 @@ def test_watermark_lag_holds_the_watermark_behind_the_latest_event():
 def test_nulls_varied_values_and_payload_widen_the_data():
     batch = _batches(
         SyntheticKeyedSource(
-            num_batches=1, batch_rows=2000, key_cardinality=50,
-            null_fraction=0.3, value_spread=100, payload_bytes=16,
+            num_batches=1,
+            batch_rows=2000,
+            key_cardinality=50,
+            null_fraction=0.3,
+            value_spread=100,
+            payload_bytes=16,
         )
     )[0]
     assert batch.column("key").null_count > 0  # some keys are missing

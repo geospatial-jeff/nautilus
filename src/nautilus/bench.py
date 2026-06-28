@@ -119,7 +119,9 @@ class BenchResult:
     trials: int
     throughput_rows_per_sec: Stats
     structural_digest: str
-    deterministic: bool  # the digest held across every trial (a comparison is meaningless otherwise)
+    deterministic: (
+        bool  # the digest held across every trial (a comparison is meaningless otherwise)
+    )
     environment: Environment
     recorded_at: str
 
@@ -135,13 +137,20 @@ def result_from_dict(d: dict[str, Any]) -> BenchResult:
         trials=int(d["trials"]),
         throughput_rows_per_sec=Stats(
             tuple(float(x) for x in t["samples"]),
-            float(t["median"]), float(t["iqr"]), float(t["rel_spread"]), float(t["min"]), float(t["max"]),
+            float(t["median"]),
+            float(t["iqr"]),
+            float(t["rel_spread"]),
+            float(t["min"]),
+            float(t["max"]),
         ),
         structural_digest=str(d["structural_digest"]),
         deterministic=bool(d["deterministic"]),
         environment=Environment(
-            str(e["nautilus_version"]), str(e["python_version"]), str(e["platform"]),
-            str(e["processor"]), (None if e["commit"] is None else str(e["commit"])),
+            str(e["nautilus_version"]),
+            str(e["python_version"]),
+            str(e["platform"]),
+            str(e["processor"]),
+            (None if e["commit"] is None else str(e["commit"])),
         ),
         recorded_at=str(d["recorded_at"]),
     )
@@ -233,12 +242,16 @@ def measure(
     The digest needs telemetry, so ``tier`` must be at least ``COUNTERS`` (the default). A fresh pipeline
     is built each trial because a source is consumed once."""
     if tier <= Tier.OFF:
-        raise ValueError("bench needs tier >= COUNTERS so a structural digest (the correctness anchor) exists")
+        raise ValueError(
+            "bench needs tier >= COUNTERS so a structural digest (the correctness anchor) exists"
+        )
     throughputs: list[float] = []
     digests: list[str] = []
     with _scaled_env(rows, batch, keys, wm_every):
         for _ in range(warmup):
-            run_once(pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier)
+            run_once(
+                pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+            )
         for _ in range(trials):
             rep = run_once(
                 pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
@@ -248,8 +261,13 @@ def measure(
     return BenchResult(
         pipeline=pipeline,
         scale={
-            "rows": rows, "batch": batch, "keys": keys, "wm_every": wm_every,
-            "parallelism": parallelism, "workers": workers, "tier": int(tier),
+            "rows": rows,
+            "batch": batch,
+            "keys": keys,
+            "wm_every": wm_every,
+            "parallelism": parallelism,
+            "workers": workers,
+            "tier": int(tier),
         },
         trials=trials,
         throughput_rows_per_sec=summarize(throughputs),
@@ -266,8 +284,13 @@ def measure_like(result: BenchResult, **overrides: object) -> BenchResult:
     s = result.scale
     return measure(
         result.pipeline,
-        rows=s["rows"], batch=s["batch"], keys=s["keys"], wm_every=s["wm_every"],
-        parallelism=s["parallelism"], workers=s["workers"], tier=Tier(s["tier"]),
+        rows=s["rows"],
+        batch=s["batch"],
+        keys=s["keys"],
+        wm_every=s["wm_every"],
+        parallelism=s["parallelism"],
+        workers=s["workers"],
+        tier=Tier(s["tier"]),
         trials=result.trials,
         **overrides,  # type: ignore[arg-type]
     )
@@ -298,7 +321,9 @@ class Comparison:
     noise: float
 
 
-def compare(base: BenchResult, current: BenchResult, *, min_threshold: float = DEFAULT_THRESHOLD) -> Comparison:
+def compare(
+    base: BenchResult, current: BenchResult, *, min_threshold: float = DEFAULT_THRESHOLD
+) -> Comparison:
     b, c = base.throughput_rows_per_sec, current.throughput_rows_per_sec
     delta = (c.median - b.median) / b.median if b.median else 0.0
     noise = max(b.rel_spread, c.rel_spread)

@@ -22,7 +22,8 @@ from nautilus.telemetry.report import RunMeta, Topology
 
 def config_digest(topology: Topology, config: TelemetryConfig, capacity: int) -> str:
     """A short, stable hash of the run's *shape* (capacity, tier, topology nodes/edges) — so two runs of
-    the same configured pipeline carry the same digest, and a shape change is visible at a glance."""
+    the same configured pipeline carry the same digest, and a shape change is visible at a glance.
+    """
     canonical = {
         "capacity": capacity,
         "tier": int(config.tier),

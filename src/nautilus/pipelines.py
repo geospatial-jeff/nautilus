@@ -109,7 +109,9 @@ def bench_linear() -> Pipeline:
     see how throughput scales with batch size."""
     p = bench_params()
     source = SyntheticKeyedSource(
-        num_batches=p["num_batches"], batch_rows=p["batch_rows"], key_cardinality=p["key_cardinality"]
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
     )
     return source, [MapBatch(passthrough)]
 
@@ -137,10 +139,15 @@ def bench_skew() -> Pipeline:
     p = bench_params()
     skew = float(os.environ.get("NAUTILUS_BENCH_SKEW", "1.2"))
     source = SyntheticKeyedSource(
-        num_batches=p["num_batches"], batch_rows=p["batch_rows"],
-        key_cardinality=p["key_cardinality"], wm_every=p["wm_every"], skew=skew,
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+        wm_every=p["wm_every"],
+        skew=skew,
     )
-    return source, [KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))]
+    return source, [
+        KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))
+    ]
 
 
 def bench_late() -> Pipeline:
@@ -149,11 +156,17 @@ def bench_late() -> Pipeline:
     growth before they fire)."""
     p = bench_params()
     source = SyntheticKeyedSource(
-        num_batches=p["num_batches"], batch_rows=p["batch_rows"],
-        key_cardinality=p["key_cardinality"], wm_every=p["wm_every"],
-        jitter=p["batch_rows"] * 2, watermark_lag=p["batch_rows"], value_spread=1000,
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+        wm_every=p["wm_every"],
+        jitter=p["batch_rows"] * 2,
+        watermark_lag=p["batch_rows"],
+        value_spread=1000,
     )
-    return source, [KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))]
+    return source, [
+        KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))
+    ]
 
 
 def bench_backpressure() -> Pipeline:
@@ -163,7 +176,9 @@ def bench_backpressure() -> Pipeline:
     p = bench_params()
     delay = int(os.environ.get("NAUTILUS_BENCH_DELAY_US", "200"))
     source = SyntheticKeyedSource(
-        num_batches=p["num_batches"], batch_rows=p["batch_rows"], key_cardinality=p["key_cardinality"]
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
     )
     return source, [SlowMap(delay)]
 

@@ -225,7 +225,11 @@ class RunReport:
     def throughput_rows_per_sec(self) -> float:
         """End-to-end throughput: total rows out per wall-clock second (derived on demand, never
         persisted). The headline number for comparing two runs of the same pipeline."""
-        return self.summary.total_rows_out / (self.meta.wall_micros / 1_000_000) if self.meta.wall_micros else 0.0
+        return (
+            self.summary.total_rows_out / (self.meta.wall_micros / 1_000_000)
+            if self.meta.wall_micros
+            else 0.0
+        )
 
     def by_occupancy(self) -> list[tuple[str, float]]:
         """Per-instance occupancy — self-time (``runtime.step_micros``) as a fraction of wall — highest

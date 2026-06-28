@@ -60,7 +60,9 @@ class SlowMap(OneInputOperator):
         self._delay_ns = delay_micros * 1000
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
-        deadline = perf_counter_ns() + self._delay_ns  # busy-wait (not sleep): a real CPU-bound stage
+        deadline = (
+            perf_counter_ns() + self._delay_ns
+        )  # busy-wait (not sleep): a real CPU-bound stage
         while perf_counter_ns() < deadline:
             pass
         out.emit(batch)
@@ -193,7 +195,8 @@ class SyntheticTextSource(SourceOperator):
     """Yields ``num_batches`` batches of ``rows_per_batch`` lines, each line ``tokens_per_row`` space-
     separated words drawn round-robin from a ``vocabulary``-sized set (``w0``..``w{vocabulary-1}``).
     Feeds the tokenize → keyed-count fan-out: one short input row explodes into many output rows, so the
-    output batch-size histogram and a keyed shuffle on ``word`` both run hot. Deterministic and unpaced."""
+    output batch-size histogram and a keyed shuffle on ``word`` both run hot. Deterministic and unpaced.
+    """
 
     def __init__(
         self,

@@ -103,7 +103,8 @@ def graph_from_pipeline(
     This is the CLI's builder→IR bridge. At ``parallelism > 1`` each instance is replicated per subtask
     by :func:`copy.deepcopy` (a fresh, unopened operator — the operator must be deep-copyable), since one
     shared instance cannot be replicated. Each vertex carries the operator's own ``key_columns()``, so a
-    keyed operator is never silently round-robined (the compiler turns that into the partitioner)."""
+    keyed operator is never silently round-robined (the compiler turns that into the partitioner).
+    """
     if parallelism < 1:
         raise ValueError(f"parallelism must be >= 1, got {parallelism}")
     vertices = [

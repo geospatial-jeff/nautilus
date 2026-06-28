@@ -13,7 +13,6 @@ import subprocess
 import sys
 from decimal import Decimal
 
-import msgpack
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -85,12 +84,6 @@ def test_encoder_distinguishes_scalar_types() -> None:
 def test_encoder_is_length_prefixed() -> None:
     # length-prefixing keeps ("a","bc") and ("ab","c") apart even though they concatenate the same.
     assert stable_bucket(("a", "bc"), _BIG_Q) != stable_bucket(("ab", "c"), _BIG_Q)
-
-
-def test_encoder_separates_one_tuple_from_scalar() -> None:
-    # A 1-element key array encodes differently from a bare scalar (array tag + length vs the value).
-    assert msgpack.packb(["x"], use_bin_type=True) != msgpack.packb("x", use_bin_type=True)
-    assert msgpack.packb([1], use_bin_type=True) != msgpack.packb(1, use_bin_type=True)
 
 
 # --- Forward / RoundRobin ----------------------------------------------------------------------

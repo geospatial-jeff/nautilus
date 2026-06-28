@@ -163,9 +163,7 @@ class Output:
         # Transport accounting is per-channel and only for cross-process edges: an in-process channel
         # reports None, so its index is absent here and its sends skip the bookkeeping entirely. The
         # SocketChannel reports cumulative totals; we record the per-send delta against these.
-        self._transport_idx = {
-            i for i, ch in enumerate(channels) if ch.bytes_written() is not None
-        }
+        self._transport_idx = {i for i, ch in enumerate(channels) if ch.bytes_written() is not None}
         self._prev_bytes = [0] * len(channels)
         self._prev_credit_wait = [0] * len(channels)
         self._prev_encode = [0] * len(channels)
@@ -209,7 +207,9 @@ class Output:
         if depth is not None:
             rec.set_gauge("edge.queue_depth", depth, **base)  # capacity is set once in __init__
             self._depth_hists[idx].observe(depth)
-        if idx in self._transport_idx:  # cross-process edge: record wire bytes + serialize/stall deltas
+        if (
+            idx in self._transport_idx
+        ):  # cross-process edge: record wire bytes + serialize/stall deltas
             written = ch.bytes_written() or 0
             rec.incr("transport.bytes_sent", written - self._prev_bytes[idx], **base)
             self._prev_bytes[idx] = written
@@ -342,9 +342,7 @@ async def run_transform(
     # the (expensive) Arrow buffer-size walk entirely.
     bytes_on = bytes_in is not NOOP_COUNTER
     bytes_out_arg = bytes_out if bytes_on else None
-    proc_hist = recorder.histogram(
-        "operator.process_micros", operator_id=op_id, subtask_index=sub
-    )
+    proc_hist = recorder.histogram("operator.process_micros", operator_id=op_id, subtask_index=sub)
     batch_rows_hist = recorder.histogram(
         "operator.batch_rows", operator_id=op_id, subtask_index=sub
     )
@@ -385,7 +383,9 @@ async def run_transform(
         dt_ns = perf_counter_ns() - w0
         wm_hist.observe(dt_ns // 1000)
         wm_calls.add(1)
-        step.add_ns(dt_ns)  # on_watermark is a synchronous critical section too — see runtime.step_micros
+        step.add_ns(
+            dt_ns
+        )  # on_watermark is a synchronous critical section too — see runtime.step_micros
 
     async def _advance(advanced: int | None) -> None:
         """On a strict watermark advance: record it, fire due windows/timers, flush, then forward the

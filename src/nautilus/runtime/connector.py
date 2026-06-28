@@ -75,7 +75,8 @@ class Deployment:
     @staticmethod
     def single_worker(node: str = "local") -> Deployment:
         """One worker hosting the whole plan; its hardware telemetry is attributed to ``node``, which
-        defaults to ``"local"`` so a default single-process report reads the same as it always has."""
+        defaults to ``"local"`` so a default single-process report reads the same as it always has.
+        """
         return Deployment(node=node, hosted=None)
 
     def hosts(self, operator_id: str, subtask_index: int) -> bool:

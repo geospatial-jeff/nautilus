@@ -190,3 +190,29 @@ aligning.)
    the redundant runners/builders/vertex types, and decide `RunResult.schema`/`OperatorContext.config`
    (wire or delete).
 5. **Enforce black in CI** (or drop the ruff deferral), so formatting can't drift.
+
+## Resolution (implemented 2026-06-28)
+
+All five priorities above and the great majority of the 104 verified findings were implemented across
+seven commits (correctness → dead code → engine unification → API → telemetry/transport → docs →
+tests/format). Highlights: the event-time unit bug (C1) is fixed and regression-tested; both silent
+traps (C91, C93) fail loudly; `run_local_chain` is now a thin shim over the compiled `run_plan` path, so
+there is one execution engine (C18); the public surface builds its own one-liner and `run()` takes
+`parallelism=` (C74, C94); dead code is gone (C24, C3, C22, C35, C6, C2, …); telemetry/transport edges
+(C56, C64, C66, C67, C38, C13, C60, …) and ~25 doc findings are addressed; the generated
+telemetry-reference is regenerated from the catalog.
+
+Post-change ground truth: **pytest 267 passed**, mypy --strict clean, ruff clean, **black --check clean
+(105 files)**, import-linter 4/4. All eight examples and the multi-process `deploy` examples run; the
+distributed result matches single-process.
+
+Deliberately deferred (low value vs. churn/risk; noted at the call sites):
+
+- **C46 / C52 code** — credit-return coalescing and control-frame coalescing on the socket channel: a
+  protocol change on delicate, well-tested flow-control code for a low-magnitude win. The control-frame
+  unboundedness tradeoff is now documented instead.
+- **C54** — metric label-key validation: would touch every hot-path recorder call; the redundancy it
+  targets is cosmetic.
+- **C36** — a shared kind StrEnum: the IR firewall (api imports nothing internal) resists a single
+  cross-layer enum, and the kind strings are a small, consistent, localized set.
+- **C113** — deduping copy-pasted test helpers across ~6 files: test-only churn.

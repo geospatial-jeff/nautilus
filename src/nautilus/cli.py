@@ -350,12 +350,19 @@ def bench(
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
     workers: int = typer.Option(1, help="Worker processes (>1 deploys across them)."),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
-    telemetry: str = typer.Option("counters", help="Tier to measure at (>= counters; the digest needs it)."),
+    telemetry: str = typer.Option(
+        "counters", help="Tier to measure at (>= counters; the digest needs it)."
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
-    baseline: Path = typer.Option(DEFAULT_BASELINE, help="Baseline file to compare against / update."),
-    update: bool = typer.Option(False, "--update", help="Write this result into the baseline file."),
+    baseline: Path = typer.Option(
+        DEFAULT_BASELINE, help="Baseline file to compare against / update."
+    ),
+    update: bool = typer.Option(
+        False, "--update", help="Write this result into the baseline file."
+    ),
     label: str = typer.Option(
-        "", help="Baseline entry name (default: the pipeline). Use to keep a --workers variant alongside the single-process one."
+        "",
+        help="Baseline entry name (default: the pipeline). Use to keep a --workers variant alongside the single-process one.",
     ),
 ) -> None:
     """Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to the
@@ -364,13 +371,23 @@ def bench(
     key = label or pipeline
     tier = _tier(telemetry)
     if tier <= Tier.OFF:
-        raise typer.BadParameter("bench needs telemetry >= counters (the structural digest needs it)")
+        raise typer.BadParameter(
+            "bench needs telemetry >= counters (the structural digest needs it)"
+        )
     try:
         with console.status(f"measuring {pipeline} · {warmup}+{trials} runs…"):
             result = measure(
-                pipeline, rows=rows, batch=batch, keys=keys, wm_every=wm_every,
-                parallelism=parallelism, workers=workers, capacity=capacity, tier=tier,
-                trials=trials, warmup=warmup,
+                pipeline,
+                rows=rows,
+                batch=batch,
+                keys=keys,
+                wm_every=wm_every,
+                parallelism=parallelism,
+                workers=workers,
+                capacity=capacity,
+                tier=tier,
+                trials=trials,
+                warmup=warmup,
                 recorded_at=datetime.now(UTC).isoformat(timespec="seconds"),
             )
     except (KeyError, ImportError, AttributeError) as e:
@@ -402,12 +419,17 @@ def bench(
 @app.command(name="bench-check")
 def bench_check(
     baseline: Path = typer.Option(DEFAULT_BASELINE, help="Baseline file to check against."),
-    threshold: float = typer.Option(DEFAULT_THRESHOLD, help="Floor (fraction) a change must clear to count."),
-    update: bool = typer.Option(False, "--update", help="Rewrite the baseline from this run instead of checking."),
+    threshold: float = typer.Option(
+        DEFAULT_THRESHOLD, help="Floor (fraction) a change must clear to count."
+    ),
+    update: bool = typer.Option(
+        False, "--update", help="Rewrite the baseline from this run instead of checking."
+    ),
 ) -> None:
     """Re-run every pipeline in the baseline at its recorded scale and fail (exit 1) on any regression or
     output change — the regression ratchet for CI. A change counts only when it clears both the threshold
-    and twice the measured noise; an output change (digest mismatch) always fails, on any machine."""
+    and twice the measured noise; an output change (digest mismatch) always fails, on any machine.
+    """
     if not baseline.exists():
         console.print(
             f"[red]no baseline at[/red] {baseline}  "
@@ -435,8 +457,12 @@ def bench_check(
         updated[name] = cur
         style = _STATUS_STYLE.get(cmp.status, "")
         table.add_row(
-            name, _fmt(cmp.base_median), _fmt(cmp.new_median), f"{cmp.delta:+.1%}",
-            f"{cur.throughput_rows_per_sec.rel_spread:.1%}", f"[{style}]{cmp.status}[/{style}]",
+            name,
+            _fmt(cmp.base_median),
+            _fmt(cmp.new_median),
+            f"{cmp.delta:+.1%}",
+            f"{cur.throughput_rows_per_sec.rel_spread:.1%}",
+            f"[{style}]{cmp.status}[/{style}]",
         )
         if is_failure(cmp.status):
             failures.append(name)

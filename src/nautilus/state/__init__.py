@@ -101,7 +101,9 @@ class InMemoryStateBackend(StateBackend):
         return self._store.get(scope)
 
     def put(self, scope: StateScope, value: object) -> None:
-        if scope not in self._store:  # a new slot — update the size counters (existing folds skip this)
+        if (
+            scope not in self._store
+        ):  # a new slot — update the size counters (existing folds skip this)
             self._track_add(scope)
         self._store[scope] = value
 
