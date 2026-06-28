@@ -34,6 +34,12 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Input port** — Which input of an operator an edge feeds: port 0 for a one-input transform (and a
   join's left side), port 1 for a join's right side. The port is what lets a two-input operator tell its
   two inbound edges apart.
+- **Equi-join (hash join)** — The built-in two-input operator (`HashJoin`): it emits a joined row for
+  every left and right row whose join keys are equal (an *inner* join). It is a *symmetric hash join* —
+  it buffers both sides by key and matches a new row against the other side's buffer, so each pair is
+  emitted once, when the later of the two arrives, regardless of order. The output is the left row's
+  columns plus the right row's non-key columns. Both inputs are co-partitioned on the join value by the
+  keyed shuffle, so a key's rows meet on one instance.
 - **Sink** — The end of the graph: it consumes the final stream. Stage 0's sink collects the output
   batches into a list (it appears as `CollectSink` in the topology and telemetry).
 - **Edge** — A directed connection from one operator's output to a downstream operator's **input port**.

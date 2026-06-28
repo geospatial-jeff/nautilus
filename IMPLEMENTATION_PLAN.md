@@ -58,9 +58,12 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   side, combines watermarks as `min(left, right)`, and forwards EOS after both ports close. The executor
   wires a port-ordered mailbox and one Output per outbound edge (list-valued edge maps — also the latent
   fan-out edge-loss fix).
-- **3.3 — `HashJoin` operator · Next.** The concrete inner symmetric-hash equi-join.
-- **3.4 — Fluent `Stream` DSL.** The `nautilus.dsl` builder, the `nautilus.driver` boundary package, and
-  retiring the Stage-2 API sprawl.
+- **3.3 — `HashJoin` operator · Done.** The concrete inner symmetric-hash equi-join: buffers both sides
+  by key, emits each match as the later side arrives (order-independent), drops the right's key columns
+  and rejects an output column-name collision, clears at EOS. Verified in-process, parallel (co-partition),
+  and across worker processes (distributed result + digest match single-process).
+- **3.4 — Fluent `Stream` DSL · Next.** The `nautilus.dsl` builder, the `nautilus.driver` boundary
+  package, and retiring the Stage-2 API sprawl.
 
 See `CODE_REVIEW.md` for the design forks these settle (join semantics, DSL surface, the hot path).
 

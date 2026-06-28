@@ -28,6 +28,7 @@ from nautilus.core.operator import (
 from nautilus.core.records import EOS_FRAME, Batch, Watermark
 from nautilus.operators import (
     FilterRows,
+    HashJoin,
     InMemorySource,
     KeyedCount,
     KeyedTumblingSum,
@@ -59,6 +60,7 @@ __all__ = [
     "Tokenize",
     "KeyedCount",
     "KeyedTumblingSum",
+    "HashJoin",
     # data frames (for building event-time inputs by hand)
     "Batch",
     "Watermark",

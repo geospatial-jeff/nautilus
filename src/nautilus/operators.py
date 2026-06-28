@@ -8,9 +8,10 @@ Concrete operators that exercise the streaming semantics — each follows the sy
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import cast
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -19,6 +20,7 @@ from nautilus.core.operator import (
     OneInputOperator,
     OperatorContext,
     SourceOperator,
+    TwoInputOperator,
 )
 from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
 from nautilus.core.time import to_epoch_micros
@@ -261,3 +263,120 @@ class KeyedTumblingSum(OneInputOperator):
         if fired:
             # operator-author custom metric (separate recorder; no-op unless telemetry is on)
             self._ctx.metrics.incr("window.fires", len(fired), operator_id=self._ctx.operator_id)
+
+
+def _group_rows_by_key(
+    batch: pa.RecordBatch, key_columns: tuple[str, ...]
+) -> dict[tuple[object, ...], pa.RecordBatch]:
+    """Split a batch into one sub-batch per distinct key tuple. The key is read with ``to_pylist`` — the
+    same Python scalars the keyed shuffle hashes on — so the join and the shuffle agree on every key, and
+    co-partitioned rows meet here under the identical tuple."""
+    cols = [batch.column(c).to_pylist() for c in key_columns]
+    rows_by_key: dict[tuple[object, ...], list[int]] = {}
+    for r in range(batch.num_rows):
+        rows_by_key.setdefault(tuple(col[r] for col in cols), []).append(r)
+    return {k: batch.take(pa.array(rows, pa.int64())) for k, rows in rows_by_key.items()}
+
+
+class HashJoin(TwoInputOperator):
+    """An inner equi-join: for every left row and right row whose join keys are equal, emit one joined row.
+
+    It is a *symmetric hash join* — each side's rows are buffered by key as they arrive, and a new row on
+    one side is immediately matched against every buffered row on the other — so each pair is emitted
+    exactly once, when the later of the two arrives, independent of arrival order. Both inputs are
+    co-partitioned on the join value by the keyed shuffle, so every row of a given key reaches the same
+    instance from either side and the match is purely local.
+
+    The output row is the left row's columns followed by the right row's *non-key* columns: the join key
+    appears once (from the left), and the right's key columns are dropped (they equal the left's by the
+    join condition). A non-key right column whose name collides with a left column name is rejected —
+    rename one side. ``left_on`` and ``right_on`` name the equi-join columns on each side (a string or a
+    sequence) and must have equal length; column *i* of ``left_on`` is matched against column *i* of
+    ``right_on``.
+
+    State is the per-key buffers of both sides, held until end of stream and then cleared — the same
+    unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. ``on_watermark``
+    is a no-op: matches are emitted as they form, so nothing waits on event time. A windowed variant that
+    bounds and evicts this state on the watermark is the additive next step, and this operator leaves that
+    seam (``on_watermark``) open for it.
+    """
+
+    def __init__(
+        self, left_on: str | Sequence[str], right_on: str | Sequence[str] | None = None
+    ) -> None:
+        self.left_on = (left_on,) if isinstance(left_on, str) else tuple(left_on)
+        ro: str | Sequence[str] = left_on if right_on is None else right_on
+        self.right_on = (ro,) if isinstance(ro, str) else tuple(ro)
+        if len(self.left_on) != len(self.right_on):
+            raise ValueError(
+                f"left_on {self.left_on} and right_on {self.right_on} must name the same number of "
+                "columns (column i of left_on is matched against column i of right_on)"
+            )
+
+    def open(self, ctx: OperatorContext) -> None:
+        # Per-key buffers: each holds one running RecordBatch of the rows seen so far for that key. They
+        # grow until close() — the documented unbounded-state tradeoff.
+        self._left: dict[tuple[object, ...], pa.RecordBatch] = {}
+        self._right: dict[tuple[object, ...], pa.RecordBatch] = {}
+        # Output schema parts, captured from the first batch of each side (no schema exists until then).
+        self._left_names: list[str] | None = None
+        self._right_value_cols: list[str] | None = None
+        self._checked = False
+
+    def process_left(self, batch: pa.RecordBatch, out: Collector) -> None:
+        if self._left_names is None:
+            self._left_names = list(batch.schema.names)
+            self._check_columns()
+        for key, sub in _group_rows_by_key(batch, self.left_on).items():
+            buffered_right = self._right.get(key)
+            if buffered_right is not None:  # these right rows arrived first; complete the pairs now
+                out.emit(self._join(sub, buffered_right))
+            self._left[key] = _concat(self._left.get(key), sub)
+
+    def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
+        if self._right_value_cols is None:
+            keys = set(self.right_on)
+            self._right_value_cols = [c for c in batch.schema.names if c not in keys]
+            self._check_columns()
+        for key, sub in _group_rows_by_key(batch, self.right_on).items():
+            buffered_left = self._left.get(key)
+            if buffered_left is not None:
+                out.emit(self._join(buffered_left, sub))
+            self._right[key] = _concat(self._right.get(key), sub)
+
+    def close(self) -> None:
+        self._left.clear()
+        self._right.clear()
+
+    def _check_columns(self) -> None:
+        """Once both input schemas are known, reject a right non-key column that collides with a left
+        column name (the output would have two columns of that name). A no-op until both sides seen.
+        """
+        if self._checked or self._left_names is None or self._right_value_cols is None:
+            return
+        left = set(self._left_names)
+        collide = [c for c in self._right_value_cols if c in left]
+        if collide:
+            raise ValueError(
+                f"join output column name collision on {collide}: each appears on both the left input and "
+                "the right input's non-key columns; rename one side before joining"
+            )
+        self._checked = True
+
+    def _join(self, left: pa.RecordBatch, right: pa.RecordBatch) -> pa.RecordBatch:
+        """The cross product of ``left`` and ``right`` rows (all share the join key): each left row paired
+        with every right row, left columns then right non-key columns."""
+        assert self._left_names is not None and self._right_value_cols is not None
+        nl, nr = left.num_rows, right.num_rows
+        left_part = left.take(pa.array(np.repeat(np.arange(nl), nr), pa.int64()))
+        right_part = right.take(pa.array(np.tile(np.arange(nr), nl), pa.int64()))
+        arrays = [*left_part.columns, *(right_part.column(c) for c in self._right_value_cols)]
+        return pa.RecordBatch.from_arrays(
+            arrays, names=[*self._left_names, *self._right_value_cols]
+        )
+
+
+def _concat(buffered: pa.RecordBatch | None, sub: pa.RecordBatch) -> pa.RecordBatch:
+    """Append ``sub``'s rows to a key's running buffer (or start one). Same schema both sides — they come
+    from the one input — so the concatenation is well-defined."""
+    return sub if buffered is None else pa.concat_batches([buffered, sub])
