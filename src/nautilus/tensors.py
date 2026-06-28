@@ -96,11 +96,11 @@ def _stack(arrays: NDArray[Any] | Sequence[NDArray[Any]]) -> NDArray[Any]:
         return arrays
     items = list(arrays)
     if not items:
-        raise ValueError("tensor_array: empty sequence of arrays")
+        raise ValueError("empty sequence of arrays")  # caller-agnostic: _stack serves both builders
     shapes = {item.shape for item in items}
     if len(shapes) != 1:
-        raise ValueError(f"tensor_array: arrays must share one shape, got {sorted(shapes)}")
+        raise ValueError(f"arrays must share one shape, got {sorted(shapes)}")
     dtypes = {str(item.dtype) for item in items}
     if len(dtypes) != 1:
-        raise ValueError(f"tensor_array: arrays must share one dtype, got {sorted(dtypes)}")
+        raise ValueError(f"arrays must share one dtype, got {sorted(dtypes)}")
     return np.asarray(np.stack(items))

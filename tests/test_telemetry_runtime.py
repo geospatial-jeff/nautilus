@@ -37,7 +37,7 @@ async def test_run_returns_result_with_telemetry_and_batches():
     # Arrow-first readers collapse the per-batch zip
     assert {r["word"]: r["count"] for r in result.to_pylist()} == counts
     assert set(result.to_pydict()) == {"word", "count"}
-    assert result.telemetry.schema_version == 2
+    assert result.telemetry.schema_version == 3
 
 
 async def test_rows_are_conserved_across_edges():

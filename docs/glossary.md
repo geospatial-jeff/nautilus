@@ -155,9 +155,9 @@ the set of frame types is fixed.
 - **State backend** — The pluggable store behind keyed state (`StateBackend`). The default is an
   in-memory dictionary (`InMemoryStateBackend`); the interface includes `snapshot`/`restore` so a
   persistent or checkpointing backend can be added without changing operators.
-- **State handles** — Typed accessors for one piece of keyed state: `ValueState` (a single value),
-  `ReducingState` (a value folded by a reducer as items are added), `ListState` (an appendable list),
-  and `MapState` (a dictionary).
+- **State handles** — Typed accessors for one piece of keyed state: `ValueState` (a single value) and
+  `ReducingState` (a value folded by a reducer as items are added). To enumerate or clear all of an
+  operator's keyed state at a watermark, use `OperatorContext.entries` / `clear_state`.
 - **Window** — A finite slice of the stream, defined over event time, that a result is computed over.
   A `TimeWindow` is a half-open interval `[start, end)`.
 - **Tumbling window** — Fixed-size, non-overlapping, back-to-back windows, e.g. every 5 minutes
@@ -188,8 +188,7 @@ the set of frame types is fixed.
   `on_watermark` call (`Collector`). The actor drains it and performs the (awaiting) sends
   afterward, so operator code stays synchronous and each step is a self-contained critical section.
 - **Operator context** — The object handed to an operator at `open` time holding its dependencies: its
-  id, subtask index and count, state backend, clock, config, and a metrics recorder
-  (`OperatorContext`).
+  id, subtask index and count, state backend, clock, and a metrics recorder (`OperatorContext`).
 - **Runner (runtime)** — The component that executes a job single-process. `run_local_chain` runs a
   `(source, transforms)` chain in-memory (`run()` is its synchronous one-line wrapper); `run_plan`
   compiles a `LogicalGraph` and runs it (what the CLI uses at `--parallelism > 1`, `--workers 1`), and

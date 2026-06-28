@@ -185,6 +185,8 @@ def report_to_dict(report: RunReport) -> dict[str, object]:
             "per_operator": [
                 {
                     "operator_id": s.operator_id,
+                    "subtask_index": s.subtask_index,
+                    "node": s.node,
                     "busy_micros_total": s.busy_micros_total,
                     "send_wait_micros_total": s.send_wait_micros_total,
                     "rows_out_total": s.rows_out_total,

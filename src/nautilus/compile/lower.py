@@ -36,9 +36,15 @@ from nautilus.compile.plan import (
 )
 
 #: The synthesized sink: a single instance that collects the final stage. There is no sink operator
-#: class — the executor runs it as a collecting loop — so this is a label, matching the legacy mesh.
+#: class — the executor runs it as a collecting loop — so this is a label, not an operator class.
 SINK_ID = "sink"
 SINK_CLASS = "CollectSink"
+
+
+#: Upper bound on key groups (G): the rescale ceiling, and the length of the table the plan ships. A
+#: larger value is almost certainly a mistake and would materialize a huge table. (Matches Flink's
+#: default max-parallelism cap.)
+MAX_KEY_GROUPS = 32768
 
 
 def _group_table(num_groups: int, parallelism: int) -> tuple[int, ...]:
@@ -64,6 +70,11 @@ def _spec_for(
                 f"key groups G={num_groups} is below the operator parallelism Q={parallelism}; "
                 "G must be >= Q so every instance owns at least one key group"
             )
+        if num_groups > MAX_KEY_GROUPS:
+            raise ValueError(
+                f"key groups G={num_groups} exceeds the maximum {MAX_KEY_GROUPS} (it sizes the routing "
+                "table the plan ships); choose a smaller rescale ceiling"
+            )
         return KeyGroupSpec(key_columns, _group_table(num_groups, parallelism))
     return RoundRobinSpec()
 
@@ -85,7 +96,9 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
 
     ``key_groups`` (``G``) is the number of key groups every keyed shuffle routes through; ``None``
     defaults each keyed edge to its operator's parallelism (the identity table). A given ``G`` must be
-    ``>= Q`` for every keyed operator, or lowering raises."""
+    ``>= Q`` for every keyed operator, and the graph must have at least one keyed edge for ``key_groups``
+    to mean anything — lowering raises on a ``G < Q`` or a ``key_groups`` set on a graph with no keyed
+    shuffle."""
     operators: list[PhysicalOperator] = []
 
     # The source is operator 0; each later vertex is op{j}. Physical ids come from position, so the

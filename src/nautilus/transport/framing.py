@@ -31,6 +31,9 @@ from nautilus.core.records import (
 )
 
 _HEADER = 5  # 1 kind byte + 4 length bytes
+_MAX_FRAME_BYTES = (
+    256 * 1024 * 1024
+)  # reject an absurd length before allocating (garbage/corruption)
 
 
 class Kind(IntEnum):
@@ -57,7 +60,11 @@ def decode(kind: Kind, payload: bytes) -> Frame | int:
         return Batch(_ipc_to_batch(payload))
     if kind == Kind.CONTROL:
         return _bytes_to_control(payload)
-    return int(msgpack.unpackb(payload))
+    if kind == Kind.CREDIT:
+        return int(msgpack.unpackb(payload))
+    raise ValueError(
+        f"unknown frame kind {kind!r}"
+    )  # never silently treat an unknown kind as credit
 
 
 def split(message: bytes) -> tuple[Kind, bytes]:
@@ -75,6 +82,10 @@ async def read_message(reader: asyncio.StreamReader) -> tuple[Kind, bytes]:
     header = await reader.readexactly(_HEADER)
     kind = Kind(header[0])
     length = int.from_bytes(header[1:], "big")
+    if (
+        length > _MAX_FRAME_BYTES
+    ):  # bound the allocation, mirroring the handshake's _MAX_PAYLOAD guard
+        raise ValueError(f"frame length {length} exceeds max {_MAX_FRAME_BYTES}")
     payload = await reader.readexactly(length) if length else b""
     return kind, payload
 

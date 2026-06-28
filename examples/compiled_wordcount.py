@@ -16,7 +16,7 @@ import asyncio
 
 import cloudpickle
 
-from nautilus.api import LogicalVertex, linear_graph
+from nautilus.api import linear_graph, one_input
 from nautilus.compile import compile_graph
 from nautilus.core.records import EOS_FRAME
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
@@ -44,8 +44,10 @@ def build_graph(parallelism: int):
     return linear_graph(
         _source,
         [
-            LogicalVertex("tokenize", lambda: Tokenize("line", "word"), "one_input"),
-            LogicalVertex("count", lambda: KeyedCount("word"), "one_input", parallelism, ("word",)),
+            one_input("tokenize", lambda: Tokenize("line", "word")),
+            one_input(
+                "count", lambda: KeyedCount("word"), parallelism=parallelism, key_columns=("word",)
+            ),
         ],
     )
 

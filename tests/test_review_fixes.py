@@ -12,7 +12,7 @@ from nautilus import from_batches, run
 from nautilus.api import LogicalVertex
 from nautilus.compile import compile_graph
 from nautilus.compile.plan import KeyGroupSpec, RoundRobinSpec
-from nautilus.operators import InMemorySource, KeyedCount
+from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
 from nautilus.runtime.parallel import Stage, graph_from_stages
 
 # --- C91: from_batches accepts a raw RecordBatch; unknown frames fail loudly --------------------
@@ -189,3 +189,102 @@ async def test_in_process_parallel_fail_fast():
     )
     with pytest.raises((RuntimeError, ExceptionGroup)):
         await asyncio.wait_for(run_plan(graph), timeout=10)
+
+
+# ============================================================================================
+# Round-2 review fixes
+# ============================================================================================
+
+
+# --- R38/R39: keyed operators preserve the input key/value column types ------------------------
+
+
+def test_keyed_tumbling_sum_preserves_float_values():
+    from nautilus.testing import data, wm
+    from nautilus.windows import TumblingEventTimeWindows
+
+    src = from_batches(data(key=["a", "a"], val=[1.5, 2.0], ts=[1, 2]), wm(10))
+    res = run(src, [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))])
+    rows = res.to_pylist()
+    assert rows[0]["sum"] == 3.5  # not truncated to int 3
+    assert pa.types.is_floating(res.to_table().schema.field("sum").type)
+
+
+def test_keyed_count_preserves_key_type():
+    from nautilus.testing import data
+
+    src = from_batches(data(k=pa.array([1, 1, 2], pa.int32())))
+    res = run(src, [KeyedCount("k")])
+    assert res.to_table().schema.field("k").type == pa.int32()  # not widened to int64
+
+
+# --- R1: the windowing operator reads timestamp columns as microseconds ------------------------
+
+
+def test_to_epoch_micros_normalizes_units():
+    from nautilus.core.time import to_epoch_micros
+
+    assert to_epoch_micros(pa.array([1000], pa.timestamp("ms"))).to_pylist() == [1_000_000]
+    assert to_epoch_micros(pa.array([5], pa.int64())).to_pylist() == [5]
+
+
+# --- R14 / R17: IR + compiler validation -------------------------------------------------------
+
+
+def test_source_vertex_rejects_key_columns():
+    with pytest.raises(ValueError, match="source"):
+        LogicalVertex(id="source", factory=lambda: None, kind="source", key_columns=("k",))
+
+
+def test_key_groups_upper_bound_rejected():
+    graph = graph_from_stages(from_batches(), [Stage(lambda: KeyedCount("w"), 2)])
+    with pytest.raises(ValueError, match="exceeds the maximum"):
+        compile_graph(graph, key_groups=10**6)
+
+
+# --- R65 / R70: runtime fail-loud paths --------------------------------------------------------
+
+
+async def test_get_on_exhausted_mailbox_raises():
+    from nautilus.runtime.channel import InProcChannel
+    from nautilus.runtime.mailbox import Mailbox
+
+    mb = Mailbox([InProcChannel(4)])
+    mb.close_input(0)
+    with pytest.raises(RuntimeError):
+        await mb.get()
+
+
+async def test_transform_raises_on_unhandled_frame():
+    from nautilus.core.records import Barrier
+    from nautilus.operators import MapBatch
+    from nautilus.testing import data, run_ops
+
+    # Barrier is a reserved control frame no operator handles — it must fail loudly, not vanish.
+    with pytest.raises(BaseException):  # noqa: B017,PT011 (TaskGroup wraps the TypeError)
+        await run_ops([data(x=[1]), Barrier(1)], MapBatch(lambda b: b))
+
+
+# --- R35 / R67: parallel telemetry surface -----------------------------------------------------
+
+
+def test_json_summary_rows_carry_subtask_and_node():
+    import json
+
+    rep = run(
+        from_batches(pa.record_batch({"line": ["a b", "a"]})),
+        [Tokenize("line", "word"), KeyedCount("word")],
+        parallelism=2,
+    ).telemetry
+    per_op = json.loads(rep.to_json())["summary"]["per_operator"]
+    assert per_op and all("subtask_index" in s and "node" in s for s in per_op)
+
+
+def test_run_parallelism_builds_n_instances():
+    rep = run(
+        from_batches(pa.record_batch({"line": ["a b c", "a b", "a"]})),
+        [Tokenize("line", "word"), KeyedCount("word")],
+        parallelism=3,
+    ).telemetry
+    node = next(n for n in rep.topology.nodes if n.operator_id == "op1")
+    assert node.num_subtasks == 3  # the keyed operator actually ran at parallelism 3

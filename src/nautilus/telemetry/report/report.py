@@ -17,7 +17,9 @@ from typing import cast
 from nautilus.telemetry.catalog import STRUCTURAL_METRICS
 from nautilus.telemetry.model import EventRecord, HistogramData, InstanceSnapshot, Labels
 
-REPORT_SCHEMA_VERSION = 2  # v2: added top-level events_dropped (truncated-event-log count)
+REPORT_SCHEMA_VERSION = (
+    3  # v3: summary.per_operator carries subtask_index/node (v2: events_dropped)
+)
 
 #: The numeric :class:`OperatorSummary` fields that :meth:`RunReport.ranked_by` may sort on.
 RANKABLE_FIELDS: frozenset[str] = frozenset(

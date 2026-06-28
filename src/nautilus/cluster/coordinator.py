@@ -36,7 +36,7 @@ from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.telemetry.report import NullSink, Sink, build_report
 
 _log = logging.getLogger(__name__)
-_DEFAULT_BOOTSTRAP_TIMEOUT = 60.0  # seconds to wait for every worker to bind and register
+_DEFAULT_BOOTSTRAP_TIMEOUT = 60.0  # max seconds of silence between worker registrations during bind
 
 
 def deploy(
@@ -85,11 +85,13 @@ def deploy(
     # plane times itself with a SystemClock regardless. A custom clock therefore affects only the
     # coordinator's run-meta timestamps, not worker operators.
     worker_config = replace(config, clock=SystemClock())
+    # Stamp the start time BEFORE spawning, so a custom clock that raises cannot do so between spawn and
+    # the reap try-block — which would orphan the live workers and break the "always reaps" guarantee.
+    started_at = clk.now_micros()
+    wall0 = perf_counter_ns()
     procs, events, commands = spawn_workers(
         plan_bytes, placement, host, capacity, worker_config, effective
     )
-    started_at = clk.now_micros()
-    wall0 = perf_counter_ns()
     try:
         bind_barrier(events, commands, procs, effective, bootstrap_timeout)
 
@@ -101,7 +103,10 @@ def deploy(
         batches: list[pa.RecordBatch] = []
         remaining = set(worker_ids)
         while remaining:
-            message = recv_event(events, procs, None)
+            # Crash-detect only still-outstanding workers: a worker's whole contribution is in its Done
+            # message, after which it tears down and may exit non-zero — that must not fail a run whose
+            # data is already complete. (procs is index-aligned with worker_ids via range(effective).)
+            message = recv_event(events, [procs[w] for w in remaining], None)
             if isinstance(message, Failed):
                 raise WorkerError(message.worker_id, message.traceback)
             if not isinstance(message, Done):

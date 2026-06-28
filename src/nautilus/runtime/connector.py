@@ -85,7 +85,7 @@ class Deployment:
 
 class InProcessConnector(Connector):
     """Every edge is an in-process :class:`~nautilus.runtime.channel.InProcChannel`: one channel object
-    is both the send and the recv end of an id (as in the legacy in-process mesh), created lazily the
+    is both the send and the recv end of an id, created lazily the
     first time either end is asked for. Teardown is a genuine no-op — an in-process channel has no
     socket to drain or close."""
 

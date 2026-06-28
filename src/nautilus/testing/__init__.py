@@ -81,8 +81,9 @@ def op_counter(report: RunReport, operator_id: str, name: str) -> int:
 
 
 def multiset(result: RunResult) -> Counter[tuple[tuple[str, Any], ...]]:
-    """A schema-agnostic multiset of a result's rows (each a sorted tuple of items), so any pipeline's
-    output compares by content regardless of row or batch order."""
+    """A schema-agnostic multiset of a result's rows (each a sorted tuple of items), so a pipeline's
+    output compares by content regardless of row or batch order. Requires hashable scalar cells (it
+    hashes each row), so it does not apply to columns of list/tensor values."""
     return Counter(tuple(sorted(row.items())) for row in result.to_pylist())
 
 

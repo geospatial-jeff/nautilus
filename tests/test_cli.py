@@ -28,7 +28,7 @@ def test_run_save_writes_valid_json_report(tmp_path):
     result = runner.invoke(app, ["run", "wordcount", "--show", "none", "--save", str(out)])
     assert result.exit_code == 0
     doc = json.loads(out.read_text())
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 3
     assert doc["summary"]["total_rows_out"] > 0
 
 

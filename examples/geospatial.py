@@ -128,6 +128,11 @@ class SegmentDistance(OneInputOperator):
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
 
+    def key_columns(self) -> tuple[str, ...]:
+        # This operator keeps per-vessel state, so its input must be co-partitioned by mmsi — otherwise
+        # a parallel run would split one vessel's pings across instances and compute wrong distances.
+        return ("mmsi",)
+
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         mmsis = batch.column("mmsi").to_pylist()
         lons = batch.column("lon").to_pylist()

@@ -48,6 +48,7 @@ app = typer.Typer(
     help="Nautilus — a decentralized, streaming compute framework with built-in telemetry.",
 )
 console = Console()
+err_console = Console(stderr=True)  # status/diagnostics go here so --json stdout stays pure JSON
 
 _TIERS = {
     "off": Tier.OFF,
@@ -128,15 +129,19 @@ def _hardware_line(report: RunReport) -> str | None:
     return "  ·  ".join(parts) if parts else None
 
 
-def _preview_table(batch: pa.RecordBatch, head: int) -> Table:
+def _preview_table(batch: pa.RecordBatch, head: int, total_rows: int, n_batches: int) -> Table:
+    shown = min(head, batch.num_rows)
+    suffix = f" across {n_batches} batches" if n_batches > 1 else ""
     table = Table(
-        title=f"output (first {min(head, batch.num_rows)} of {batch.num_rows} rows)",
+        title=f"output (first {shown} of {total_rows} rows{suffix})",
         header_style="bold cyan",
     )
     for name in batch.schema.names:
         table.add_column(name)
-    columns = [batch.column(i).to_pylist() for i in range(batch.num_columns)]
-    for r in range(min(head, batch.num_rows)):
+    # Materialize only the rows shown, not the whole first batch.
+    head_batch = batch.slice(0, shown)
+    columns = [head_batch.column(i).to_pylist() for i in range(head_batch.num_columns)]
+    for r in range(shown):
         table.add_row(*(str(col[r]) for col in columns))
     return table
 
@@ -159,7 +164,8 @@ def run(
     report = result.telemetry
 
     if head > 0 and len(result) > 0:
-        console.print(_preview_table(result[0], head))
+        total_rows = sum(b.num_rows for b in result)
+        console.print(_preview_table(result[0], head, total_rows, len(result)))
 
     if show == "summary":
         s = report.summary
@@ -404,16 +410,17 @@ def bench(
             console.print(_comparison_line(compare(base[key], result)))
 
     if update:
+        # Status goes to stderr so `--json` keeps stdout pure JSON (the result printed above).
         if not result.deterministic:
             # A wobbling digest must never become a committed correctness anchor — refuse the write.
-            console.print(
+            err_console.print(
                 f"[red]not updating baseline[/red]: {key!r} is nondeterministic "
                 "(its structural digest differed across trials)"
             )
             raise typer.Exit(code=1)
         base[key] = result
         save_baseline(baseline, base)
-        console.print(f"[green]updated baseline[/green] {baseline} · [bold]{key}[/bold]")
+        err_console.print(f"[green]updated baseline[/green] {baseline} · [bold]{key}[/bold]")
 
 
 @app.command(name="bench-check")

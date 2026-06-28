@@ -62,9 +62,6 @@ class Gauge:
             if v > self.max:
                 self.max = v
 
-    def add(self, v: float) -> None:
-        self.set(self.last + v)
-
 
 @dataclass(frozen=True, slots=True)
 class HistogramData:

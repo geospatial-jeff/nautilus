@@ -64,10 +64,10 @@ class Mailbox:
             if not self._closed[i] and self._pending[i] is None:
                 self._pending[i] = asyncio.ensure_future(ch.recv())
 
-        # Steady-state short-circuit: when an upstream frame is already buffered the recv future has
-        # resolved synchronously, so skip asyncio.wait and its callback churn entirely. Only block when
-        # nothing is ready yet. Either way, leave the unchosen futures in place (still done) so the next
-        # call returns them without re-issuing a recv.
+        # Steady-state short-circuit: a recv future armed by an earlier get() may already be done (its
+        # frame buffered), so skip asyncio.wait and its callback churn entirely. Only block when nothing
+        # is ready yet. Either way, leave the unchosen futures in place (still done) so the next call
+        # returns them without re-issuing a recv.
         ready = self._ready()
         if not ready:
             armed = [fut for fut in self._pending if fut is not None]
@@ -109,9 +109,14 @@ class Mailbox:
             self._closed[i] = True
 
     def close_input(self, input_index: int) -> None:
-        """Stop receiving on an input (called after its EOS has been consumed)."""
+        """Stop receiving on an input (called after its EOS has been consumed). In production the input's
+        recv was already consumed (so nothing is pending), but this also handles a still-armed future
+        defensively, matching :meth:`close`."""
         self._closed[input_index] = True
         fut = self._pending[input_index]
-        if fut is not None and not fut.done():
-            fut.cancel()
+        if fut is not None:
+            if not fut.done():
+                fut.cancel()
+            elif not fut.cancelled():
+                fut.exception()  # retrieve a set exception so asyncio doesn't warn it went unread
         self._pending[input_index] = None

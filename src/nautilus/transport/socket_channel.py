@@ -68,6 +68,9 @@ class SocketChannel(Channel):
         self._terminated = False
         self._error: BaseException | None = None
         self._eos_seen = False  # consumer end: an EOS frame was received before the peer closed
+        self._eos_sent = (
+            False  # producer end: this end has sent EOS, so a peer EOF after it is clean
+        )
         self._closing = False  # producer end: finish() in progress, so peer EOF is expected
         # cumulative wire bytes this end wrote: a producer end = data + control frames; a consumer end =
         # credit-return frames (written by recv()).
@@ -82,6 +85,10 @@ class SocketChannel(Channel):
         message = encode_frame(frame)
         self._encode_ns += perf_counter_ns() - e0
         if frame.is_control:
+            if isinstance(frame, EOS):
+                self._eos_sent = (
+                    True  # a peer EOF after we've sent EOS is a clean end, not an error
+                )
             self._raise_if_terminated()
             await self._send_bytes(message)
             return
@@ -181,7 +188,8 @@ class SocketChannel(Channel):
         except asyncio.CancelledError:
             raise  # close() cancelled us — normal teardown
         except (asyncio.IncompleteReadError, ConnectionError):
-            clean = self._eos_seen or self._closing  # EOF after EOS, or during our own finish()
+            # Clean EOF: we received EOS (consumer end), we sent EOS (producer end), or we're finishing.
+            clean = self._eos_seen or self._eos_sent or self._closing
             disconnect = None if clean else TransportClosed("peer disconnected before EOS")
             await self._terminate(disconnect)
         except Exception as exc:  # malformed frame, credit overflow, etc. — propagate, don't hang
@@ -198,9 +206,11 @@ class SocketChannel(Channel):
 
     async def _grant_credits(self, n: int) -> None:
         async with self._cond:
-            if self._credits + n > self._capacity:
+            if n <= 0 or self._credits + n > self._capacity:
+                # A non-positive grant or one past the window is a malformed/corrupt credit message —
+                # reject it rather than corrupt the window (which gates correctness, not just perf).
                 raise RuntimeError(
-                    f"credit overflow: {self._credits} + {n} exceeds window {self._capacity}"
+                    f"invalid credit grant {n}: {self._credits} + {n} not in (0, {self._capacity}]"
                 )
             self._credits += n
             self._cond.notify_all()

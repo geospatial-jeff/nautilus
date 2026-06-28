@@ -62,6 +62,12 @@ class LogicalVertex:
             raise ValueError(
                 f"key_columns must be None (keyless) or a non-empty tuple, got () for {self.id!r}"
             )
+        if self.kind == _SOURCE and self.key_columns is not None:
+            # A source has no input edge to shuffle, so the compiler would silently ignore its
+            # key_columns; reject it rather than accept a value that has no effect.
+            raise ValueError(
+                f"a source vertex has no input to key; key_columns must be None for {self.id!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

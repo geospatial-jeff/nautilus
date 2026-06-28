@@ -35,7 +35,7 @@ def _source() -> InMemorySource:
 
 async def main() -> None:
     parallelism = 3
-    # source -> Tokenize (1 instance) -> [hash shuffle on "word"] -> KeyedCount (N instances) -> sink
+    # source -> Tokenize (1 instance) -> [keyed shuffle on "word"] -> KeyedCount (N instances) -> sink
     result = await run_parallel_chain(
         _source(),
         [

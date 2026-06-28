@@ -10,10 +10,11 @@ importable straight from the top level::
     result = run(source, [Tokenize("line", "word"), KeyedCount("word")])
     print(result.to_pylist(), result.telemetry.summary)
 
-``from_batches`` wraps a bare ``pyarrow.RecordBatch`` for you; for an event-time stream, pass
-:class:`Batch` / :class:`Watermark` frames (and a terminal :data:`EOS_FRAME`) explicitly. Anything not
-re-exported here is still importable from its concrete module (e.g. ``nautilus.runtime.local``,
-``nautilus.operators``, ``nautilus.telemetry``) during early development.
+``from_batches`` wraps a bare ``pyarrow.RecordBatch`` for you and appends the terminal
+:data:`EOS_FRAME`; for an event-time stream it also accepts :class:`Batch` / :class:`Watermark` frames.
+Reach for ``InMemorySource([...])`` only when you need exact frame control (placing EOS yourself, or
+omitting it). Anything not re-exported here is still importable from its concrete module (e.g.
+``nautilus.runtime.local``, ``nautilus.operators``, ``nautilus.telemetry``) during early development.
 """
 
 __version__ = "0.0.1"

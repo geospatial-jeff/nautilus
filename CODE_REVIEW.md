@@ -216,3 +216,48 @@ Deliberately deferred (low value vs. churn/risk; noted at the call sites):
 - **C36** — a shared kind StrEnum: the IR firewall (api imports nothing internal) resists a single
   cross-layer enum, and the kind strings are a small, consistent, localized set.
 - **C113** — deduping copy-pasted test helpers across ~6 files: test-only churn.
+
+## Round 2 — pre-Stage-3 re-review (2026-06-28)
+
+A second full multi-agent review (same find → dedup → adversarial-verify pipeline) was run after the
+round-1 fixes, specifically scrutinizing the round-1 changes for regressions. Result: **84 raw → 70
+canonical → 66 confirmed (0 high, 4 medium, 62 low)**, with per-dimension subscores all 7–8 (up from
+round 1's 6–8). The regression reviewer independently re-derived the invariants and confirmed the
+round-1 changes — the engine unification, the recorder owner gate, the mailbox rework, the `execute()`
+re-indent, the deploy config propagation, the live snapshot freeze — are correct and regression-free.
+
+### Fixed this round (one commit)
+
+- **Correctness:** `KeyedTumblingSum` no longer truncates a float value column to int (carries the
+  aggregation's natural type) and reads timestamp `ts` columns as microseconds via the shared
+  `to_epoch_micros` (closing the source-vs-operator unit asymmetry); keyed operators preserve the input
+  key column's type; the `SegmentDistance` reference example declares `key_columns()`; a `source` vertex
+  with `key_columns` and an over-large `key_groups` are rejected at compile; `deploy()` stamps the start
+  time before spawning (never orphans workers) and crash-detects only outstanding workers (a worker
+  crashing after `Done` no longer fails a good run); a producer's clean EOF is not mislabeled
+  "peer disconnected before EOS"; the frame reader bounds its length; credit grants reject under/overflow.
+- **Completeness:** finished C64 — the JSON `summary.per_operator` now carries `subtask_index`/`node`
+  (schema bumped to v3); `OperatorContext.entries` streams lazily (no per-watermark full-store copy).
+- **Dead code:** removed `Gauge.add`/`_NoOpGauge.add`; gave the public `one_input` helper a real caller
+  (the compiled example); tidied `close_input`.
+- **Docs/API/hardening:** ~20 docstring/reference fixes (stale "legacy" anchors, glossary
+  `ListState`/`config`, `from_batches`/`EOS_FRAME`, firewall package list, error messages naming the
+  wrong symbol); `bench --json` keeps stdout pure JSON; CLI preview reports the true total and
+  materializes only the shown rows; bench `run_pipeline` simplified. Plus 9 new tests.
+
+Post-round-2 ground truth: **pytest 276 passed**, mypy --strict clean, ruff clean, black --check clean
+(105 files), import-linter 4/4. All examples + multi-process `deploy` run; distributed == single-process.
+
+### Deferred (documented, not regressions)
+
+- **R9 — multi-stage idle-marker propagation:** a transform consumes `StatusIdle`/`StatusActive` but
+  does not forward derived idleness downstream. Latent today (no built-in source emits idle markers);
+  it is a real item for the Stage-3/4 unbounded-source path, where it should land with a real
+  idle-emitting source and tests rather than untested watermark-plane behavior now.
+- **R31 — event-ownership gate:** the metric owner gate (C56) does not cover *events*; an author could
+  inject an engine event name via `ctx.metrics.event`. Requires misuse and events concatenate (no
+  double-count), so left as-is.
+- **R26 / R6 — per-frame Arrow schema serialization and the O(N) watermark recompute:** documented MVP
+  scale tradeoffs; real optimizations, not defects, deferred until measured.
+- A handful of cosmetic items (C11/R11 transport-telemetry on the Channel ABC, example consolidation,
+  `OperatorNode.subtask_index` vestigiality) — low value vs. churn.

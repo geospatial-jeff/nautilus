@@ -197,4 +197,4 @@ nautilus bench-check [options]
 |---|---|
 | `0` | success |
 | `1` | could not bind `host:port` (`dashboard`, `serve`); a regression / output change (`bench-check`); or a nondeterministic `--update` (`bench`) |
-| `2` | could not load the pipeline (`run`, `task`, `dashboard`, `bench`); or a missing baseline entry (`bench-check`) |
+| `2` | could not load the pipeline (`run`, `task`, `dashboard`, `bench`); or no baseline file exists (`bench-check`) |

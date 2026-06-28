@@ -38,11 +38,11 @@ class TumblingEventTimeWindows(WindowAssigner):
         self.size = size_micros
 
     def assign(self, timestamp: int) -> list[TimeWindow]:
-        start = timestamp - (timestamp % self.size)
+        start = (timestamp // self.size) * self.size  # same floor formula as assign_starts, scalar
         return [TimeWindow(start, start + self.size)]
 
     def assign_starts(self, timestamps: np.ndarray) -> np.ndarray:
-        """The window start for each event time, vectorized — the columnar form the keyed window
-        operator uses, so the tumbling-boundary formula lives only here. Floor division matches the
-        scalar ``ts - ts % size`` in :meth:`assign` for negative event times too (both floor)."""
+        """The window start for each event time — the vectorized form of :meth:`assign`'s
+        ``(ts // size) * size`` that the keyed window operator uses on a whole column. Floor division is
+        correct for negative event times too (Python/NumPy ``//`` floors)."""
         return (timestamps // self.size) * self.size

@@ -48,7 +48,8 @@ async def test_fan_in_is_fair_across_ready_inputs():
     for _ in range(20):
         idx, _frame = await mb.get()
         counts[idx] += 1
-    assert counts[0] > 0 and counts[1] > 0  # neither input is starved
+    # Rotating tie-break draws the two ready inputs evenly, not just non-zero (no starvation).
+    assert counts[0] == counts[1] == 10
 
 
 async def test_close_input_cancels_an_armed_recv():

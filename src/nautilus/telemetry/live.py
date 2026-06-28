@@ -179,6 +179,8 @@ async def serve_local_chain(
     config = telemetry or TelemetryConfig(clock=clk)
     if config.run_id is None:
         config = replace(config, run_id=f"run-{clk.now_micros()}")
+    run_id = config.run_id
+    assert run_id is not None  # set just above; bind to a non-optional local for make_run_meta
     registry = RecorderRegistry()
     # Compile the chain to a plan and serve/run that — the same engine a non-live run uses — so the live
     # topology is exactly what executes (one topology builder, plan_to_topology).
@@ -193,7 +195,7 @@ async def serve_local_chain(
 
     def meta_now() -> RunMeta:
         return make_run_meta(
-            run_id=config.run_id or "run",
+            run_id=run_id,
             started_at=started_at,
             ended_at=clk.now_micros(),
             wall_micros=(perf_counter_ns() - started_ns) // 1000,

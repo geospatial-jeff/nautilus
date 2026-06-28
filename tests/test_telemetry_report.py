@@ -50,11 +50,11 @@ def _two_op_snapshots(wall_in_step=999):
 
 def test_build_report_and_json():
     report = build_report(_two_op_snapshots(), meta=_meta())
-    assert report.schema_version == REPORT_SCHEMA_VERSION == 2
+    assert report.schema_version == REPORT_SCHEMA_VERSION == 3
     assert report.summary.total_rows_in == 35
     assert report.summary.total_rows_out == 30
     doc = json.loads(report.to_json())
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 3
     assert doc["catalog_version"] == 1
     assert doc["events_dropped"] == 0
     assert {o["operator_id"] for o in doc["operators"]} == {"op0", "op1"}

@@ -39,8 +39,9 @@ async def run_local_chain(
     Lowers the ``(source, transforms)`` chain to a plan and runs it through the compiled executor, so a
     single-process run uses the same engine as a distributed one. ``parallelism`` runs every transform as
     that many in-process instances (keyed operators shuffle by their declared key) — for multiple worker
-    *processes* use :func:`nautilus.cluster.deploy`. Pass an external ``registry`` to read snapshots live
-    while the run is in flight (the live server does this); the default creates its own.
+    *processes* use :func:`nautilus.cluster.deploy`. ``registry`` lets a caller read snapshots while the
+    run is in flight (the live dashboard does this via :func:`~nautilus.runtime.run.run_compiled`); the
+    default creates its own.
     """
     return await run_plan(
         graph_from_pipeline(source, transforms, parallelism),

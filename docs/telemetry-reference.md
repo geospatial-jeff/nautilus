@@ -1,6 +1,6 @@
 # Nautilus telemetry reference
 
-Generated from `nautilus.telemetry.catalog` — **do not edit by hand**; regenerate with `python -m nautilus.telemetry.report.reference`. Report schema v2, catalog v1.
+Generated from `nautilus.telemetry.catalog` — **do not edit by hand**; regenerate with `python -m nautilus.telemetry.report.reference`. Report schema v3, catalog v1.
 
 Descriptive only: each entry states what a number measures and which other metrics relate to it — never a cause, a remedy, or a verdict. nautilus records the data; the analysis is left to the reader.
 

@@ -35,7 +35,6 @@ from nautilus.pipelines import load_pipeline
 from nautilus.runtime.local import run_local_chain
 from nautilus.runtime.parallel import graph_from_pipeline
 from nautilus.runtime.result import RunResult
-from nautilus.runtime.run import run_plan
 from nautilus.telemetry.catalog import Tier
 from nautilus.telemetry.recorder import TelemetryConfig
 
@@ -201,13 +200,16 @@ def run_pipeline(
     parallel, or deployed across workers. The single topology-selection dispatch shared by the CLI's
     ``run`` and this bench harness, so the two cannot drift."""
     config = TelemetryConfig(tier=tier)
-    if workers == 1 and parallelism == 1:
-        return asyncio.run(run_local_chain(source, transforms, capacity=capacity, telemetry=config))
-    graph = graph_from_pipeline(source, transforms, parallelism)
     if workers == 1:
-        return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
+        # Single process — run_local_chain handles both serial and in-process parallel (any parallelism).
+        return asyncio.run(
+            run_local_chain(
+                source, transforms, parallelism=parallelism, capacity=capacity, telemetry=config
+            )
+        )
     from nautilus.cluster import deploy
 
+    graph = graph_from_pipeline(source, transforms, parallelism)
     return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
 
 

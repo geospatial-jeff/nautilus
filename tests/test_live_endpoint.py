@@ -64,7 +64,7 @@ async def test_endpoint_serves_report_and_flips_to_completed():
             status, body = await loop.run_in_executor(None, _get, url + "api/telemetry.json")
             assert status == 200
             last = json.loads(body)
-            assert last["schema_version"] == 2
+            assert last["schema_version"] == 3
             assert last["status"] in ("live", "completed")
             if last["status"] == "completed":
                 break
@@ -95,7 +95,7 @@ async def test_concurrent_polls_never_race():
         for status, body in results:
             assert status == 200
             doc = json.loads(body)  # must parse — a dict-resize race would corrupt or 500 this
-            assert doc["schema_version"] == 2
+            assert doc["schema_version"] == 3
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

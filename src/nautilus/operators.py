@@ -21,6 +21,7 @@ from nautilus.core.operator import (
     SourceOperator,
 )
 from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
+from nautilus.core.time import to_epoch_micros
 from nautilus.state import KeyContext
 from nautilus.windows import TimeWindow, TumblingEventTimeWindows
 
@@ -59,6 +60,10 @@ def from_batches(*frames: Frame | pa.RecordBatch) -> InMemorySource:
             out.append(frame)
         elif isinstance(frame, pa.RecordBatch):
             out.append(Batch(frame))
+        elif isinstance(frame, pa.Table):
+            raise TypeError(
+                "from_batches takes RecordBatches, not a Table; pass *table.to_batches()"
+            )
         else:
             raise TypeError(
                 f"from_batches accepts nautilus Frame objects or a pyarrow.RecordBatch, got "
@@ -117,11 +122,16 @@ class KeyedCount(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
+        self._key_type: pa.DataType | None = (
+            None  # captured from the input so output keeps its type
+        )
 
     def key_columns(self) -> tuple[str, ...]:
         return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        if self._key_type is None:
+            self._key_type = batch.column(self.key_col).type
         counts = pc.value_counts(batch.column(self.key_col))
         for value, count in zip(
             counts.field("values").to_pylist(), counts.field("counts").to_pylist(), strict=True
@@ -133,14 +143,17 @@ class KeyedCount(OneInputOperator):
             return  # global aggregation: only the terminal watermark fires it
         keys: list[object] = []
         totals: list[int] = []
-        for kctx, value in self._ctx.entries(self._STATE):
-            keys.append(kctx.key[0])
+        fired: list[KeyContext] = []
+        for kctx, value in self._ctx.entries(self._STATE):  # collect first, then clear (no mutation
+            keys.append(kctx.key[0])  # during iteration, so the backend can stream entries lazily)
             totals.append(cast(int, value))
+            fired.append(kctx)
+        for kctx in fired:
             self._ctx.clear_state(self._STATE, kctx)
         if keys:
             out.emit(
                 pa.RecordBatch.from_arrays(
-                    [pa.array(keys), pa.array(totals, pa.int64())],
+                    [pa.array(keys, self._key_type), pa.array(totals, pa.int64())],
                     names=[self.key_col, self.count_col],
                 )
             )
@@ -175,6 +188,10 @@ class KeyedTumblingSum(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
+        # Captured from the input so the output keeps the key's type and the sum's natural type (an int
+        # column sums to int64, a float column to double — never silently truncated to int).
+        self._key_type: pa.DataType | None = None
+        self._sum_type: pa.DataType | None = None
 
     def key_columns(self) -> tuple[str, ...]:
         return (self.key_col,)
@@ -186,7 +203,7 @@ class KeyedTumblingSum(OneInputOperator):
         # fewer Python-level state ops — and each per-batch partial folds into the running sum because
         # addition is associative.
         size = self.window.size
-        ts = pc.cast(batch.column(self.ts_col), pa.int64()).to_numpy(zero_copy_only=False)
+        ts = to_epoch_micros(batch.column(self.ts_col)).to_numpy(zero_copy_only=False)
         window_start = self.window.assign_starts(ts)
         grouped = (
             pa.table(
@@ -199,6 +216,9 @@ class KeyedTumblingSum(OneInputOperator):
             .group_by(["key", "ws"])
             .aggregate([("val", "sum")])
         )
+        if self._key_type is None:
+            self._key_type = batch.column(self.key_col).type
+            self._sum_type = grouped.column("val_sum").type  # Arrow's chosen sum type, not int64
         keys = grouped.column("key").to_pylist()
         starts = grouped.column("ws").to_pylist()
         partials = grouped.column("val_sum").to_pylist()
@@ -210,7 +230,7 @@ class KeyedTumblingSum(OneInputOperator):
         keys: list[object] = []
         starts: list[int] = []
         ends: list[int] = []
-        sums: list[int] = []
+        sums: list[object] = []
         fired: list[KeyContext] = []
         for kctx, value in self._ctx.entries(self._STATE):
             window = cast(TimeWindow, kctx.namespace)
@@ -218,7 +238,7 @@ class KeyedTumblingSum(OneInputOperator):
                 keys.append(kctx.key[0])
                 starts.append(window.start)
                 ends.append(window.end)
-                sums.append(cast(int, value))
+                sums.append(value)
                 fired.append(kctx)
         for kctx in fired:
             self._ctx.clear_state(self._STATE, kctx)
@@ -226,10 +246,10 @@ class KeyedTumblingSum(OneInputOperator):
             out.emit(
                 pa.RecordBatch.from_arrays(
                     [
-                        pa.array(keys),
+                        pa.array(keys, self._key_type),
                         pa.array(starts, pa.int64()),
                         pa.array(ends, pa.int64()),
-                        pa.array(sums, pa.int64()),
+                        pa.array(sums, self._sum_type),
                     ],
                     names=[self.key_col, self.start_col, self.end_col, self.sum_col],
                 )

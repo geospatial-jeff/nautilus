@@ -60,7 +60,9 @@ class ListCollector(Collector):
 
 @dataclass
 class OperatorContext:
-    """The state backend, clock, and metrics recorder passed to an operator at ``open`` time."""
+    """What an operator is handed at ``open`` time: its ``operator_id``, this instance's
+    ``subtask_index`` of ``num_subtasks``, the state backend, the clock, and a custom-metric recorder.
+    """
 
     operator_id: str
     subtask_index: int = 0
@@ -68,7 +70,9 @@ class OperatorContext:
     state_backend: StateBackend = field(default_factory=_InMemoryStateBackend)
     clock: Clock = field(default_factory=SystemClock)
     #: Operator-author custom-metric recorder — a SEPARATE recorder from the actor's built-in one, so
-    #: the single-writer invariant is never violated. Defaults to a zero-cost no-op.
+    #: the single-writer invariant is never violated. Defaults to a zero-cost no-op. A custom metric must
+    #: be declared in the catalog with ``owner=Owner.AUTHOR`` (every metric is catalog-declared, and this
+    #: recorder may write only author-owned ones).
     metrics: Recorder = NULL_RECORDER
 
     def value_state(self, name: str, kctx: KeyContext) -> ValueState[Any]:

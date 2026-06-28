@@ -696,11 +696,11 @@ def metric_spec(name: str) -> MetricSpec:
     try:
         return METRIC_SPECS[name]
     except KeyError:
-        raise KeyError(f"undeclared metric {name!r}; add a MetricSpec to the CATALOG") from None
+        raise KeyError(f"undeclared metric {name!r}; add a MetricSpec to METRIC_SPECS") from None
 
 
 def event_spec(name: str) -> EventSpec:
     try:
         return EVENT_SPECS[name]
     except KeyError:
-        raise KeyError(f"undeclared event {name!r}; add an EventSpec to the CATALOG") from None
+        raise KeyError(f"undeclared event {name!r}; add an EventSpec to EVENT_SPECS") from None

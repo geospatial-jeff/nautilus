@@ -68,9 +68,6 @@ class _NoOpGauge(Gauge):
     def set(self, v: float) -> None:
         pass
 
-    def add(self, v: float) -> None:
-        pass
-
 
 class _NoOpHistogram(Histogram):
     def __init__(self) -> None:
@@ -245,8 +242,8 @@ class InstanceRecorder(Recorder):
 class NullRecorder(Recorder):
     """A no-op recorder: every verb does nothing and skips the catalog lookup. Used for the OFF tier, and
     as the :attr:`OperatorContext.metrics` field default when no recorder is supplied (direct
-    instantiation / tests) — when telemetry is on, the runtime always wires a real per-operator metrics
-    recorder."""
+    instantiation / tests) — when telemetry is on, the runtime wires a real ``ctx.metrics`` recorder for
+    each one-input operator."""
 
     def counter(self, name: str, **labels: object) -> Counter:
         return NOOP_COUNTER

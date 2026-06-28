@@ -76,6 +76,18 @@ class TimestampAssigner(ABC):
         return None if m is None else check_event_time(int(m))
 
 
+def to_epoch_micros(col: pa.Array) -> pa.Array:
+    """Read a column of event times as int64 microseconds since the epoch. An int64 column passes
+    through; an Arrow ``timestamp`` of any unit (s/ms/us/ns, tz-aware or naive) is first normalized to
+    microseconds — casting a timestamp straight to int64 would return its underlying value in its *own*
+    unit with no conversion, so a 'ms'/'s'/'ns' column would otherwise yield wrong event times. This is
+    the single normalization both the source-side assigner and the windowing operator use, so they can
+    never disagree on the unit. (``safe=False`` lets nanoseconds truncate to µs.)"""
+    if pa.types.is_timestamp(col.type):
+        col = pc.cast(col, pa.timestamp("us"), safe=False)
+    return pc.cast(col, pa.int64())
+
+
 class ColumnTimestampAssigner(TimestampAssigner):
     """Reads event time from a named column: an int64-microseconds column, or an Arrow ``timestamp``
     of any unit (normalized to microseconds; nanoseconds truncate)."""
@@ -84,14 +96,7 @@ class ColumnTimestampAssigner(TimestampAssigner):
         self.column = column
 
     def timestamps(self, batch: pa.RecordBatch) -> pa.Array:
-        col = batch.column(self.column)
-        if pa.types.is_timestamp(col.type):
-            # Normalize the column's own unit (s/ms/us/ns) to microseconds *before* reading the raw
-            # integer: casting a timestamp straight to int64 returns its underlying value in its own
-            # unit with no conversion, so a 'ms'/'s'/'ns' column would yield wrong event times. The
-            # us→int64 below then extracts whole microseconds. safe=False lets ns truncate to µs.
-            col = pc.cast(col, pa.timestamp("us"), safe=False)
-        return pc.cast(col, pa.int64())
+        return to_epoch_micros(batch.column(self.column))
 
 
 class WatermarkStrategy(ABC):

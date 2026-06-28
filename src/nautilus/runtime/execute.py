@@ -16,7 +16,7 @@ forbids this module from importing the report layer, so report assembly can neve
 
 It owns its registry and builds two recorders per one-input instance — the actor's built-in recorder
 and a separate ``ctx.metrics`` recorder for operator-author metrics — so the single-writer-per-recorder
-invariant holds, exactly as the legacy runners do.
+invariant holds.
 """
 
 from __future__ import annotations
@@ -241,7 +241,7 @@ async def execute(
             else:
                 raise ValueError(f"unknown operator kind {op.kind!r} for {op.operator_id!r}")
 
-        # The hardware sampler runs OUTSIDE the data TaskGroup (as in the legacy runners) so it can
+        # The hardware sampler runs OUTSIDE the data TaskGroup so it can
         # neither delay completion nor cancel the data tasks if a psutil call raises. Each worker
         # samples itself, attributing its readings to its own node.
         sampler = None

@@ -61,8 +61,9 @@ class StateBackend(ABC):
     @abstractmethod
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
         """Iterate ``(key, namespace, value)`` for one operator/state-name. Used to enumerate, e.g.,
-        all open windows when flushing. The iterable is a snapshot; mutating during iteration is
-        safe."""
+        all open windows when flushing. The caller must NOT mutate this state during iteration — collect
+        the keys to change, then clear/put them afterward (as the keyed operators do), so a backend may
+        stream entries lazily rather than copy the whole store."""
 
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         """Per ``(operator_id, name)``: ``(entries, distinct_keys)`` currently held. ``entries`` counts
@@ -110,7 +111,9 @@ class InMemoryStateBackend(StateBackend):
         self._store.pop(scope, None)
 
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
-        for scope, value in list(self._store.items()):
+        # Lazy: no full-store copy. Callers collect-then-clear (see the ABC contract), so the store is
+        # not mutated mid-iteration — avoids an O(store) allocation on every flushing watermark.
+        for scope, value in self._store.items():
             if scope.operator_id == operator_id and scope.name == name:
                 yield scope.key, scope.namespace, value
 
