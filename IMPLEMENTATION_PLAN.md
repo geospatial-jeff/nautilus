@@ -40,9 +40,26 @@ and symmetric EOS-draining teardown (`nautilus.cluster.deploy`). Co-located edge
 true shuffle crosses workers, over the Stage 1 `SocketChannel` reached by a node address. `nautilus run
 --workers/--parallelism` drives it; telemetry aggregates at the coordinator with per-worker attribution.
 
-### Stage 3 — Full DSL, two-input join, Arrow hot path · Planned
+### Stage 3 — Full DSL, two-input join, Arrow hot path · **In progress**
 
-The fluent graph-building API, a columnar performance path, and debuggability.
+A fluent graph-building API, an inner streaming equi-join, and a columnar shuffle. Landing in
+independently-shippable sub-stages, each green across pytest / mypy / ruff / black / import-linter:
+
+- **3.0 — Arrow hot path · Done.** The keyed shuffle (`runtime.partition._route_keyed`) routes by
+  `dictionary_encode` → per-distinct-key bucket → `take`/`filter` instead of a per-row Python loop,
+  byte-for-byte identical to the old routing (a fuzz oracle pins the rid→instance map; the structural
+  digest is unchanged). +24% on `bench-keyed` at 1000 keys, 2.3× at 50 keys. (`PERFORMANCE_CHANGELOG`.)
+- **3.1 — DAG IR + DAG-aware compiler · Done.** `LogicalGraph` now carries an explicit `LogicalEdge`
+  list with per-edge input ports and keying, so a two-input join is expressible; `compile_graph` lowers
+  the DAG (deterministic topological order, position-derived ids, the join's two edges sharing one
+  group table). A linear graph carries no edges and compiles byte-for-byte as before.
+- **3.2 — Two-input actor + executor wiring · Next.** A `run_two_input` actor loop (left/right dispatch,
+  `min(left, right)` watermark, EOS after both ports) and the executor's two-port mailbox wiring.
+- **3.3 — `HashJoin` operator.** The concrete inner symmetric-hash equi-join.
+- **3.4 — Fluent `Stream` DSL.** The `nautilus.dsl` builder, the `nautilus.driver` boundary package, and
+  retiring the Stage-2 API sprawl.
+
+See `CODE_REVIEW.md` for the design forks these settle (join semantics, DSL surface, the hot path).
 
 ### Stage 4 — Validate multi-node seams · Planned
 

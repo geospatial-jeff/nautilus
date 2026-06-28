@@ -81,11 +81,18 @@ class PhysicalOperator:
 class PhysicalEdge:
     """A connection from one operator to the next, with the routing spec for the whole connection. The
     physical channel count is the fan-out — the destination operator's parallelism — resolved at
-    wiring time, so the edge stays a single neutral fact independent of worker placement."""
+    wiring time, so the edge stays a single neutral fact independent of worker placement.
+
+    ``dst_input_port`` is which input of the destination this edge feeds: 0 for a one-input operator (and
+    the left side of a join), 1 for a join's right side. It is a plain int so the plan still cloudpickles
+    neutrally; it stays off the report topology and the structural digest (a distinct source already
+    makes the two join edges distinct), so adding it leaves every existing linear-graph digest unchanged.
+    """
 
     src_operator_id: str
     dst_operator_id: str
     spec: PartitionerSpec
+    dst_input_port: int = 0
 
 
 @dataclass(frozen=True, slots=True)

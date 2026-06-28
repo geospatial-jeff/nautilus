@@ -28,12 +28,17 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Transform (one-input operator)** — An operator with exactly one input stream and one output
   stream (`OneInputOperator`; e.g. `MapBatch`, `FilterRows`, `Tokenize`, `KeyedCount`,
   `KeyedTumblingSum`).
-- **Two-input operator** — An operator that combines two input streams, such as a join. Its
-  watermark is the minimum of the two inputs. **(reserved — `TwoInputOperator`.)**
+- **Two-input operator** — An operator that combines two input streams, such as a join, with one stream
+  on each **input port** (port 0 = left, port 1 = right). Its watermark is the minimum of the two inputs
+  and it ends only after *both* inputs reach EOS (`TwoInputOperator`).
+- **Input port** — Which input of an operator an edge feeds: port 0 for a one-input transform (and a
+  join's left side), port 1 for a join's right side. The port is what lets a two-input operator tell its
+  two inbound edges apart.
 - **Sink** — The end of the graph: it consumes the final stream. Stage 0's sink collects the output
   batches into a list (it appears as `CollectSink` in the topology and telemetry).
-- **Edge** — A directed connection from one operator to the next. Every edge carries both data and
-  control frames and has a partitioner that decides how data is routed to the downstream instances.
+- **Edge** — A directed connection from one operator's output to a downstream operator's **input port**.
+  Every edge carries both data and control frames and has a partitioner that decides how data is routed
+  to the downstream instances.
 - **Channel** — The concrete one-directional, in-order (FIFO) transport behind an edge between two
   instances. It has a fixed capacity; a full channel blocks the sender (see **backpressure**).
   In-process it is an `asyncio.Queue` (`InProcChannel`); across processes it is a socket
@@ -69,16 +74,22 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 
 *Source: `nautilus.api`, `nautilus.compile`.* How a described job becomes a runnable artifact.
 
-- **Logical graph** — The job as you describe it: a source and a chain of operators with their
-  parallelism and keying, and nothing physical — no instances, no channels, no operator ids
-  (`LogicalGraph`, built with `linear_graph`). It is the input to the compiler and what the fluent DSL
-  will produce **(planned)**.
-- **Vertex** — One operator in a logical graph: the factory that builds it, its kind (source or
-  one-input), its parallelism, and (for a keyed operator) its key columns (`LogicalVertex`).
+- **Logical graph** — The job as you describe it: operators with their parallelism and keying wired into
+  a dataflow, and nothing physical — no instances, no channels, no operator ids (`LogicalGraph`). With no
+  explicit edges it is the linear shape (a source then a chain, built with `linear_graph`); with explicit
+  edges it is any DAG — the shape a join needs (two sources into one two-input vertex). It is the input to
+  the compiler and what the fluent DSL will produce **(planned)**.
+- **Vertex** — One operator in a logical graph: the factory that builds it, its kind (source, one-input,
+  or two-input), its parallelism, and (on a one-input vertex, for the linear shape) its key columns
+  (`LogicalVertex`).
+- **Logical edge** — A directed edge from one vertex to a downstream vertex's input port, carrying the
+  columns that edge is co-partitioned on (`LogicalEdge`). Keying lives on the edge, not the vertex, so a
+  join's two inputs can shuffle on differently-named columns yet land equal keys together. A linear graph
+  carries no edges — the compiler reads its positional adjacency.
 - **Compile (lowering)** — The one-time step that turns a logical graph into a physical plan
-  (`compile_graph`): it names the physical operators by position (`source`, `op0`…, `sink`), chooses a
-  partitioner spec for each edge, and synthesizes the collecting sink. It runs once, before the data
-  path starts — never per record.
+  (`compile_graph`): it orders the operators topologically and names them by position (`source`, `op0`…,
+  `sink`), chooses a partitioner spec for each edge, and synthesizes the collecting sink. It runs once,
+  before the data path starts — never per record.
 - **Physical plan** — The runnable, serializable result of compiling: the operators with their
   parallelism, the edges between them, and a partitioner spec per edge (`PhysicalPlan`). It is plain
   data plus the operator factories, so it can be cloudpickled to a worker that never saw the original

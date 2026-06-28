@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from nautilus.api import LogicalVertex, linear_graph
+from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex, linear_graph, source, two_input
 from nautilus.compile import ForwardSpec, KeyGroupSpec, RoundRobinSpec, compile_graph
 from nautilus.operators import InMemorySource, KeyedCount, MapBatch, Tokenize
 
@@ -101,3 +101,61 @@ def test_default_key_groups_is_the_identity_table() -> None:
     spec = compile_graph(_keyed_graph(4)).edges[0].spec
     assert isinstance(spec, KeyGroupSpec)
     assert spec.group_table == (0, 1, 2, 3)  # G defaults to Q -> identity
+
+
+# --- a two-input join: two sources shuffle into one two_input vertex on ports 0 and 1 -----------
+
+
+class _StubJoin:  # a placeholder two-input operator (the real HashJoin lands in a later sub-stage)
+    pass
+
+
+def _join_graph(jid: str = "j", left: str = "a", right: str = "b") -> LogicalGraph:
+    return LogicalGraph(
+        vertices=(
+            source(left, lambda: InMemorySource([])),
+            source(right, lambda: InMemorySource([])),
+            two_input(jid, lambda: _StubJoin(), parallelism=2),
+        ),
+        edges=(LogicalEdge(left, jid, 0, ("lk",)), LogicalEdge(right, jid, 1, ("rk",))),
+    )
+
+
+def test_two_source_join_compiles_to_ported_keygroup_edges() -> None:
+    plan = compile_graph(_join_graph())
+    ops = {(o.operator_id, o.kind, o.parallelism) for o in plan.operators}
+    assert {("source0", "source", 1), ("source1", "source", 1), ("op0", "two_input", 2)} <= ops
+    join_edges = sorted(
+        (e for e in plan.edges if e.dst_operator_id == "op0"), key=lambda e: e.dst_input_port
+    )
+    assert [e.dst_input_port for e in join_edges] == [0, 1]  # left = port 0, right = port 1
+    assert all(isinstance(e.spec, KeyGroupSpec) for e in join_edges)
+    # both sides read the join's one parallelism + the run's one G, so the tables match exactly: an
+    # equal key co-partitions to the same join instance from the left and the right.
+    assert join_edges[0].spec.group_table == join_edges[1].spec.group_table
+    assert (join_edges[0].spec.key_columns, join_edges[1].spec.key_columns) == (("lk",), ("rk",))
+
+
+def _shape(plan: object) -> tuple:
+    return (
+        [(o.operator_id, o.kind, o.parallelism, o.op_class) for o in plan.operators],  # type: ignore[attr-defined]
+        [
+            (
+                e.src_operator_id,
+                e.dst_operator_id,
+                e.dst_input_port,
+                type(e.spec).__name__,
+                getattr(e.spec, "key_columns", None),
+                getattr(e.spec, "group_table", None),
+            )
+            for e in plan.edges  # type: ignore[attr-defined]
+        ],
+    )
+
+
+def test_compile_is_invariant_to_vertex_ids() -> None:
+    # Physical ids come from topological position, so two join graphs identical but for their vertex ids
+    # compile to the same plan — the property the structural digest's reproducibility rests on.
+    assert _shape(compile_graph(_join_graph(jid="j", left="a", right="b"))) == _shape(
+        compile_graph(_join_graph(jid="JOIN", left="L", right="R"))
+    )

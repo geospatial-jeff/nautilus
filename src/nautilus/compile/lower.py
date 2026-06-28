@@ -1,30 +1,36 @@
 """``compile_graph`` — lower a :class:`~nautilus.api.LogicalGraph` to a :class:`PhysicalPlan`.
 
-This is where logical intent becomes a physical layout. It does three jobs the IR deliberately left
-open:
+This is where logical intent becomes a physical layout. It does these jobs the IR deliberately left open:
 
-* **Names the physical operators by position**, not by the vertices' logical ids, so two graphs that
-  differ only in naming compile to the same plan: the source is ``"source"``, the ``j``-th transform
-  is ``"op{j}"``, and the synthesized collecting sink is ``"sink"``.
-* **Selects a partitioner spec for every edge** from the *downstream* operator's shape — a single
-  instance takes :class:`ForwardSpec`, a keyed operator takes a :class:`KeyGroupSpec` keyed shuffle on
-  its key columns, and a keyless fan-out takes :class:`RoundRobinSpec`.
-* **Synthesizes the sink.** The user describes only the work; the collecting sink that gathers the
-  final stage is the compiler's, pinned to one instance.
+* **Orders the operators topologically** (source-first), tie-breaking by the vertex's insertion index so
+  the order is reproducible across machines, then **names them by that position** — not by the vertices'
+  logical ids, so two graphs that differ only in naming compile to the same plan: a lone source is
+  ``"source"``, the ``j``-th transform/join is ``"op{j}"``, and the synthesized sink is ``"sink"``.
+* **Selects a partitioner spec for every edge** from the *downstream* operator's shape and the *edge's*
+  key columns — a single instance takes :class:`ForwardSpec`, a keyed fan-out a :class:`KeyGroupSpec`
+  shuffle, a keyless fan-out :class:`RoundRobinSpec`. A join's two edges both read the join vertex's one
+  parallelism ``Q`` and the run's one ``G``, so their group tables match and a key co-partitions to the
+  same join instance from both sides.
+* **Synthesizes the sink.** The user describes only the work; the collecting sink that gathers the graph's
+  single leaf is the compiler's, pinned to one instance.
+
+A graph with no explicit edges is the linear shape: the compiler synthesizes the positional, port-0
+adjacency (``source -> op0 -> ... -> leaf``), so a linear graph compiles byte-for-byte as it always has.
 
 A keyed shuffle routes through key groups: each keyed edge gets a ``group → instance`` table of length
 ``G`` (the ``key_groups`` argument, defaulting to the operator's parallelism ``Q`` — the identity table).
 A ``key_groups`` above ``Q`` makes a later rescale a table swap, not a reshuffle; ``G < Q`` is rejected
 here, because then some instance would own no group.
 
-It also rejects a parallel vertex whose factory hands back one shared instance, because the executor
-must build a *fresh* operator per subtask — at parallelism > 1 a shared instance's ``open()`` would
-overwrite its own per-instance context.
+It also rejects a parallel vertex whose factory hands back one shared instance, because the executor must
+build a *fresh* operator per subtask — at parallelism > 1 a shared instance's ``open()`` would overwrite
+its own per-instance context.
 """
 
 from __future__ import annotations
 
-from nautilus.api import LogicalGraph, LogicalVertex
+from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex
+from nautilus.api.graph import _SOURCE, _topological_order
 from nautilus.compile.plan import (
     ForwardSpec,
     KeyGroupSpec,
@@ -35,7 +41,7 @@ from nautilus.compile.plan import (
     RoundRobinSpec,
 )
 
-#: The synthesized sink: a single instance that collects the final stage. There is no sink operator
+#: The synthesized sink: a single instance that collects the graph's leaf. There is no sink operator
 #: class — the executor runs it as a collecting loop — so this is a label, not an operator class.
 SINK_ID = "sink"
 SINK_CLASS = "CollectSink"
@@ -91,6 +97,18 @@ def _op_class(vertex: LogicalVertex) -> str:
     return type(built).__name__
 
 
+def _logical_edges(graph: LogicalGraph) -> tuple[LogicalEdge, ...]:
+    """The graph's edges: the explicit list when given, otherwise the synthesized positional, port-0
+    adjacency of a linear graph (``v0 -> v1 -> ... -> vn``), each edge keyed by the downstream vertex's
+    ``key_columns`` convenience. Either way the IR already validated the shape."""
+    if graph.edges:
+        return graph.edges
+    vs = graph.vertices
+    return tuple(
+        LogicalEdge(vs[i].id, vs[i + 1].id, 0, vs[i + 1].key_columns) for i in range(len(vs) - 1)
+    )
+
+
 def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> PhysicalPlan:
     """Lower ``graph`` to a runnable, cloudpickle-able :class:`PhysicalPlan`.
 
@@ -99,40 +117,57 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
     ``>= Q`` for every keyed operator, and the graph must have at least one keyed edge for ``key_groups``
     to mean anything — lowering raises on a ``G < Q`` or a ``key_groups`` set on a graph with no keyed
     shuffle."""
-    operators: list[PhysicalOperator] = []
+    by_id = {v.id: v for v in graph.vertices}
+    edges = _logical_edges(graph)
+    order = _topological_order(graph.vertices, edges)
 
-    # The source is operator 0; each later vertex is op{j}. Physical ids come from position, so the
-    # plan is independent of the vertices' logical ids.
-    for index, vertex in enumerate(graph.vertices):
-        operator_id = "source" if index == 0 else f"op{index - 1}"
+    # Physical ids by topological position: a lone source is "source", every transform/join is "op{j}".
+    # A multi-source graph (a join over two sources) numbers extra sources "source{k}"; a single-source
+    # graph keeps "source", so a linear graph names exactly as it always has.
+    num_sources = sum(1 for v in graph.vertices if v.kind == _SOURCE)
+    phys: dict[str, str] = {}
+    operators: list[PhysicalOperator] = []
+    op_index = source_index = 0
+    for vid in order:
+        vertex = by_id[vid]
+        if vertex.kind == _SOURCE:
+            pid = "source" if num_sources == 1 else f"source{source_index}"
+            source_index += 1
+        else:
+            pid = f"op{op_index}"
+            op_index += 1
+        phys[vid] = pid
         operators.append(
             PhysicalOperator(
-                operator_id=operator_id,
-                op_class=_op_class(vertex),
-                kind=vertex.kind,
-                parallelism=vertex.parallelism,
-                factory=vertex.factory,
+                pid, _op_class(vertex), vertex.kind, vertex.parallelism, vertex.factory
             )
         )
 
-    # The compiler-synthesized collecting sink (one instance, no operator class).
-    operators.append(
-        PhysicalOperator(
-            operator_id=SINK_ID, op_class=SINK_CLASS, kind="sink", parallelism=1, factory=None
+    # The collecting sink attaches to the graph's single leaf (the vertex with no outbound edge — the
+    # last transform, or the join's output). Fan-out to several leaves/sinks is not built yet.
+    has_outbound = {e.src for e in edges}
+    leaves = [vid for vid in order if vid not in has_outbound]
+    if len(leaves) != 1:
+        raise ValueError(
+            f"a graph must have exactly one leaf (output) vertex to attach the sink to, got "
+            f"{len(leaves)}: {[phys[v] for v in leaves]}"
         )
-    )
+    operators.append(PhysicalOperator(SINK_ID, SINK_CLASS, "sink", 1, None))
 
-    # One edge per adjacent pair, its spec chosen from the *downstream* operator's width and key columns.
-    # The synthesized sink (dst_vertex is None) has parallelism 1, and _spec_for returns ForwardSpec for
-    # any width-1 edge before it reads key_columns, so the sink falls out of that case — no special-case.
-    edges: list[PhysicalEdge] = []
-    downstream = list(graph.vertices[1:]) + [None]  # None marks the sink (width 1, unkeyed)
-    for src, dst_op, dst_vertex in zip(operators[:-1], operators[1:], downstream, strict=True):
-        key_columns = dst_vertex.key_columns if dst_vertex is not None else None
-        spec = _spec_for(dst_op.parallelism, key_columns, key_groups)
-        edges.append(PhysicalEdge(src.operator_id, dst_op.operator_id, spec))
+    # One physical edge per logical edge (spec from the downstream operator's width and the edge's keys),
+    # plus the synthesized leaf -> sink edge (one instance, unkeyed -> Forward).
+    physical_edges = [
+        PhysicalEdge(
+            phys[e.src],
+            phys[e.dst],
+            _spec_for(by_id[e.dst].parallelism, e.key_columns, key_groups),
+            e.dst_input_port,
+        )
+        for e in edges
+    ]
+    physical_edges.append(PhysicalEdge(phys[leaves[0]], SINK_ID, _spec_for(1, None, key_groups), 0))
 
-    if key_groups is not None and not any(isinstance(e.spec, KeyGroupSpec) for e in edges):
+    if key_groups is not None and not any(isinstance(e.spec, KeyGroupSpec) for e in physical_edges):
         # key_groups only means anything for a keyed shuffle; if the graph has none, the argument was
         # silently ignored — surface that instead, so a mistaken --key-groups can't pass unnoticed.
         raise ValueError(
@@ -140,4 +175,4 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
             "parallelism > 1), so it would have no effect"
         )
 
-    return PhysicalPlan(tuple(operators), tuple(edges))
+    return PhysicalPlan(tuple(operators), tuple(physical_edges))

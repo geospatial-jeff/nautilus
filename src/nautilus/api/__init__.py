@@ -8,6 +8,22 @@ selection — is the compiler's job, so the IR stays a description that an agent
 diff, and serialize without dragging in the runtime.
 """
 
-from nautilus.api.graph import LogicalGraph, LogicalVertex, linear_graph, one_input
+from nautilus.api.graph import (
+    LogicalEdge,
+    LogicalGraph,
+    LogicalVertex,
+    linear_graph,
+    one_input,
+    source,
+    two_input,
+)
 
-__all__ = ["LogicalGraph", "LogicalVertex", "linear_graph", "one_input"]
+__all__ = [
+    "LogicalGraph",
+    "LogicalVertex",
+    "LogicalEdge",
+    "linear_graph",
+    "one_input",
+    "two_input",
+    "source",
+]

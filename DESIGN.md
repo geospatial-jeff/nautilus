@@ -85,6 +85,14 @@ real event times are kept strictly below that sentinel so they can never collide
    groups — no key changes group. Stage 2 never moves live state: a rescale is a new job, not an online
    migration, so the table is computed once at compile and immutable for the run. At `G == Q` the table
    is the identity (the routing-level equivalence to a direct hash lives on `KeyGroupPartitioner`).
+8. **Two-input join** (`core.operator.TwoInputOperator`) — the logical graph is an explicit-edge DAG, not
+   only a linear chain, so an operator can have two inputs. A join is a two-input vertex fed by two keyed
+   edges on distinct ports (port 0 left, port 1 right); both edges read the *join's* one parallelism and
+   the run's one `G`, so their group tables are identical and an equal key co-partitions to the same join
+   instance from either side. Its watermark is the same min-over-inputs combination as any fan-in
+   (`min(left, right)`), and it forwards EOS only after *both* inputs close — the existing termination
+   rule, unchanged for a second input. (A linear graph carries no edges; the compiler reads its positional
+   adjacency, so it lowers byte-for-byte as before.)
 
 ## Deployment (`nautilus.cluster`)
 
