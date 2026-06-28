@@ -139,3 +139,14 @@ def test_key_groups_without_keyed_edge_rejected():
     graph = graph_from_stages(from_batches(), [Stage(lambda: MapBatch(lambda b: b), 2)])
     with pytest.raises(ValueError, match="key_groups"):
         compile_graph(graph, key_groups=4)
+
+
+# --- C31: a spec's partitioner_name is the name of the runtime partitioner it builds ------------
+
+
+def test_partitioner_name_matches_runtime_class():
+    from nautilus.compile.plan import ForwardSpec, KeyGroupSpec, RoundRobinSpec
+    from nautilus.runtime.execute import partitioner_from_spec
+
+    for spec in (ForwardSpec(), RoundRobinSpec(), KeyGroupSpec(("k",), (0,))):
+        assert spec.partitioner_name == type(partitioner_from_spec(spec)).__name__

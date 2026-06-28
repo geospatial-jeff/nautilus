@@ -18,6 +18,7 @@ the actor's recorder and the single-writer invariant holds.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 
 from nautilus.core.time import Clock, SystemClock
@@ -156,7 +157,8 @@ class InstanceRecorder(Recorder):
         self._counters: dict[tuple[str, Labels], Counter] = {}
         self._gauges: dict[tuple[str, Labels], Gauge] = {}
         self._histograms: dict[tuple[str, Labels], Histogram] = {}
-        self._events: list[EventRecord] = []
+        # A bounded ring: the oldest event is evicted in O(1) when full (was a list with pop(0), O(n)).
+        self._events: deque[EventRecord] = deque(maxlen=config.event_log_capacity)
         self._seq = 0
         self._dropped = 0
 
@@ -212,6 +214,8 @@ class InstanceRecorder(Recorder):
             unknown = set(fields) - set(spec.fields)
             if unknown:
                 raise KeyError(f"event {name!r} got fields not in its EventSpec: {sorted(unknown)}")
+        if len(self._events) == self._events.maxlen:  # full → this append evicts the oldest
+            self._dropped += 1
         self._events.append(
             EventRecord(
                 self._seq,
@@ -222,9 +226,6 @@ class InstanceRecorder(Recorder):
             )
         )
         self._seq += 1
-        if len(self._events) > self._config.event_log_capacity:
-            self._events.pop(0)
-            self._dropped += 1
 
     def snapshot(self) -> InstanceSnapshot:
         return InstanceSnapshot(

@@ -29,7 +29,9 @@ from typing import ClassVar
 class ForwardSpec:
     """1:1 forwarding to a single downstream instance (a non-fan-out edge)."""
 
-    #: The runtime partitioner class this spec selects — also the edge's label in the report topology.
+    #: The edge's partitioner label in the report topology. Selection of the runtime partitioner is by
+    #: spec *type* (``partitioner_from_spec``), not by this string; it happens to equal the runtime
+    #: class name, which a unit test pins so the two cannot drift.
     partitioner_name: ClassVar[str] = "Forward"
 
 

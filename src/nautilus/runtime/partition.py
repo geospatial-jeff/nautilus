@@ -99,22 +99,27 @@ class _KeyedPartitioner(Partitioner):
 
     def __init__(self) -> None:
         self._cache: dict[tuple[object, ...], int] = {}
+        self._bucket_of_fn: Callable[[tuple[object, ...]], int] | None = None
 
     def _bucket(self, key: tuple[object, ...], num_downstream: int) -> int:
         raise NotImplementedError
 
     def _bucket_of(self, num_downstream: int) -> Callable[[tuple[object, ...]], int]:
-        cache = self._cache
+        # Built once and reused: num_downstream is constant for an edge's life, so the closure (and the
+        # per-key cache it closes over) is the same every batch — no need to re-create it per route().
+        if self._bucket_of_fn is None:
+            cache = self._cache
 
-        def bucket_of(key: tuple[object, ...]) -> int:
-            idx = cache.get(key)
-            if idx is None:  # a key never seen: validate and compute its owner once, then memoize
-                _validate_key(key)
-                idx = self._bucket(key, num_downstream)
-                cache[key] = idx
-            return idx
+            def bucket_of(key: tuple[object, ...]) -> int:
+                idx = cache.get(key)
+                if idx is None:  # a key never seen: validate and compute its owner once, then memoize
+                    _validate_key(key)
+                    idx = self._bucket(key, num_downstream)
+                    cache[key] = idx
+                return idx
 
-        return bucket_of
+            self._bucket_of_fn = bucket_of
+        return self._bucket_of_fn
 
 
 class Forward(Partitioner):

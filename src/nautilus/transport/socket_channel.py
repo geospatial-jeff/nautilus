@@ -61,12 +61,17 @@ class SocketChannel(Channel):
         self._capacity = capacity
         self._credits = capacity  # producer end: remaining data-send permits
         self._cond = asyncio.Condition()  # guards _credits and the terminal state
-        self._incoming: asyncio.Queue[Frame | _Terminal] = asyncio.Queue()  # consumer end
+        # Consumer end. Data frames here are bounded by the credit window; control frames are credit-
+        # exempt (so a watermark/EOS never stalls behind a full data window) and therefore unbounded —
+        # a deliberate tradeoff, safe because control frames are sparse relative to data.
+        self._incoming: asyncio.Queue[Frame | _Terminal] = asyncio.Queue()
         self._terminated = False
         self._error: BaseException | None = None
         self._eos_seen = False  # consumer end: an EOS frame was received before the peer closed
         self._closing = False  # producer end: finish() in progress, so peer EOF is expected
-        self._bytes_written = 0  # cumulative wire bytes this end has written (forward data + control)
+        # cumulative wire bytes this end wrote: a producer end = data + control frames; a consumer end =
+        # credit-return frames (written by recv()).
+        self._bytes_written = 0
         self._credit_wait_ns = 0  # cumulative time send() blocked awaiting a data credit
         self._encode_ns = 0  # cumulative time spent serializing outbound frames
         self._decode_ns = 0  # cumulative time the read loop spent deserializing inbound frames

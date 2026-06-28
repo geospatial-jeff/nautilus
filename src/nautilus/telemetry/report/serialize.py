@@ -111,13 +111,18 @@ def report_to_dict(report: RunReport) -> dict[str, object]:
     events = []
     for ev in report.events:
         present_events.add(ev.name)
+        fields = {k: v for k, v in ev.fields}
+        # An operator.error's full traceback lives once, in errors[] below; keep it out of the raw event
+        # log (which only needs the ordered record), so the large string isn't serialized twice.
+        if ev.name == "operator.error":
+            fields.pop("traceback", None)
         events.append(
             {
                 "seq": ev.seq,
                 "at_micros": ev.at_micros,
                 "operator_id": ev.operator_id,
                 "name": ev.name,
-                "fields": {k: v for k, v in ev.fields},
+                "fields": fields,
             }
         )
 
@@ -168,6 +173,7 @@ def report_to_dict(report: RunReport) -> dict[str, object]:
                 "frame_kind": e.frame_kind,
                 "input_index": e.input_index,
                 "batch_rows": e.batch_rows,
+                "source_location": e.source_location,
             }
             for e in report.errors
         ],

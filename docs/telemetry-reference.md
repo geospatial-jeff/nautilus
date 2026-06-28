@@ -26,11 +26,11 @@ Descriptive only: each entry states what a number measures and which other metri
 | `operator.batches_out` | counter | batches | COUNTERS | sum | operator_id, subtask_index | Number of non-empty data batches emitted. |  |  |
 | `operator.bytes_in` | counter | bytes | FULL | sum | operator_id, subtask_index | Approximate Arrow buffer size of received batches (get_total_buffer_size proxy). | operator.rows_in |  |
 | `operator.bytes_out` | counter | bytes | FULL | sum | operator_id, subtask_index | Approximate Arrow buffer size of emitted batches (get_total_buffer_size proxy). | operator.rows_out |  |
-| `operator.errors` | counter | count | COUNTERS | sum | operator_id, op_class, exc_type | Number of exceptions raised in an operator lifecycle method. |  |  |
+| `operator.errors` | counter | count | COUNTERS | sum | operator_id, exc_type | Number of exceptions raised in an operator lifecycle method. |  |  |
 | `operator.on_watermark_calls` | counter | calls | COUNTERS | sum | operator_id, subtask_index | Number of op.on_watermark invocations. |  |  |
 | `operator.on_watermark_micros` | histogram | microseconds | COUNTERS | sum | operator_id, subtask_index | Wall time of one op.on_watermark(t) call. | window.fires |  |
 | `operator.process_calls` | counter | calls | COUNTERS | sum | operator_id, subtask_index | Number of op.process invocations. |  |  |
-| `operator.process_micros` | histogram | microseconds | COUNTERS | sum | operator_id, op_class, subtask_index | Wall time of one op.process(batch) call, measured with perf_counter_ns. | operator.batch_rows |  |
+| `operator.process_micros` | histogram | microseconds | COUNTERS | sum | operator_id, subtask_index | Wall time of one op.process(batch) call, measured with perf_counter_ns. | operator.batch_rows |  |
 | `operator.rows_in` | counter | rows | COUNTERS | sum | operator_id, subtask_index | Sum of num_rows across received batches. | operator.rows_out |  |
 | `operator.rows_out` | counter | rows | COUNTERS | sum | operator_id, subtask_index | Sum of num_rows across emitted batches. | operator.rows_in | rows_out / rows_in = selectivity |
 | `partition.route_micros` | histogram | microseconds | COUNTERS | sum | operator_id, edge_dst | Wall time of one partitioner.route(batch) call on the sending actor, measured with perf_counter_ns. Spans key extraction, per-key assignment, and the take into sub-batches; sits between the operator's process and the downstream send. | edge.rows_sent, edge.send_wait_micros |  |
@@ -52,7 +52,7 @@ Descriptive only: each entry states what a number measures and which other metri
 | `watermark.final_micros` | gauge | event_time_micros | COUNTERS | min | operator_id | Combined watermark at close (WATERMARK_MAX for a finished bounded run). |  |  |
 | `watermark.input_active` | counter | count | COUNTERS | sum | operator_id, input_index | Number of StatusActive frames received on an input. | watermark.combined_micros |  |
 | `watermark.input_idle` | counter | count | COUNTERS | sum | operator_id, input_index | Number of StatusIdle frames received on an input. | watermark.combined_micros |  |
-| `window.fires` | counter | count | COUNTERS | sum | operator_id | Number of windows emitted across on_watermark calls. | operator.on_watermark_micros |  |
+| `window.fires` | counter | count | COUNTERS | sum | operator_id | Number of result emissions an operator made from on_watermark: one per tumbling window fired, or the single terminal flush of a keyed global aggregation at EOS. | operator.on_watermark_micros |  |
 
 ## Events
 

@@ -49,10 +49,9 @@ def encode_handshake(channel_id: ChannelId) -> bytes:
     return _MAGIC + len(payload).to_bytes(4, "big") + payload
 
 
-def decode_handshake(prefix: bytes, payload: bytes) -> ChannelId:
-    """Parse a preamble's ``prefix`` (magic + length) and ``payload`` into a :class:`ChannelId`."""
-    if prefix[:4] != _MAGIC:
-        raise HandshakeError(f"bad handshake magic {prefix[:4]!r}")
+def decode_handshake(payload: bytes) -> ChannelId:
+    """Parse a preamble's msgpack ``payload`` into a :class:`ChannelId`. The caller
+    (:func:`read_handshake`) has already validated the magic and length, so this only decodes."""
     try:
         fields = msgpack.unpackb(payload, raw=False)
         src_op, src_sub, dst_op, dst_sub = fields
@@ -77,4 +76,4 @@ async def read_handshake(reader: asyncio.StreamReader) -> ChannelId:
     if prefix[:4] != _MAGIC or length > _MAX_PAYLOAD:
         raise HandshakeError(f"not a nautilus handshake (magic {prefix[:4]!r}, length {length})")
     payload = await reader.readexactly(length)
-    return decode_handshake(prefix, payload)
+    return decode_handshake(payload)

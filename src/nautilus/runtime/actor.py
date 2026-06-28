@@ -72,9 +72,7 @@ def _capture(
     try:
         yield
     except Exception as e:
-        recorder.incr(
-            "operator.errors", 1, operator_id=op_id, op_class=op_class, exc_type=type(e).__name__
-        )
+        recorder.incr("operator.errors", 1, operator_id=op_id, exc_type=type(e).__name__)
         recorder.event(
             "operator.error",
             operator_id=op_id,
@@ -151,6 +149,17 @@ class Output:
             for i, ch in enumerate(channels)
             if ch.depth() is not None
         }
+        # queue_capacity is constant per channel — set it once here, not on every send. (Read back by
+        # report._build_edges; only in-process channels report a depth and thus carry a capacity.)
+        if self._on:
+            for i in self._depth_hists:
+                recorder.gauge(
+                    "edge.queue_capacity",
+                    operator_id=edge_src,
+                    edge_src=edge_src,
+                    edge_dst=edge_dst,
+                    channel_index=i,
+                ).set(capacity)
         # Transport accounting is per-channel and only for cross-process edges: an in-process channel
         # reports None, so its index is absent here and its sends skip the bookkeeping entirely. The
         # SocketChannel reports cumulative totals; we record the per-send delta against these.
@@ -198,8 +207,7 @@ class Output:
             rec.incr("edge.rows_sent", rows, **base)
         depth = ch.depth()
         if depth is not None:
-            rec.set_gauge("edge.queue_depth", depth, **base)
-            rec.set_gauge("edge.queue_capacity", self._capacity, **base)
+            rec.set_gauge("edge.queue_depth", depth, **base)  # capacity is set once in __init__
             self._depth_hists[idx].observe(depth)
         if idx in self._transport_idx:  # cross-process edge: record wire bytes + serialize/stall deltas
             written = ch.bytes_written() or 0
@@ -335,7 +343,7 @@ async def run_transform(
     bytes_on = bytes_in is not NOOP_COUNTER
     bytes_out_arg = bytes_out if bytes_on else None
     proc_hist = recorder.histogram(
-        "operator.process_micros", operator_id=op_id, op_class=opcls, subtask_index=sub
+        "operator.process_micros", operator_id=op_id, subtask_index=sub
     )
     batch_rows_hist = recorder.histogram(
         "operator.batch_rows", operator_id=op_id, subtask_index=sub

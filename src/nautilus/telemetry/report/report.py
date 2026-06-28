@@ -122,6 +122,7 @@ class ErrorRecord:
     frame_kind: str | None
     input_index: int | None
     batch_rows: int | None
+    source_location: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,6 +409,7 @@ def _build_errors(snapshots: list[InstanceSnapshot]) -> tuple[ErrorRecord, ...]:
                     frame_kind=_opt_str(f.get("frame_kind")),
                     input_index=_opt_int(f.get("input_index")),
                     batch_rows=_opt_int(f.get("batch_rows")),
+                    source_location=_opt_str(f.get("source_location")),
                 )
             )
     errors.sort(key=lambda e: e.at_micros)

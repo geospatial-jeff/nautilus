@@ -222,7 +222,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "operator.process_micros",
             MetricKind.HISTOGRAM,
             "microseconds",
-            ("operator_id", "op_class", "subtask_index"),
+            _OP,  # op_class is already on the snapshot; no need to repeat it per timing sample
             Reduction.SUM,
             "Wall time of one op.process(batch) call, measured with perf_counter_ns.",
             relates_to=("operator.batch_rows",),
@@ -436,7 +436,8 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "count",
             ("operator_id",),
             Reduction.SUM,
-            "Number of windows emitted across on_watermark calls.",
+            "Number of result emissions an operator made from on_watermark: one per tumbling window "
+            "fired, or the single terminal flush of a keyed global aggregation at EOS.",
             relates_to=("operator.on_watermark_micros",),
             deterministic=True,
             owner=Owner.AUTHOR,  # written by operators via ctx.metrics, not by the engine
@@ -490,7 +491,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "operator.errors",
             MetricKind.COUNTER,
             "count",
-            ("operator_id", "op_class", "exc_type"),
+            ("operator_id", "exc_type"),  # op_class is on the snapshot and the operator.error event
             Reduction.SUM,
             "Number of exceptions raised in an operator lifecycle method.",
             deterministic=True,
