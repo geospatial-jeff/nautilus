@@ -47,6 +47,7 @@ from nautilus.runtime.connector import ChannelId, Connector, Deployment
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.runtime.partition import Forward, KeyGroupPartitioner, Partitioner, RoundRobin
 from nautilus.telemetry import (
+    Owner,
     Recorder,
     RecorderRegistry,
     TelemetryConfig,
@@ -84,17 +85,20 @@ async def _collect_sink(mailbox: Mailbox, out: list[pa.RecordBatch], recorder: R
     rows_in = recorder.counter("operator.rows_in", operator_id="sink", subtask_index=0)
     batches_in = recorder.counter("operator.batches_in", operator_id="sink", subtask_index=0)
     input_wait = recorder.counter("edge.input_wait_micros", operator_id="sink")
-    while not mailbox.exhausted:
-        t0 = perf_counter_ns()
-        i, frame = await mailbox.get()
-        input_wait.add((perf_counter_ns() - t0) // 1000)
-        if isinstance(frame, Batch):
-            out.append(frame.data)
-            batches_in.add(1)
-            rows_in.add(frame.num_rows)
-        elif isinstance(frame, EOS):
-            recorder.incr("eos.received", 1, operator_id="sink", input_index=i)
-            mailbox.close_input(i)
+    try:
+        while not mailbox.exhausted:
+            t0 = perf_counter_ns()
+            i, frame = await mailbox.get()
+            input_wait.add((perf_counter_ns() - t0) // 1000)
+            if isinstance(frame, Batch):
+                out.append(frame.data)
+                batches_in.add(1)
+                rows_in.add(frame.num_rows)
+            elif isinstance(frame, EOS):
+                recorder.incr("eos.received", 1, operator_id="sink", input_index=i)
+                mailbox.close_input(i)
+    finally:
+        mailbox.close()  # cancel any recv still armed if the sink unwound mid-fan-in (fail-fast)
     decoded = mailbox.decode_micros()  # inbound Arrow IPC decode for a sink behind a cross-worker edge
     if decoded:
         recorder.incr("transport.decode_micros", decoded, operator_id="sink")
@@ -119,7 +123,9 @@ async def execute(
     out_edge: dict[str, PhysicalEdge] = {e.src_operator_id: e for e in plan.edges}
     in_edge: dict[str, PhysicalEdge] = {e.dst_operator_id: e for e in plan.edges}
 
-    def rec(operator_id: str, op_class: str, kind: str, subtask: int) -> Recorder:
+    def rec(
+        operator_id: str, op_class: str, kind: str, subtask: int, owner: Owner = Owner.ENGINE
+    ) -> Recorder:
         return registry.register(
             make_recorder(
                 operator_id=operator_id,
@@ -128,6 +134,7 @@ async def execute(
                 subtask_index=subtask,
                 node=deployment.node,
                 config=cfg,
+                owner=owner,
             )
         )
 
@@ -156,97 +163,100 @@ async def execute(
         ]
         return Mailbox(channels)
 
-    # --- Phase A: instantiate operators and wire every OUTBOUND edge -----------------------------
-    # Dialing an outbound edge completes once the peer's listener is bound; it never blocks on the
-    # peer's accept. Doing every outbound before any inbound therefore makes the cross-worker connect
-    # deadlock-free even on a bidirectional mesh — a worker that accepted before it dialed could wait on
-    # a peer that is itself waiting to be dialed.
-    hosted: list[tuple[PhysicalOperator, int]] = []
-    instances: dict[tuple[str, int], object] = {}
-    outputs: dict[tuple[str, int], Output] = {}
-    op_recorders: dict[tuple[str, int], Recorder] = {}
-    metrics_recorders: dict[tuple[str, int], Recorder] = {}
-    for op in plan.operators:
-        for subtask in range(op.parallelism):
-            if not deployment.hosts(op.operator_id, subtask):
-                continue
-            key = (op.operator_id, subtask)
-            hosted.append((op, subtask))
-            op_recorders[key] = rec(op.operator_id, op.op_class, op.kind, subtask)
-            if op.kind == "sink":
-                continue  # the sink has no outbound edge; its mailbox is wired in phase B
-            instances[key] = _instantiate(op)
-            outputs[key] = await build_output(op.operator_id, subtask, op_recorders[key])
-            if op.kind == "one_input":
-                # A SEPARATE recorder for operator-author custom metrics (ctx.metrics), preserving the
-                # single-writer invariant; both carry the same (operator_id, subtask) and merge at build.
-                metrics_recorders[key] = rec(op.operator_id, op.op_class, op.kind, subtask)
-
-    # --- Phase B: wire every INBOUND mailbox and assemble the actor coroutines -------------------
-    # Each inbound accept resolves as its producer dials in its own phase A. A mailbox is built with its
-    # FULL local+remote input set before its actor starts, so WatermarkTracker(n) and the
-    # all-inputs-EOS termination check see every input.
-    coros = []
+    # The outermost try begins before wiring so connector.close() runs even if Phase A/B raises (a
+    # dial/accept failure on a cross-worker edge): a partial mesh is still abortively torn down.
     sink_batches: list[pa.RecordBatch] = []
-    for op, subtask in hosted:
-        key = (op.operator_id, subtask)
-        if op.kind == "source":
-            ctx = OperatorContext(
-                op.operator_id, subtask_index=subtask, num_subtasks=op.parallelism, clock=clk
-            )
-            coros.append(
-                run_source(
-                    cast(SourceOperator, instances[key]),
-                    ctx,
-                    [outputs[key]],
-                    recorder=op_recorders[key],
-                )
-            )
-        elif op.kind == "one_input":
-            mailbox = await build_mailbox(op.operator_id, subtask)
-            ctx = OperatorContext(
-                op.operator_id,
-                subtask_index=subtask,
-                num_subtasks=op.parallelism,
-                clock=clk,
-                metrics=metrics_recorders[key],
-            )
-            coros.append(
-                run_transform(
-                    cast(OneInputOperator, instances[key]),
-                    ctx,
-                    mailbox,
-                    [outputs[key]],
-                    recorder=op_recorders[key],
-                )
-            )
-        elif op.kind == "sink":
-            mailbox = await build_mailbox(op.operator_id, subtask)
-            coros.append(_collect_sink(mailbox, sink_batches, op_recorders[key]))
-        else:
-            raise ValueError(f"unknown operator kind {op.kind!r} for {op.operator_id!r}")
-
-    # The hardware sampler runs OUTSIDE the data TaskGroup (as in the legacy runners) so it can neither
-    # delay completion nor cancel the data tasks if a psutil call raises. Each worker samples itself,
-    # attributing its readings to its own node.
-    sampler = None
-    sampler_task: asyncio.Task[None] | None = None
-    if cfg.tier > Tier.OFF:
-        from nautilus.telemetry.system import SystemSampler, make_system_recorder
-
-        proc_rec = registry.register(make_system_recorder(cfg, node=deployment.node))
-        # This worker's placement fact: how many operator instances it hosts. Recorded on the
-        # per-process recorder (independent of system sampling) so it lands in this node's process row.
-        proc_rec.set_gauge(
-            "placement.instances_per_worker", len(hosted), node=deployment.node
-        )
-        if cfg.sample_system:
-            sampler = SystemSampler(
-                proc_rec, node=deployment.node, interval_micros=cfg.sample_interval_micros
-            )
-            sampler_task = asyncio.create_task(sampler.run())
-
     try:
+        # --- Phase A: instantiate operators and wire every OUTBOUND edge -------------------------
+        # Dialing an outbound edge completes once the peer's listener is bound; it never blocks on the
+        # peer's accept. Doing every outbound before any inbound therefore makes the cross-worker
+        # connect deadlock-free even on a bidirectional mesh — a worker that accepted before it dialed
+        # could wait on a peer that is itself waiting to be dialed.
+        hosted: list[tuple[PhysicalOperator, int]] = []
+        instances: dict[tuple[str, int], object] = {}
+        outputs: dict[tuple[str, int], Output] = {}
+        op_recorders: dict[tuple[str, int], Recorder] = {}
+        metrics_recorders: dict[tuple[str, int], Recorder] = {}
+        for op in plan.operators:
+            for subtask in range(op.parallelism):
+                if not deployment.hosts(op.operator_id, subtask):
+                    continue
+                key = (op.operator_id, subtask)
+                hosted.append((op, subtask))
+                op_recorders[key] = rec(op.operator_id, op.op_class, op.kind, subtask)
+                if op.kind == "sink":
+                    continue  # the sink has no outbound edge; its mailbox is wired in phase B
+                instances[key] = _instantiate(op)
+                outputs[key] = await build_output(op.operator_id, subtask, op_recorders[key])
+                if op.kind == "one_input":
+                    # A SEPARATE recorder for operator-author custom metrics (ctx.metrics), preserving
+                    # the single-writer invariant; both carry the same (operator_id, subtask) and merge
+                    # at build. owner=AUTHOR so it can only write author-owned metrics, never engine keys.
+                    metrics_recorders[key] = rec(
+                        op.operator_id, op.op_class, op.kind, subtask, owner=Owner.AUTHOR
+                    )
+
+        # --- Phase B: wire every INBOUND mailbox and assemble the actor coroutines ---------------
+        # Each inbound accept resolves as its producer dials in its own phase A. A mailbox is built with
+        # its FULL local+remote input set before its actor starts, so WatermarkTracker(n) and the
+        # all-inputs-EOS termination check see every input.
+        coros = []
+        for op, subtask in hosted:
+            key = (op.operator_id, subtask)
+            if op.kind == "source":
+                ctx = OperatorContext(
+                    op.operator_id, subtask_index=subtask, num_subtasks=op.parallelism, clock=clk
+                )
+                coros.append(
+                    run_source(
+                        cast(SourceOperator, instances[key]),
+                        ctx,
+                        [outputs[key]],
+                        recorder=op_recorders[key],
+                    )
+                )
+            elif op.kind == "one_input":
+                mailbox = await build_mailbox(op.operator_id, subtask)
+                ctx = OperatorContext(
+                    op.operator_id,
+                    subtask_index=subtask,
+                    num_subtasks=op.parallelism,
+                    clock=clk,
+                    metrics=metrics_recorders[key],
+                )
+                coros.append(
+                    run_transform(
+                        cast(OneInputOperator, instances[key]),
+                        ctx,
+                        mailbox,
+                        [outputs[key]],
+                        recorder=op_recorders[key],
+                    )
+                )
+            elif op.kind == "sink":
+                mailbox = await build_mailbox(op.operator_id, subtask)
+                coros.append(_collect_sink(mailbox, sink_batches, op_recorders[key]))
+            else:
+                raise ValueError(f"unknown operator kind {op.kind!r} for {op.operator_id!r}")
+
+        # The hardware sampler runs OUTSIDE the data TaskGroup (as in the legacy runners) so it can
+        # neither delay completion nor cancel the data tasks if a psutil call raises. Each worker
+        # samples itself, attributing its readings to its own node.
+        sampler = None
+        sampler_task: asyncio.Task[None] | None = None
+        if cfg.tier > Tier.OFF:
+            from nautilus.telemetry.system import SystemSampler, make_system_recorder
+
+            proc_rec = registry.register(make_system_recorder(cfg, node=deployment.node))
+            # This worker's placement fact: how many operator instances it hosts. Recorded on the
+            # per-process recorder (independent of system sampling) so it lands in this node's row.
+            proc_rec.set_gauge("placement.instances_per_worker", len(hosted), node=deployment.node)
+            if cfg.sample_system:
+                sampler = SystemSampler(
+                    proc_rec, node=deployment.node, interval_micros=cfg.sample_interval_micros
+                )
+                sampler_task = asyncio.create_task(sampler.run())
+
         try:
             async with asyncio.TaskGroup() as tg:
                 for coro in coros:

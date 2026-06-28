@@ -77,7 +77,8 @@ class TimestampAssigner(ABC):
 
 
 class ColumnTimestampAssigner(TimestampAssigner):
-    """Reads event time from a named column (an int64 micros column, or an Arrow timestamp)."""
+    """Reads event time from a named column: an int64-microseconds column, or an Arrow ``timestamp``
+    of any unit (normalized to microseconds; nanoseconds truncate)."""
 
     def __init__(self, column: str) -> None:
         self.column = column
@@ -85,7 +86,11 @@ class ColumnTimestampAssigner(TimestampAssigner):
     def timestamps(self, batch: pa.RecordBatch) -> pa.Array:
         col = batch.column(self.column)
         if pa.types.is_timestamp(col.type):
-            col = pc.cast(col, pa.int64())  # timestamp units are already micros-or-less ints
+            # Normalize the column's own unit (s/ms/us/ns) to microseconds *before* reading the raw
+            # integer: casting a timestamp straight to int64 returns its underlying value in its own
+            # unit with no conversion, so a 'ms'/'s'/'ns' column would yield wrong event times. The
+            # us→int64 below then extracts whole microseconds. safe=False lets ns truncate to µs.
+            col = pc.cast(col, pa.timestamp("us"), safe=False)
         return pc.cast(col, pa.int64())
 
 

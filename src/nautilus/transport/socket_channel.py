@@ -100,6 +100,9 @@ class SocketChannel(Channel):
     async def recv(self) -> Frame:
         item = await self._incoming.get()
         if isinstance(item, _Terminal):
+            # Keep the terminal sticky so a second recv() raises too, instead of blocking forever on
+            # the now-empty queue (symmetric with send()'s _raise_if_terminated()).
+            self._incoming.put_nowait(_TERMINAL)
             raise self._error or TransportClosed("recv() on a closed channel")
         if not item.is_control:  # a data slot was freed → return one credit to the producer
             # Best-effort: if the producer has already finished and gone, the credit is moot.

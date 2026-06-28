@@ -17,6 +17,7 @@ import multiprocessing as mp
 from typing import Any
 
 from nautilus.cluster.worker_main import worker_main
+from nautilus.telemetry import TelemetryConfig
 
 
 def spawn_workers(
@@ -24,8 +25,7 @@ def spawn_workers(
     placement: dict[tuple[str, int], int],
     host: str,
     capacity: int,
-    tier: int,
-    sample_system: bool,
+    config: TelemetryConfig,
     num_workers: int,
 ) -> tuple[list[Any], Any, dict[int, Any]]:
     """Start ``num_workers`` worker processes. Returns the processes, the shared events queue
@@ -44,8 +44,7 @@ def spawn_workers(
                     placement,
                     host,
                     capacity,
-                    tier,
-                    sample_system,
+                    config,
                     events,
                     commands[wid],
                 ),

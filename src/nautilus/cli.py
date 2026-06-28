@@ -208,7 +208,8 @@ def examples() -> None:
     table.add_column("name")
     table.add_column("description")
     for name, builder in EXAMPLES.items():
-        table.add_row(name, (builder.__doc__ or "").strip().splitlines()[0])
+        # Fall back to the registered name if a builder has no/blank docstring (don't IndexError).
+        table.add_row(name, next(iter((builder.__doc__ or "").strip().splitlines()), name))
     console.print(table)
     console.print("\nrun one with:  [bold]nautilus run <name>[/bold]")
 
@@ -392,6 +393,13 @@ def bench(
             console.print(_comparison_line(compare(base[key], result)))
 
     if update:
+        if not result.deterministic:
+            # A wobbling digest must never become a committed correctness anchor — refuse the write.
+            console.print(
+                f"[red]not updating baseline[/red]: {key!r} is nondeterministic "
+                "(its structural digest differed across trials)"
+            )
+            raise typer.Exit(code=1)
         base = load_baseline(baseline) if baseline.exists() else {}
         base[key] = result
         save_baseline(baseline, base)

@@ -20,7 +20,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import perf_counter_ns
-from typing import Protocol
+from typing import Any, Protocol
 
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
@@ -181,7 +181,9 @@ async def serve_local_chain(
     loop = asyncio.get_running_loop()
     started_at = clk.now_micros()
     started_ns = perf_counter_ns()
-    state = {"status": "live"}
+    # frozen_meta is captured once the run ends, so wall_micros/ended_at (and every wall-derived ratio)
+    # stop advancing while the dashboard lingers on the final snapshot — "frozen" as the docstring says.
+    state: dict[str, Any] = {"status": "live", "frozen_meta": None}
 
     def meta_now() -> RunMeta:
         return make_run_meta(
@@ -195,7 +197,11 @@ async def serve_local_chain(
             capacity=capacity,
         )
 
-    snap = SnapshotSource(loop, registry, topology, meta_now, lambda: state["status"])
+    def meta_fn() -> RunMeta:
+        frozen = state["frozen_meta"]
+        return frozen if frozen is not None else meta_now()
+
+    snap = SnapshotSource(loop, registry, topology, meta_fn, lambda: state["status"])
     server = LiveServer(snap, load_dashboard_html(), host=host, port=port)
     server.start()
     if on_ready is not None:
@@ -217,6 +223,7 @@ async def serve_local_chain(
         try:
             await run_task  # bounded completes; unbounded blocks until cancelled
         finally:
+            state["frozen_meta"] = meta_now()  # freeze wall/ended_at at the instant the run ended
             state["status"] = "completed"
         if linger:
             await asyncio.Event().wait()  # serve the frozen final snapshot until cancelled

@@ -34,6 +34,17 @@ class Stability(StrEnum):
     EXPERIMENTAL = "experimental"
 
 
+class Owner(StrEnum):
+    """Who is allowed to write a metric. The runtime owns one recorder per actor (``ENGINE``) and a
+    separate ``ctx.metrics`` recorder for operator-author metrics (``AUTHOR``); a recorder may only
+    write metrics of its own owner. Since the report aggregates engine metrics by name across snapshots,
+    this stops an operator from accidentally writing an engine key (e.g. ``operator.rows_out``) via
+    ``ctx.metrics`` and inflating the totals."""
+
+    ENGINE = "engine"
+    AUTHOR = "author"
+
+
 class Tier(IntEnum):
     """Verbosity tiers. A metric/event activates once the configured tier reaches its ``min_tier``."""
 
@@ -125,6 +136,7 @@ class MetricSpec:
     deterministic: bool = False
     min_tier: Tier = Tier.COUNTERS
     boundaries: tuple[int, ...] = ()
+    owner: Owner = Owner.ENGINE
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,7 +429,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("eos.expected",),
             deterministic=True,
         ),
-        # --- windows / state (operator-author or runtime) ------------------------------------
+        # --- windows / state ------------------------------------------------------------------
         MetricSpec(
             "window.fires",
             MetricKind.COUNTER,
@@ -427,6 +439,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "Number of windows emitted across on_watermark calls.",
             relates_to=("operator.on_watermark_micros",),
             deterministic=True,
+            owner=Owner.AUTHOR,  # written by operators via ctx.metrics, not by the engine
         ),
         MetricSpec(
             "state.entries",

@@ -14,6 +14,7 @@ every worker immediately, so a failure never hangs or orphans a process.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from time import perf_counter_ns
 
 import cloudpickle
@@ -56,7 +57,9 @@ def deploy(
     listener binds — loopback by default; the seam for a real node-to-node address in Stage 4.
 
     ``bootstrap_timeout`` bounds only the bind/register phase, where a silent worker means a hang; once
-    the job is running the wait is unbounded, because a healthy job runs as long as its data does.
+    the job is running the wait is unbounded, because a healthy job runs as long as its data does. The
+    full ``telemetry`` config reaches every worker; a custom ``clock``, however, cannot cross a spawn, so
+    it affects only the coordinator's run-meta timestamps — worker operators always use a ``SystemClock``.
     Always reaps every worker. Raises :class:`WorkerError` (with the failing worker's traceback) on a
     caught operator error, :class:`WorkerCrashed` on a hard crash, or ``TimeoutError`` if a worker never
     registers."""
@@ -75,8 +78,13 @@ def deploy(
     topology = plan_to_topology(plan, capacity)
 
     plan_bytes = cloudpickle.dumps(plan)
+    # Workers get the full telemetry config (so every tier/interval/capacity/validate setting matches a
+    # single-process run), except the clock: a user clock generally cannot cross a spawn, and the data
+    # plane times itself with a SystemClock regardless. A custom clock therefore affects only the
+    # coordinator's run-meta timestamps, not worker operators.
+    worker_config = replace(config, clock=SystemClock())
     procs, events, commands = spawn_workers(
-        plan_bytes, placement, host, capacity, int(config.tier), config.sample_system, effective
+        plan_bytes, placement, host, capacity, worker_config, effective
     )
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()

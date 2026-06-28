@@ -31,7 +31,7 @@ from nautilus.compile.plan import PhysicalPlan
 from nautilus.runtime.channel import Channel
 from nautilus.runtime.connector import ChannelId, Connector, Deployment, InProcessConnector
 from nautilus.runtime.execute import execute
-from nautilus.telemetry import TelemetryConfig, Tier
+from nautilus.telemetry import TelemetryConfig
 from nautilus.transport.connector import SocketConnector
 from nautilus.transport.listener import EdgeListener
 
@@ -85,8 +85,7 @@ def worker_main(
     placement: dict[tuple[str, int], int],
     host: str,
     capacity: int,
-    tier: int,
-    sample_system: bool,
+    config: TelemetryConfig,
     events: Any,
     commands: Any,
 ) -> None:
@@ -94,9 +93,7 @@ def worker_main(
     outcome. Reachable only via :func:`~nautilus.cluster.launcher.spawn_workers`, never imported by the
     data path."""
     asyncio.run(
-        _run_worker(
-            worker_id, plan_bytes, placement, host, capacity, tier, sample_system, events, commands
-        )
+        _run_worker(worker_id, plan_bytes, placement, host, capacity, config, events, commands)
     )
 
 
@@ -106,8 +103,7 @@ async def _run_worker(
     placement: dict[tuple[str, int], int],
     host: str,
     capacity: int,
-    tier: int,
-    sample_system: bool,
+    config: TelemetryConfig,
     events: Any,
     commands: Any,
 ) -> None:
@@ -138,8 +134,7 @@ async def _run_worker(
             hosted=frozenset(instance for instance, w in placement.items() if w == worker_id),
         )
         # Each worker samples its own process, attributed to its node (worker-<id>), so the report has
-        # one process row per worker.
-        config = TelemetryConfig(tier=Tier(tier), sample_system=sample_system)
+        # one process row per worker. The config is the coordinator's, minus its clock (see deploy()).
         result = await execute(plan, connector, deployment, capacity=capacity, config=config)
         events.put(Done(worker_id, result.snapshots, encode_batches(result.sink_batches)))
     except Exception:

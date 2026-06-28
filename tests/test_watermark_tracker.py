@@ -1,3 +1,4 @@
+import pyarrow as pa
 import pytest
 
 from nautilus.core.records import WATERMARK_MAX, WATERMARK_MIN
@@ -49,6 +50,24 @@ def test_column_timestamp_assigner_max():
     assigner = ColumnTimestampAssigner("ts")
     assert assigner.max_timestamp(batch(ts=[3, 9, 5])) == 9
     assert assigner.max_timestamp(batch(ts=[])) is None
+
+
+@pytest.mark.parametrize(
+    ("unit", "value", "expected_micros"),
+    [
+        ("s", 5, 5_000_000),  # 5 s  -> 5_000_000 µs
+        ("ms", 1500, 1_500_000),  # 1500 ms -> 1_500_000 µs
+        ("us", 1500, 1500),  # already µs
+        ("ns", 1500, 1),  # 1500 ns -> 1 µs (truncates)
+    ],
+)
+def test_column_timestamp_assigner_normalizes_timestamp_unit(unit, value, expected_micros):
+    # Arrow timestamp columns of any unit must be read as microseconds, not as raw underlying ints.
+    col = pa.array([value], pa.timestamp(unit))
+    rb = pa.record_batch([col], names=["ts"])
+    assigner = ColumnTimestampAssigner("ts")
+    assert assigner.timestamps(rb).to_pylist() == [expected_micros]
+    assert assigner.max_timestamp(rb) == expected_micros
 
 
 def test_test_clock_monotonic():

@@ -159,8 +159,15 @@ def _scaled_env(rows: int, batch: int, keys: int, wm_every: int) -> Iterator[Non
         "NAUTILUS_BENCH_KEYS": str(keys),
         "NAUTILUS_BENCH_WM_EVERY": str(wm_every),
     }
-    saved = {k: os.environ.get(k) for k in overrides}
+    # The scale dict does NOT record the stressor knobs bench-skew/bench-backpressure read (SKEW,
+    # DELAY_US), so clear any ambient value for the duration — the pipelines fall back to their built-in
+    # defaults. Otherwise a stray env var would leak into a bench-check and make a deterministic baseline
+    # look changed on one machine but not another.
+    pinned = ("NAUTILUS_BENCH_SKEW", "NAUTILUS_BENCH_DELAY_US")
+    saved = {k: os.environ.get(k) for k in (*overrides, *pinned)}
     os.environ.update(overrides)
+    for k in pinned:
+        os.environ.pop(k, None)
     try:
         yield
     finally:
@@ -252,6 +259,8 @@ def measure_like(result: BenchResult, **overrides: object) -> BenchResult:
 # --- comparison (the honesty: only beat-the-noise changes count) -------------------------------
 
 # A comparison status. Order of precedence when classifying:
+#   nondeterministic  either run's digest wobbled across trials, so there is no stable correctness
+#                     anchor — reported, never failed (checked first, before the digest comparison).
 #   OUTPUT-CHANGED  the structural digest differs — the change altered results. Machine-independent,
 #                   always a failure (a "faster" run that computes something else is not faster).
 #   machine-differs digests match but the baseline ran on different hardware, so throughput is not
@@ -277,7 +286,11 @@ def compare(base: BenchResult, current: BenchResult, *, min_threshold: float = D
     delta = (c.median - b.median) / b.median if b.median else 0.0
     noise = max(b.rel_spread, c.rel_spread)
     threshold = max(min_threshold, 2 * noise)
-    if base.structural_digest != current.structural_digest:
+    if not base.deterministic or not current.deterministic:
+        # A run whose digest wobbled across trials has no stable correctness anchor, so a digest
+        # mismatch is not evidence the output changed — report it, never fail on it.
+        status = "nondeterministic"
+    elif base.structural_digest != current.structural_digest:
         status = "OUTPUT-CHANGED"
     elif base.environment.platform != current.environment.platform:
         status = "machine-differs"

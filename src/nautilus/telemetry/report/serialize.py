@@ -237,6 +237,10 @@ def report_to_json(report: RunReport, *, indent: int | None = None) -> str:
     return json.dumps(report_to_dict(report), sort_keys=True, indent=indent)
 
 
+#: Cap on the send-wait ranking line so it stays bounded on a wide parallel run (per-subtask entries).
+_MARKDOWN_RANK_TOP = 16
+
+
 def report_to_markdown(report: RunReport, *, token_budget: int = 4000) -> str:
     """A compact, token-bounded digest for an agent to read. It surfaces raw facts (every number here
     also appears in ``to_json()``) under axis-explicit rankings; it draws no conclusions. RunSummary
@@ -269,27 +273,39 @@ def report_to_markdown(report: RunReport, *, token_budget: int = 4000) -> str:
         for e in report.errors:  # errors are never dropped
             errors.append(f"- {e.operator_id} {e.phase} {e.exc_type}: {e.message}")
 
-    table: list[str] = [
+    # The send-wait ranking is bounded to a top-N so it cannot grow without limit on a wide parallel run
+    # (per_operator has one entry per subtask), and is then charged against the budget like the rest of
+    # the always-shown sections — so the final digest actually honors token_budget.
+    ranked = report.by_send_wait()
+    top = ranked[:_MARKDOWN_RANK_TOP]
+    order = ", ".join(f"{r.operator_id}#{r.subtask_index}" for r in top)
+    if len(ranked) > _MARKDOWN_RANK_TOP:
+        order += f", … {len(ranked) - _MARKDOWN_RANK_TOP} more"
+    tail = ["", f"rankings · by send-wait: {order}", "", "full data: result.telemetry.to_json()"]
+
+    table_header = [
         "",
         "## operators — by self-time (runtime.step_micros)",
-        "| operator | class | rows_out | busy_us | send_wait_us | errors |",
-        "|---|---|--:|--:|--:|--:|",
+        "| operator | subtask | class | rows_out | busy_us | send_wait_us | errors |",
+        "|---|--:|---|--:|--:|--:|--:|",
     ]
-    fixed_chars = len("\n".join(head + errors)) + len("\n".join(table)) + 80
+    # head/errors/table-header/tail are always shown; budget only the per-operator rows against what
+    # remains. Track a running char count instead of re-joining the table each iteration (was O(n^2)).
+    rows: list[str] = []
+    used = len("\n".join(head + errors + table_header + tail)) + 40  # +margin for joins
     truncated = False
     for stat in report.by_self_time():
         row = (
-            f"| {stat.operator_id} | {op_class.get(stat.operator_id, '')} | "
+            f"| {stat.operator_id} | {stat.subtask_index} | {op_class.get(stat.operator_id, '')} | "
             f"{stat.rows_out_total} | {stat.busy_micros_total} | "
             f"{stat.send_wait_micros_total} | {stat.error_count} |"
         )
-        if fixed_chars + len("\n".join(table)) + len(row) > max_chars:
+        if used + len(row) + 1 > max_chars:
             truncated = True
             break
-        table.append(row)
+        rows.append(row)
+        used += len(row) + 1
     if truncated:
-        table.append("… more operators omitted; see to_json()")
+        rows.append("… more operators omitted; see to_json()")
 
-    order = ", ".join(stat.operator_id for stat in report.by_send_wait())
-    tail = ["", f"rankings · by send-wait: {order}", "", "full data: result.telemetry.to_json()"]
-    return "\n".join(head + errors + table + tail)
+    return "\n".join(head + errors + table_header + rows + tail)

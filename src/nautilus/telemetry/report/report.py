@@ -140,6 +140,8 @@ class RunMeta:
 @dataclass(frozen=True, slots=True)
 class OperatorSummary:
     operator_id: str
+    subtask_index: int
+    node: str
     busy_micros_total: int
     send_wait_micros_total: int
     rows_out_total: int
@@ -456,6 +458,8 @@ def build_report(
     per_operator = tuple(
         OperatorSummary(
             operator_id=o.operator_id,
+            subtask_index=o.subtask_index,
+            node=o.node,
             busy_micros_total=_point_total(o.counters, "runtime.step_micros"),
             send_wait_micros_total=_point_total(o.counters, "edge.send_wait_micros"),
             rows_out_total=_point_total(o.counters, "operator.rows_out"),

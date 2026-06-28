@@ -263,8 +263,12 @@ async def run_source(
                 bytes_out.add(int(frame.data.get_total_buffer_size()))
             for out in outputs:
                 await out.emit(frame.data)
-        else:
+        elif isinstance(frame, Frame):  # a control frame — broadcast to every downstream instance
             await _broadcast(frame, outputs)
+        else:
+            raise TypeError(
+                f"source {op_id!r} yielded a non-Frame {type(frame).__name__}; wrap data in Batch"
+            )
 
     with _capture(recorder, op_id, opcls, loc, "open"):
         source.open(ctx)
@@ -451,7 +455,14 @@ async def run_transform(
                     await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
                     break
                 await _advance(advanced)
+
+            else:  # an unknown/unhandled frame must fail loudly, never silently vanish
+                raise TypeError(
+                    f"operator {op_id!r} received an unhandled frame on input {i}: "
+                    f"{type(frame).__name__}"
+                )
     finally:
+        mailbox.close()  # cancel any recvs still armed if the actor unwound mid-fan-in (fail-fast)
         with _capture(recorder, op_id, opcls, loc, "close"):
             op.close()
         wm_final.set(tracker.combined)

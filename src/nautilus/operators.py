@@ -20,7 +20,7 @@ from nautilus.core.operator import (
     OperatorContext,
     SourceOperator,
 )
-from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Frame
+from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
 from nautilus.state import KeyContext, StateScope
 from nautilus.windows import TimeWindow, TumblingEventTimeWindows
 
@@ -34,6 +34,12 @@ class InMemorySource(SourceOperator):
     source must end its frame list with ``EOS_FRAME``; :func:`from_batches` appends it for you."""
 
     def __init__(self, frames: list[Frame]) -> None:
+        for frame in frames:  # fail loudly at construction, not by silently vanishing in the actor
+            if not isinstance(frame, Frame):
+                raise TypeError(
+                    f"InMemorySource frames must be Frame objects (Batch/Watermark/EOS/...), got "
+                    f"{type(frame).__name__}"
+                )
         self._frames = frames
 
     async def frames(self) -> AsyncIterator[Frame]:
@@ -41,11 +47,24 @@ class InMemorySource(SourceOperator):
             yield frame
 
 
-def from_batches(*frames: Frame) -> InMemorySource:
-    """Build a bounded :class:`InMemorySource`, appending the terminal ``EOS_FRAME`` for you (omitting
-    it yields a source that never signals completion). Use ``InMemorySource([...])`` directly when a
-    test needs exact frame control (e.g. to place watermarks or omit EOS)."""
-    return InMemorySource([*frames, EOS_FRAME])
+def from_batches(*frames: Frame | pa.RecordBatch) -> InMemorySource:
+    """Build a bounded :class:`InMemorySource` from data, appending the terminal ``EOS_FRAME`` for you
+    (omitting it yields a source that never signals completion). A bare ``pyarrow.RecordBatch`` is
+    wrapped in a :class:`~nautilus.core.records.Batch` for you, so ``from_batches(pa.record_batch(...))``
+    just works. Use ``InMemorySource([...])`` directly when a test needs exact frame control — to omit
+    EOS, or to place an EOS non-terminally."""
+    out: list[Frame] = []
+    for frame in frames:
+        if isinstance(frame, Frame):
+            out.append(frame)
+        elif isinstance(frame, pa.RecordBatch):
+            out.append(Batch(frame))
+        else:
+            raise TypeError(
+                f"from_batches accepts nautilus Frame objects or a pyarrow.RecordBatch, got "
+                f"{type(frame).__name__}"
+            )
+    return InMemorySource([*out, EOS_FRAME])
 
 
 class MapBatch(OneInputOperator):

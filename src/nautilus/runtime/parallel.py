@@ -60,17 +60,35 @@ def _replicating_factory(instance: object) -> Callable[[], object]:
     return lambda: copy.deepcopy(instance)
 
 
+def _resolve_stage_keys(stage: Stage) -> tuple[str, ...] | None:
+    """The key columns for the edge feeding ``stage``, with the operator's own declaration as the source
+    of truth. An explicit ``Stage.key_columns`` may only *match* what the operator declares — if they
+    disagree, that is a wiring mistake, raised here rather than silently round-robining a keyed operator
+    (which would split a key's state across instances). The factory build is side-effect-free per the
+    Stage contract (the compiler builds it too)."""
+    declared = stage.factory().key_columns()
+    explicit = tuple(stage.key_columns) if stage.key_columns else None
+    if explicit is not None and declared is not None and explicit != declared:
+        raise ValueError(
+            f"Stage.key_columns {explicit!r} disagrees with the operator's declared key_columns() "
+            f"{declared!r}; drop Stage.key_columns and let the operator declare its key"
+        )
+    return explicit if explicit is not None else declared
+
+
 def graph_from_stages(source: SourceOperator, stages: Sequence[Stage]) -> LogicalGraph:
     """Bridge the ``(source instance, [Stage])`` shape to a :class:`~nautilus.api.LogicalGraph`. The
     source is pinned to one instance, so wrapping it in a factory is safe; each :class:`Stage` already
-    supplies a fresh-operator factory for its parallelism."""
+    supplies a fresh-operator factory for its parallelism. The edge key is the operator's own
+    ``key_columns()`` (see :func:`_resolve_stage_keys`), so a keyed operator is never silently
+    round-robined."""
     vertices = [
         LogicalVertex(
             id=f"op{j}",
             factory=stage.factory,
             kind="one_input",
             parallelism=stage.parallelism,
-            key_columns=tuple(stage.key_columns) if stage.key_columns else None,
+            key_columns=_resolve_stage_keys(stage),
         )
         for j, stage in enumerate(stages)
     ]

@@ -21,7 +21,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from nautilus.core.time import Clock, SystemClock
-from nautilus.telemetry.catalog import Tier, event_spec, metric_spec
+from nautilus.telemetry.catalog import MetricSpec, Owner, Tier, event_spec, metric_spec
 from nautilus.telemetry.model import (
     Counter,
     EventRecord,
@@ -125,6 +125,7 @@ class InstanceRecorder(Recorder):
         "kind",
         "subtask_index",
         "node",
+        "_owner",
         "_config",
         "_counters",
         "_gauges",
@@ -143,12 +144,14 @@ class InstanceRecorder(Recorder):
         subtask_index: int = 0,
         node: str = "local",
         config: TelemetryConfig = DEFAULT_CONFIG,
+        owner: Owner = Owner.ENGINE,
     ) -> None:
         self.operator_id = operator_id
         self.op_class = op_class
         self.kind = kind
         self.subtask_index = subtask_index
         self.node = node
+        self._owner = owner
         self._config = config
         self._counters: dict[tuple[str, Labels], Counter] = {}
         self._gauges: dict[tuple[str, Labels], Gauge] = {}
@@ -157,8 +160,19 @@ class InstanceRecorder(Recorder):
         self._seq = 0
         self._dropped = 0
 
-    def counter(self, name: str, **labels: object) -> Counter:
+    def _spec(self, name: str) -> MetricSpec:
         spec = metric_spec(name)
+        if spec.owner != self._owner:
+            # An ENGINE recorder may not write AUTHOR metrics and vice-versa — they merge by name in the
+            # report, so a crossed write would corrupt the engine's totals (see catalog.Owner).
+            raise KeyError(
+                f"a {self._owner.value!r} recorder may not write metric {name!r} "
+                f"(owned by {spec.owner.value!r})"
+            )
+        return spec
+
+    def counter(self, name: str, **labels: object) -> Counter:
+        spec = self._spec(name)
         if self._config.tier < spec.min_tier:
             return NOOP_COUNTER
         key = (name, make_labels(labels))
@@ -169,7 +183,7 @@ class InstanceRecorder(Recorder):
         return inst
 
     def gauge(self, name: str, **labels: object) -> Gauge:
-        spec = metric_spec(name)
+        spec = self._spec(name)
         if self._config.tier < spec.min_tier:
             return NOOP_GAUGE
         key = (name, make_labels(labels))
@@ -180,7 +194,7 @@ class InstanceRecorder(Recorder):
         return inst
 
     def histogram(self, name: str, **labels: object) -> Histogram:
-        spec = metric_spec(name)
+        spec = self._spec(name)
         if self._config.tier < spec.min_tier:
             return NOOP_HISTOGRAM
         key = (name, make_labels(labels))
@@ -258,8 +272,11 @@ def make_recorder(
     subtask_index: int = 0,
     node: str = "local",
     config: TelemetryConfig = DEFAULT_CONFIG,
+    owner: Owner = Owner.ENGINE,
 ) -> Recorder:
-    """Return a real recorder, or :data:`NULL_RECORDER` when telemetry is OFF (zero catalog lookups)."""
+    """Return a real recorder, or :data:`NULL_RECORDER` when telemetry is OFF (zero catalog lookups).
+    ``owner`` is the metric-ownership role the recorder may write (``ENGINE`` for the actor's built-in
+    recorder, ``AUTHOR`` for the per-operator ``ctx.metrics`` recorder)."""
     if config.tier <= Tier.OFF:
         return NULL_RECORDER
     return InstanceRecorder(
@@ -269,4 +286,5 @@ def make_recorder(
         subtask_index=subtask_index,
         node=node,
         config=config,
+        owner=owner,
     )

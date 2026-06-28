@@ -29,7 +29,14 @@ from nautilus.runtime.channel import DEFAULT_CAPACITY, Channel, InProcChannel
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.runtime.partition import Forward
 from nautilus.runtime.result import RunResult
-from nautilus.telemetry import Recorder, RecorderRegistry, TelemetryConfig, Tier, make_recorder
+from nautilus.telemetry import (
+    Owner,
+    Recorder,
+    RecorderRegistry,
+    TelemetryConfig,
+    Tier,
+    make_recorder,
+)
 from nautilus.telemetry.report import (
     Edge,
     NullSink,
@@ -139,9 +146,11 @@ async def run_local_chain(
     stage_in = [InProcChannel(capacity) for _ in range(n)]
     final = InProcChannel(capacity)
 
-    def rec(operator_id: str, op_class: str, kind: str) -> Recorder:
+    def rec(operator_id: str, op_class: str, kind: str, owner: Owner = Owner.ENGINE) -> Recorder:
         return registry.register(
-            make_recorder(operator_id=operator_id, op_class=op_class, kind=kind, config=config)
+            make_recorder(
+                operator_id=operator_id, op_class=op_class, kind=kind, config=config, owner=owner
+            )
         )
 
     first_dst = "op0" if n else "sink"
@@ -167,7 +176,8 @@ async def run_local_chain(
         op_rec = rec(op_id, type(op).__name__, "one_input")
         # A SEPARATE recorder for operator-author custom metrics (ctx.metrics), so the actor and the
         # operator never write the same recorder. Both carry the same operator_id and merge at build.
-        metrics_rec = rec(op_id, type(op).__name__, "one_input")
+        # owner=AUTHOR so operator code can only write author-owned metrics, never engine keys.
+        metrics_rec = rec(op_id, type(op).__name__, "one_input", owner=Owner.AUTHOR)
         outputs = [
             Output(
                 [target],

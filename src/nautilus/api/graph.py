@@ -57,6 +57,12 @@ class LogicalVertex:
             raise ValueError(f"unknown vertex kind {self.kind!r}; expected one of {sorted(_KINDS)}")
         if self.parallelism < 1:
             raise ValueError(f"parallelism must be >= 1, got {self.parallelism} for {self.id!r}")
+        if self.key_columns is not None and not self.key_columns:
+            # None means keyless; a non-empty tuple means keyed. An empty tuple is neither — reject it
+            # rather than let the compiler silently downgrade it to a keyless round-robin.
+            raise ValueError(
+                f"key_columns must be None (keyless) or a non-empty tuple, got () for {self.id!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
