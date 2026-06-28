@@ -20,6 +20,7 @@ from collections.abc import Callable, Sequence
 
 import msgpack
 import pyarrow as pa
+import pyarrow.compute as pc
 
 #: Key scalars the keyed shuffle accepts — exactly what the keyed operators form via
 #: ``KeyContext((value,))`` from ``to_pylist`` / ``value_counts``. ``bool`` is included implicitly
@@ -49,26 +50,78 @@ def stable_bucket(key: tuple[object, ...], num_downstream: int) -> int:
     return int.from_bytes(digest, "big") % num_downstream
 
 
+def _bucket_per_row(
+    batch: pa.RecordBatch,
+    key_columns: tuple[str, ...],
+    bucket_of: Callable[[tuple[object, ...]], int],
+) -> pa.Array:
+    """The owning instance for every row, as an ``int32`` column, computed once per *distinct* key
+    rather than once per row.
+
+    ``bucket_of`` still runs in Python — it hashes the key with ``stable_bucket`` and validates it — but
+    Arrow finds the distinct keys and maps each row back to its key for us, so that Python call is made
+    once per distinct key, not once per row. The distinct keys are read back with ``to_pylist`` (Python
+    scalars — never ``.to_numpy()``, whose numpy scalars ``msgpack`` cannot pack), so the shuffle hashes
+    exactly the scalars the keyed operators key on. ``null_encoding="encode"`` gives a null cell its own
+    dictionary slot (the default masks it, which ``take``/``filter`` would then drop) — a null key is a
+    real key the operators count, so it must route and co-locate like any other.
+    """
+    if len(key_columns) == 1:
+        # The common case (one key column): a single dictionary_encode yields the distinct values and a
+        # per-row index into them; bucket each distinct value once, then take to expand back to per-row.
+        enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
+        bucket_by_distinct = pa.array(
+            [bucket_of((v,)) for v in enc.dictionary.to_pylist()], pa.int32()
+        )
+        return pc.take(bucket_by_distinct, enc.indices)
+
+    # Several key columns: fold each column's per-row dictionary index into one compact combo id. The
+    # mixed-radix fold (combo*card + index) uniquely identifies the index tuple; re-encoding the running
+    # combo after each column keeps it within [0, distinct-so-far) ≤ num_rows, so it can never overflow
+    # int64 no matter how wide or high-cardinality the key is. We never decode the combo back to a tuple
+    # — that would lose the per-column values — so each distinct combo's key is read from a representative
+    # row (the first one in that group) and bucketed once.
+    encs = [pc.dictionary_encode(batch.column(c), null_encoding="encode") for c in key_columns]
+    combo = encs[0].indices
+    num_distinct = len(encs[0].dictionary)
+    for enc in encs[1:]:
+        folded = pc.add(pc.multiply(combo.cast(pa.int64()), len(enc.dictionary)), enc.indices)
+        recompressed = pc.dictionary_encode(folded)
+        combo = recompressed.indices
+        num_distinct = len(recompressed.dictionary)
+    rids = pa.array(range(batch.num_rows), pa.int64())
+    grouped = pa.table({"combo": combo, "rid": rids}).group_by("combo").aggregate([("rid", "min")])
+    # group_by returns a Table, whose columns are chunked; combine to one Array for RecordBatch.take.
+    reps = batch.take(grouped.column("rid_min").combine_chunks())  # one row per distinct combo
+    rep_cols = [reps.column(c).to_pylist() for c in key_columns]
+    bucket_by_combo = [0] * num_distinct
+    for m, combo_id in enumerate(grouped.column("combo").to_pylist()):
+        bucket_by_combo[combo_id] = bucket_of(tuple(col[m] for col in rep_cols))
+    return pc.take(pa.array(bucket_by_combo, pa.int32()), combo)
+
+
 def _route_keyed(
     batch: pa.RecordBatch,
     num_downstream: int,
     key_columns: tuple[str, ...],
     bucket_of: Callable[[tuple[object, ...]], int],
 ) -> list[tuple[int, pa.RecordBatch]]:
-    """The shared core of the keyed partitioners: send each row to ``bucket_of(key)``, then ``take`` the
-    rows owned by each instance into one sub-batch.
+    """The shared core of the keyed partitioners: compute each row's owning instance, then ``filter`` the
+    batch once per instance into its sub-batch.
 
-    The key is extracted per row with ``to_pylist`` (Python scalars — never ``.to_numpy()``, whose
-    numpy scalars msgpack cannot pack), matching the keyed operators' own ``to_pylist`` keying so the
-    shuffle and the operator agree on every key exactly. ``bucket_of`` validates the key and computes its
-    owning instance once per *distinct* key (a per-partitioner cache); repeats are a dict lookup, so a
-    high-rate stream of few keys hashes each key once for the run, not once per row.
+    ``filter`` keeps the surviving rows in their original order, so a sub-batch holds its rows in input
+    order — matching the per-key co-location the keyed operators downstream rely on, and conserving every
+    row exactly once across the instances.
     """
-    cols = [batch.column(c).to_pylist() for c in key_columns]
-    buckets: list[list[int]] = [[] for _ in range(num_downstream)]
-    for r in range(batch.num_rows):
-        buckets[bucket_of(tuple(col[r] for col in cols))].append(r)
-    return [(i, batch.take(pa.array(rows, pa.int64()))) for i, rows in enumerate(buckets) if rows]
+    if batch.num_rows == 0:
+        return []
+    bucket_per_row = _bucket_per_row(batch, key_columns, bucket_of)
+    out: list[tuple[int, pa.RecordBatch]] = []
+    for i in range(num_downstream):
+        sub = batch.filter(pc.equal(bucket_per_row, pa.scalar(i, pa.int32())))
+        if sub.num_rows:
+            out.append((i, sub))
+    return out
 
 
 def _validate_key(key: tuple[object, ...]) -> None:

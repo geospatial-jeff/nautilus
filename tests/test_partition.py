@@ -189,6 +189,89 @@ def test_hash_routes_and_co_locates_null_keys() -> None:
         assert idxs == {stable_bucket((k,), 3)}, (k, idxs)
 
 
+# --- vectorized route == the per-row reference, byte-for-byte ----------------------------------
+# The keyed route is vectorized (dictionary_encode -> bucket-per-distinct -> filter). These oracles
+# pin it to the semantics of the original per-row loop EXACTLY: every row lands on the same instance,
+# AND each sub-batch keeps its rows in input order (filter preserves order, as the per-row append did).
+
+
+def _route_rid_map(partitioner: object, b: pa.RecordBatch, q: int) -> dict[int, list[int]]:
+    """Each instance index -> the ``rid``s routed to it, in emitted order."""
+    return {idx: sub.column("rid").to_pylist() for idx, sub in partitioner.route(b, q)}  # type: ignore[attr-defined]
+
+
+def _reference_rid_map(
+    b: pa.RecordBatch, q: int, key_columns: tuple[str, ...], instance_of: object
+) -> dict[int, list[int]]:
+    """The pre-vectorization semantics: a Python loop sending each row to ``instance_of(key)``, appended
+    in row order. The independent oracle the vectorized route must reproduce byte-for-byte."""
+    cols = [b.column(c).to_pylist() for c in key_columns]
+    out: dict[int, list[int]] = {}
+    for r in range(b.num_rows):
+        inst = instance_of(tuple(col[r] for col in cols))  # type: ignore[operator]
+        out.setdefault(inst, []).append(r)
+    return out
+
+
+def _random_key_column(rng: random.Random, n: int, kind: str) -> pa.Array:
+    card = rng.randint(1, max(2, n))  # up to ~n distinct -> exercises the high-cardinality fold
+    if kind == "str":
+        vals: list[object] = [f"k{rng.randrange(card)}" for _ in range(n)]
+        typ = pa.string()
+    elif kind == "int":
+        vals, typ = [rng.randrange(card) for _ in range(n)], pa.int64()
+    elif kind == "bool":
+        vals, typ = [rng.random() < 0.5 for _ in range(n)], pa.bool_()
+    else:  # bytes
+        vals, typ = [f"b{rng.randrange(card)}".encode() for _ in range(n)], pa.binary()
+    if rng.random() < 0.4:  # sometimes punch nulls in — a null cell is a real, routable key
+        vals = [None if rng.random() < 0.2 else v for v in vals]
+    return pa.array(vals, typ)
+
+
+def test_route_matches_per_row_reference_byte_identical_under_fuzz() -> None:
+    rng = random.Random(20260628)
+    kinds = ["str", "int", "bool", "bytes"]
+    for _ in range(300):
+        n = rng.randint(1, 60)
+        kc = tuple(f"key{j}" for j in range(rng.randint(1, 3)))  # 1-3 key columns
+        q = rng.choice([2, 3, 4, 5, 7])
+        cols = {c: _random_key_column(rng, n, rng.choice(kinds)) for c in kc}
+        b = batch(rid=list(range(n)), **cols)
+        # Direct hash: instance = stable_bucket(key, Q).
+        assert _route_rid_map(HashPartitioner(kc), b, q) == _reference_rid_map(
+            b, q, kc, lambda k, q=q: stable_bucket(k, q)
+        )
+        # Key-group indirection (G >= Q): instance = table[stable_bucket(key, G)].
+        table = tuple(i % q for i in range(q + rng.randrange(0, 6)))
+        assert _route_rid_map(KeyGroupPartitioner(kc, table), b, q) == _reference_rid_map(
+            b, q, kc, lambda k, table=table: table[stable_bucket(k, len(table))]
+        )
+
+
+def test_route_multi_column_high_cardinality_overflow_guard() -> None:
+    # Three near-unique columns: the naive mixed-radix product (card0*card1*card2) is large, so this
+    # exercises the per-fold re-encode that keeps the combo id within [0, num_rows). Must still match.
+    n = 200
+    b = batch(
+        rid=list(range(n)),
+        a=pa.array([f"a{i}" for i in range(n)], pa.string()),
+        c=pa.array(list(range(n)), pa.int64()),
+        d=pa.array([f"d{i}".encode() for i in range(n)], pa.binary()),
+    )
+    kc = ("a", "c", "d")
+    for q in (2, 3, 5, 7):
+        assert _route_rid_map(HashPartitioner(kc), b, q) == _reference_rid_map(
+            b, q, kc, lambda k, q=q: stable_bucket(k, q)
+        )
+
+
+def test_route_empty_batch_returns_nothing() -> None:
+    b = batch(rid=pa.array([], pa.int64()), key=pa.array([], pa.string()))
+    assert HashPartitioner(["key"]).route(b, 3) == []
+    assert KeyGroupPartitioner(["key"], (0, 1, 2)).route(b, 3) == []
+
+
 # --- rejected key types ------------------------------------------------------------------------
 
 

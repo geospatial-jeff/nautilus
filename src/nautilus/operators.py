@@ -101,6 +101,10 @@ class Tokenize(OneInputOperator):
         self.lowercase = lowercase
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        # Per-row str.split(). A columnar pc.utf8_split_whitespace + pc.list_flatten splits correctly but
+        # the flattened child view transiently corrupted under load (a pyarrow buffer-lifetime issue that
+        # passes on retry); a streaming engine cannot ship a nondeterministic tokenizer, so this stays
+        # exact and the columnar form is deferred. The keyed shuffle is the measured hot path here.
         words: list[str] = []
         for s in batch.column(self.in_col).to_pylist():
             if s:
