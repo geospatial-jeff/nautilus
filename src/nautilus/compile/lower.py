@@ -122,8 +122,9 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
     order = _topological_order(graph.vertices, edges)
 
     # Physical ids by topological position: a lone source is "source", every transform/join is "op{j}".
-    # A multi-source graph (a join over two sources) numbers extra sources "source{k}"; a single-source
-    # graph keeps "source", so a linear graph names exactly as it always has.
+    # When there is more than one source (a join over two sources) every source is indexed — "source0",
+    # "source1", … — so only a single-source graph uses the bare "source", and a linear graph names
+    # exactly as it always has.
     num_sources = sum(1 for v in graph.vertices if v.kind == _SOURCE)
     phys: dict[str, str] = {}
     operators: list[PhysicalOperator] = []

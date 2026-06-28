@@ -193,7 +193,7 @@ the set of frame types is fixed.
 
 ## Execution and flow control
 
-*Source: `nautilus.runtime`.*
+*Source: `nautilus.runtime` (the data path), `nautilus.driver` (the boundary that runs it).*
 
 - **Actor** — The loop that drives one operator instance: it pulls frames from the inputs, calls the
   operator's `process` / `on_watermark`, and pushes results to the outputs. One actor per instance,
@@ -214,13 +214,14 @@ the set of frame types is fixed.
   afterward, so operator code stays synchronous and each step is a self-contained critical section.
 - **Operator context** — The object handed to an operator at `open` time holding its dependencies: its
   id, subtask index and count, state backend, clock, and a metrics recorder (`OperatorContext`).
-- **Runner (runtime)** — The component that executes a job single-process. `run_local_chain` runs a
-  `(source, transforms)` chain in-memory (`run()` is its synchronous one-line wrapper); `run_plan`
-  compiles a `LogicalGraph` and runs it (what the CLI uses at `--parallelism > 1`, `--workers 1`), and
-  `run_compiled` runs an already-compiled `PhysicalPlan` (e.g. a cloudpickle round-trip). All three go
-  through the same compiled executor.
+- **Runner (driver)** — The `nautilus.driver` component that executes a job single-process — the
+  boundary that compiles, runs, and builds the report. `run_local_chain` runs a `(source, transforms)`
+  chain in-memory (`run()` is its synchronous one-line wrapper); `run_plan` compiles a `LogicalGraph` and
+  runs it (what the CLI uses at `--parallelism > 1`, `--workers 1`), and `run_compiled` runs an
+  already-compiled `PhysicalPlan` (e.g. a cloudpickle round-trip). All three go through the same compiled
+  executor. The fluent `Stream`'s `.run()` terminal lands here.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
-  (`RunResult`; `result.telemetry`).
+  (`nautilus.driver.RunResult`; `result.telemetry`).
 - **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and
   no shared memory. `deploy` runs W of them; routing within and between them is local to each sender.
 - **Coordinator** — The control plane behind `deploy`: it compiles the graph, computes placement, spawns

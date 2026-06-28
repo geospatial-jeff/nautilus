@@ -1,9 +1,11 @@
-"""Built-in operators used by the Stage 0 demos, tests and examples.
+"""The built-in operators — the implementations behind the fluent ``Stream`` combinators.
 
 Concrete operators that exercise the streaming semantics — each follows the synchronous
 ``process``/``on_watermark`` contract (emit into the ``Collector``, never await; see
-:mod:`nautilus.core.operator`). In Stage 3 these become the implementations behind the fluent
-``map``/``key_by``/``window``/``reduce`` combinators. What each one does is on its own class.
+:mod:`nautilus.core.operator`). :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`,
+:class:`KeyedCount` and :class:`KeyedTumblingSum` back the DSL's ``.map`` / ``.filter`` / ``.tokenize``
+/ ``.count_by`` / ``.tumbling_sum``, and :class:`HashJoin` backs ``.join``. What each one does is on its
+own class.
 """
 
 from __future__ import annotations
@@ -103,10 +105,12 @@ class Tokenize(OneInputOperator):
         self.lowercase = lowercase
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
-        # Per-row str.split(). A columnar pc.utf8_split_whitespace + pc.list_flatten splits correctly but
-        # the flattened child view transiently corrupted under load (a pyarrow buffer-lifetime issue that
-        # passes on retry); a streaming engine cannot ship a nondeterministic tokenizer, so this stays
-        # exact and the columnar form is deferred. The keyed shuffle is the measured hot path here.
+        # Per-row str.split(). The columnar form (pc.utf8_split_whitespace -> pc.list_flatten, then a
+        # filter dropping the empty-string tokens it emits at whitespace runs/ends so the result matches
+        # str.split()) is correct in isolation but corrupted nondeterministically under full-suite load —
+        # the raw split was right and a retry passed, so it was not root-caused (likely a flattened-view
+        # buffer-lifetime issue). A streaming engine cannot ship a nondeterministic tokenizer, so this
+        # stays per-row and exact; the keyed shuffle is the measured hot path anyway.
         words: list[str] = []
         for s in batch.column(self.in_col).to_pylist():
             if s:
@@ -268,13 +272,19 @@ class KeyedTumblingSum(OneInputOperator):
 def _group_rows_by_key(
     batch: pa.RecordBatch, key_columns: tuple[str, ...]
 ) -> dict[tuple[object, ...], pa.RecordBatch]:
-    """Split a batch into one sub-batch per distinct key tuple. The key is read with ``to_pylist`` — the
-    same Python scalars the keyed shuffle hashes on — so the join and the shuffle agree on every key, and
-    co-partitioned rows meet here under the identical tuple."""
+    """Split a batch into one sub-batch per distinct key. The key is read with ``to_pylist`` (the same
+    Python scalars the keyed shuffle hashes on) and each scalar is tagged with its Python type, so the
+    join's notion of "equal key" matches the shuffle's exactly. Without the type tag a left ``int`` 1 and
+    a right ``bool`` ``True`` would collapse under Python dict equality (``(1,) == (True,)``) and join at
+    parallelism 1, yet the shuffle's ``msgpack`` encoding routes them to different instances at
+    parallelism > 1 — so they would match serially but not in parallel. The type tag distinguishes int /
+    bool / str / bytes / null exactly as ``msgpack`` does (an ``int32`` and ``int64`` both surface as
+    Python ``int``, matching the shuffle, which encodes the value not the width)."""
     cols = [batch.column(c).to_pylist() for c in key_columns]
     rows_by_key: dict[tuple[object, ...], list[int]] = {}
     for r in range(batch.num_rows):
-        rows_by_key.setdefault(tuple(col[r] for col in cols), []).append(r)
+        key = tuple((type(col[r]), col[r]) for col in cols)
+        rows_by_key.setdefault(key, []).append(r)
     return {k: batch.take(pa.array(rows, pa.int64())) for k, rows in rows_by_key.items()}
 
 
@@ -292,7 +302,9 @@ class HashJoin(TwoInputOperator):
     join condition). A non-key right column whose name collides with a left column name is rejected —
     rename one side. ``left_on`` and ``right_on`` name the equi-join columns on each side (a string or a
     sequence) and must have equal length; column *i* of ``left_on`` is matched against column *i* of
-    ``right_on``.
+    ``right_on``. Keys are matched by value *and* scalar type — the same distinction the keyed shuffle
+    draws — so an integer key column does not join a boolean one (an int ``1`` and a bool ``True`` are
+    different keys), matching how they co-partition.
 
     State is the per-key buffers of both sides, held until end of stream and then cleared — the same
     unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. ``on_watermark``

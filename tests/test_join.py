@@ -98,6 +98,28 @@ def test_join_rejects_unequal_key_arity() -> None:
         HashJoin(["a", "b"], ["c"])
 
 
+async def test_join_matches_by_value_and_type_consistently_across_parallelism() -> None:
+    # int 1 and bool True collapse under Python equality but the shuffle (and now the join's grouping)
+    # keep them distinct, so an int key column never joins a bool one — and crucially the P=1 and P=2
+    # results agree (the bug was: int 1 matched bool True at P=1 but split at P>1).
+    left = [data(id=pa.array([1, 2], pa.int64()), lval=["a", "b"]), EOS_FRAME]
+    right = [data(id=pa.array([True, False], pa.bool_()), rval=[10, 20]), EOS_FRAME]
+
+    def graph(parallelism: int) -> LogicalGraph:
+        return LogicalGraph(
+            vertices=(
+                source("L", lambda: InMemorySource(list(left))),
+                source("R", lambda: InMemorySource(list(right))),
+                two_input("j", lambda: HashJoin("id"), parallelism=parallelism),
+            ),
+            edges=(LogicalEdge("L", "j", 0, ("id",)), LogicalEdge("R", "j", 1, ("id",))),
+        )
+
+    serial = multiset(await run_plan(graph(1)))
+    parallel = multiset(await run_plan(graph(2)))
+    assert serial == parallel == Counter()  # no int key equals a bool key, serially or in parallel
+
+
 def test_join_clears_buffers_on_close() -> None:
     join = HashJoin("id")
     join.open(OperatorContext("j"))

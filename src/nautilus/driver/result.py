@@ -4,8 +4,9 @@
 exposes ``.batches`` and ``.telemetry``. It is deliberately NOT a ``Sequence`` subclass and rejects
 slicing, because a slice would return a bare list that silently drops ``.telemetry``; read the batches
 via ``.batches`` or ``.to_table()`` instead. ``to_table``/``to_pylist``/``to_pydict`` are the
-Arrow-first readers. ``RunReport`` is imported only under ``TYPE_CHECKING``, so this data-path module
-never pulls in the report layer at runtime.
+Arrow-first readers. ``RunReport`` is imported only under ``TYPE_CHECKING``, so importing ``RunResult``
+— which value-layer code such as the :class:`nautilus.dsl.Stream` terminal references for typing — stays
+a light import that never pulls in the report layer at runtime.
 """
 
 from __future__ import annotations

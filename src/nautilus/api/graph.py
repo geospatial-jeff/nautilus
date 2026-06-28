@@ -183,6 +183,21 @@ class LogicalGraph:
                     f"two_input vertex {v.id!r} has both inputs from the same vertex (a self-join); "
                     "feed its two ports from distinct upstreams (port-in-ChannelId is deferred)"
                 )
+            if (
+                v.kind == _TWO_INPUT
+                and v.parallelism > 1
+                and any(e.key_columns is None for e in ins)
+            ):
+                # A keyless edge into a parallel stage fans out round-robin, which scatters a key across
+                # instances — fine for a stateless one-input rebalance, but for a join it splits a key's
+                # two sides onto different instances so they never meet and matches vanish silently. Both
+                # join inputs must be keyed so equal keys co-partition. (Harmless at parallelism 1, where
+                # a single instance owns everything.)
+                raise ValueError(
+                    f"two_input vertex {v.id!r} runs at parallelism {v.parallelism} but an input edge is "
+                    "keyless; both inputs must carry key_columns so equal keys co-partition to the same "
+                    "instance (in the DSL, give the join on=/left_on=/right_on=)"
+                )
         _topological_order(self.vertices, self.edges)  # raises on a cycle
 
 

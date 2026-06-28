@@ -134,6 +134,25 @@ def test_self_join_rejected() -> None:
         )
 
 
+def test_parallel_join_requires_keyed_inputs() -> None:
+    # a keyless edge into a parallel join fans out round-robin, scattering a key's two sides onto
+    # different instances so matches vanish silently — reject it at build time.
+    with pytest.raises(ValueError, match="keyless"):
+        LogicalGraph(
+            vertices=(_src("a"), _src("b"), two_input("j", lambda: object(), parallelism=2)),
+            edges=(LogicalEdge("a", "j", 0), LogicalEdge("b", "j", 1)),  # no key_columns
+        )
+
+
+def test_serial_join_allows_keyless_inputs() -> None:
+    # at parallelism 1 a single instance owns everything, so keyless inputs are harmless
+    g = LogicalGraph(
+        vertices=(_src("a"), _src("b"), two_input("j", lambda: object())),
+        edges=(LogicalEdge("a", "j", 0), LogicalEdge("b", "j", 1)),
+    )
+    assert len(g.edges) == 2
+
+
 def test_cycle_rejected() -> None:
     with pytest.raises(ValueError, match="cycle"):
         LogicalGraph(
