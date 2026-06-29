@@ -1,8 +1,6 @@
 # Nautilus — Design
 
-A decentralized, entirely-streaming parallel compute framework. Like Dask, it runs parallel
-computations, but it replaces Dask's central scheduler and batch task graph with a streaming actor
-dataflow: the dataflow graph defines the computation, and no central component sits on the data path.
+A decentralized, entirely-streaming parallel compute framework, inspired by Apache Flink.
 
 ## Locked constraints
 
