@@ -412,18 +412,33 @@ class HashJoin(TwoInputOperator):
         the keyed shuffle's ``msgpack`` draws — so a left ``int`` 1 and a right ``bool`` ``True`` get
         different ids (they would collapse under ``(1,) == (True,)`` and join at parallelism 1, yet the
         shuffle routes them apart at parallelism > 1), while ``int32`` 1 and ``int64`` 1 share one id (both
-        surface as Python ``int``, matching the shuffle, which encodes the value not the width)."""
+        surface as Python ``int``, matching the shuffle, which encodes the value not the width).
+
+        The single-column case (the common one) is vectorized like the keyed shuffle: ``dictionary_encode``
+        finds the distinct values and a per-row index into them, so the value→id intern runs once per
+        *distinct* key, not once per row, and the per-row expansion is a numpy take."""
+        if len(key_columns) == 1:
+            enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
+            local_to_global = np.array(
+                [self._intern(((type(v), v),)) for v in enc.dictionary.to_pylist()], dtype=np.int64
+            )
+            indices = enc.indices.to_numpy(zero_copy_only=False)
+            return cast(np.ndarray, local_to_global[indices])
+        # Several key columns: read each column once and intern each row's whole key tuple.
         cols = [batch.column(c).to_pylist() for c in key_columns]
-        ids = self._key_ids
         out = np.empty(batch.num_rows, dtype=np.int64)
         for r in range(batch.num_rows):
-            key = tuple((type(col[r]), col[r]) for col in cols)
-            gid = ids.get(key)
-            if gid is None:
-                gid = len(ids)
-                ids[key] = gid
-            out[r] = gid
+            out[r] = self._intern(tuple((type(col[r]), col[r]) for col in cols))
         return out
+
+    def _intern(self, key: tuple[tuple[type, object], ...]) -> int:
+        """The shared global id for a key tuple, assigning the next free id on first sight."""
+        ids = self._key_ids
+        gid = ids.get(key)
+        if gid is None:
+            gid = len(ids)
+            ids[key] = gid
+        return gid
 
     def _probe_and_emit(
         self,
