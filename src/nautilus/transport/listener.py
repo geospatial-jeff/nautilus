@@ -68,8 +68,10 @@ class EdgeListener:
 
     @property
     def address(self) -> tuple[str, int]:
-        """The bound ``(host, port)`` — the address producers dial (the port is concrete even if 0 was
-        requested)."""
+        """The bound ``(host, port)`` from ``getsockname()`` (the port is concrete even if 0 was
+        requested). This is the *bind* address: when a worker binds all interfaces (``0.0.0.0``) the host
+        is not itself dialable, so a cross-host worker advertises a separate routable host and takes only
+        the concrete port from here."""
         if self._server is None:
             raise RuntimeError("EdgeListener.address read before start()")
         host, port = self._server.sockets[0].getsockname()[:2]

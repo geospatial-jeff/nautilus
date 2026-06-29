@@ -47,6 +47,7 @@ def deploy(
     capacity: int = DEFAULT_CAPACITY,
     key_groups: int | None = None,
     host: str = "127.0.0.1",
+    advertise_host: str | None = None,
     clock: Clock | None = None,
     telemetry: TelemetryConfig | None = None,
     sink: Sink | None = None,
@@ -54,8 +55,10 @@ def deploy(
 ) -> RunResult:
     """Compile ``graph`` and run it across ``num_workers`` spawned worker processes, returning the sink's
     batches plus one aggregated telemetry report. ``num_workers`` must be >= 1 and is capped at the
-    plan's maximum parallelism (a wider W would only spawn idle workers). ``host`` is the address every
-    worker's listener binds — loopback by default; the seam for a real node-to-node address in Stage 4.
+    plan's maximum parallelism (a wider W would only spawn idle workers). ``host`` is the interface every
+    worker's listener binds (loopback by default; ``0.0.0.0`` to accept on a container's bridge), and
+    ``advertise_host`` is the routable host peers dial — it defaults to ``host``, so a single-machine run
+    is unchanged while a multi-node run can bind all interfaces yet advertise a reachable name.
 
     ``bootstrap_timeout`` bounds only the bind/register phase, where a silent worker means a hang; once
     the job is running the wait is unbounded, because a healthy job runs as long as its data does. The
@@ -90,8 +93,9 @@ def deploy(
     # the reap try-block — which would orphan the live workers and break the "always reaps" guarantee.
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
+    advertise = advertise_host if advertise_host is not None else host
     cohort: WorkerCohort = LocalCohort(
-        *spawn_workers(plan_bytes, placement, host, capacity, worker_config, effective)
+        *spawn_workers(plan_bytes, placement, host, advertise, capacity, worker_config, effective)
     )
     try:
         bind_barrier(cohort, effective, bootstrap_timeout)

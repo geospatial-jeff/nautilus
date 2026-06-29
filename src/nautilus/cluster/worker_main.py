@@ -13,6 +13,11 @@ Startup is the worker's half of the two-phase bootstrap: bind the listener and r
 block (off the event loop) for the address book the coordinator broadcasts once *every* worker has
 bound. Receiving it is the signal that all destination listeners exist, so dialing cannot fail for a
 not-yet-bound peer.
+
+The listener binds ``bind_host`` (all interfaces, ``0.0.0.0``, in a container) but the worker registers a
+separate ``advertise_host`` — the routable address peers actually dial — because ``getsockname()`` on a
+``0.0.0.0`` bind returns ``0.0.0.0``, which no peer can reach. Only the concrete bound port is taken from
+the listener. On a single-machine run the two are equal (both loopback), so registration is unchanged.
 """
 
 from __future__ import annotations
@@ -83,7 +88,8 @@ def worker_main(
     worker_id: int,
     plan_bytes: bytes,
     placement: dict[tuple[str, int], int],
-    host: str,
+    bind_host: str,
+    advertise_host: str,
     capacity: int,
     config: TelemetryConfig,
     events: Any,
@@ -93,7 +99,17 @@ def worker_main(
     outcome. Reachable only via :func:`~nautilus.cluster.launcher.spawn_workers`, never imported by the
     data path."""
     asyncio.run(
-        _run_worker(worker_id, plan_bytes, placement, host, capacity, config, events, commands)
+        _run_worker(
+            worker_id,
+            plan_bytes,
+            placement,
+            bind_host,
+            advertise_host,
+            capacity,
+            config,
+            events,
+            commands,
+        )
     )
 
 
@@ -101,7 +117,8 @@ async def _run_worker(
     worker_id: int,
     plan_bytes: bytes,
     placement: dict[tuple[str, int], int],
-    host: str,
+    bind_host: str,
+    advertise_host: str,
     capacity: int,
     config: TelemetryConfig,
     events: Any,
@@ -110,9 +127,11 @@ async def _run_worker(
     listener: EdgeListener | None = None
     try:
         plan = cast(PhysicalPlan, cloudpickle.loads(plan_bytes))
-        listener = EdgeListener(host, 0, cross_worker_inbound(plan, placement, worker_id))
+        listener = EdgeListener(bind_host, 0, cross_worker_inbound(plan, placement, worker_id))
         await listener.start()
-        events.put(Register(worker_id, *listener.address))
+        # Register the routable advertised host with the concrete bound port — never the bind host, which
+        # is 0.0.0.0 (undialable) when binding all interfaces.
+        events.put(Register(worker_id, advertise_host, listener.address[1]))
         # Block for the address book off the event loop. The coordinator sends it only once every worker
         # has registered (bound), so by now every destination listener exists and dialing can't miss one.
         address_book = cast(

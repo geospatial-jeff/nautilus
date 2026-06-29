@@ -23,13 +23,15 @@ from nautilus.telemetry import TelemetryConfig
 def spawn_workers(
     plan_bytes: bytes,
     placement: dict[tuple[str, int], int],
-    host: str,
+    bind_host: str,
+    advertise_host: str,
     capacity: int,
     config: TelemetryConfig,
     num_workers: int,
 ) -> tuple[list[Any], Any, dict[int, Any]]:
     """Start ``num_workers`` worker processes. Returns the processes, the shared events queue
-    (workers → coordinator) and a per-worker command queue (coordinator → worker)."""
+    (workers → coordinator) and a per-worker command queue (coordinator → worker). Every worker binds
+    ``bind_host`` and advertises ``advertise_host`` (equal on a single-machine run)."""
     ctx = mp.get_context("spawn")
     events: Any = ctx.Queue()
     commands: dict[int, Any] = {wid: ctx.Queue() for wid in range(num_workers)}
@@ -42,7 +44,8 @@ def spawn_workers(
                     wid,
                     plan_bytes,
                     placement,
-                    host,
+                    bind_host,
+                    advertise_host,
                     capacity,
                     config,
                     events,

@@ -26,6 +26,11 @@ from nautilus.cluster.protocol import Failed, Register
 if TYPE_CHECKING:
     from nautilus.cluster.cohort import WorkerCohort
 
+# Wildcard/empty bind addresses a worker must never *advertise*: a peer that dials one reaches its own
+# loopback, not the worker, silently splitting the shuffle. Bind to these to accept on all interfaces;
+# advertise a routable host instead.
+_NON_ROUTABLE = frozenset({"", "0.0.0.0", "::"})
+
 
 class WorkerError(RuntimeError):
     """A worker reported a :class:`Failed` — carries the child's traceback so ``deploy`` can re-raise it."""
@@ -79,6 +84,14 @@ def bind_barrier(cohort: WorkerCohort, num_workers: int, timeout: float) -> None
     while len(addresses) < num_workers:
         message = cohort.next_event(timeout, None)
         if isinstance(message, Register):
+            if message.host in _NON_ROUTABLE:
+                # A worker that registers a wildcard/empty host is a misconfiguration: peers would dial
+                # 0.0.0.0 and hit their own loopback. Fail fast with a clear message rather than let the
+                # shuffle silently mis-route.
+                raise ValueError(
+                    f"worker {message.worker_id} advertised non-routable host {message.host!r}; "
+                    "set a routable advertise host (its service/DNS name)"
+                )
             addresses[message.worker_id] = (message.host, message.port)
         elif isinstance(message, Failed):
             raise WorkerError(message.worker_id, message.traceback)
