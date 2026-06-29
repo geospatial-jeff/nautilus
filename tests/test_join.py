@@ -125,9 +125,9 @@ def test_join_clears_buffers_on_close() -> None:
     join.open(OperatorContext("j"))
     join.process_left(batch(id=[1], lval=["a"]), ListCollector())
     join.process_right(batch(id=[1], rval=[10]), ListCollector())
-    assert join._left and join._right  # buffered while running
+    assert not join._left_buf.empty and not join._right_buf.empty  # buffered while running
     join.close()
-    assert not join._left and not join._right
+    assert join._left_buf.empty and join._right_buf.empty
 
 
 # --- through the engine: co-partitioning makes the parallel and distributed results match serial -----

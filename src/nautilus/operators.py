@@ -269,30 +269,59 @@ class KeyedTumblingSum(OneInputOperator):
             self._ctx.metrics.incr("window.fires", len(fired), operator_id=self._ctx.operator_id)
 
 
-def _group_rows_by_key(
-    batch: pa.RecordBatch, key_columns: tuple[str, ...]
-) -> dict[tuple[object, ...], pa.RecordBatch]:
-    """Split a batch into one sub-batch per distinct key. The key is read with ``to_pylist`` (the same
-    Python scalars the keyed shuffle hashes on) and each scalar is tagged with its Python type, so the
-    join's notion of "equal key" matches the shuffle's exactly. Without the type tag a left ``int`` 1 and
-    a right ``bool`` ``True`` would collapse under Python dict equality (``(1,) == (True,)``) and join at
-    parallelism 1, yet the shuffle's ``msgpack`` encoding routes them to different instances at
-    parallelism > 1 — so they would match serially but not in parallel. The type tag distinguishes int /
-    bool / str / bytes / null exactly as ``msgpack`` does (an ``int32`` and ``int64`` both surface as
-    Python ``int``, matching the shuffle, which encodes the value not the width)."""
-    cols = [batch.column(c).to_pylist() for c in key_columns]
-    rows_by_key: dict[tuple[object, ...], list[int]] = {}
-    for r in range(batch.num_rows):
-        key = tuple((type(col[r]), col[r]) for col in cols)
-        rows_by_key.setdefault(key, []).append(r)
-    return {k: batch.take(pa.array(rows, pa.int64())) for k, rows in rows_by_key.items()}
+class _SideBuffer:
+    """One join input's accumulated rows, indexed by integer key id for a vectorized probe.
+
+    Rows are appended a whole batch at a time (O(1) — no per-key concatenation), each batch carried
+    alongside an array of its rows' key ids. The grouped index — rows reordered so one key id's rows form
+    one contiguous run, plus per-id ``start`` and ``count`` arrays — is built lazily on the first probe
+    after a change and cached. So a side that stops growing (the bounded table in a stream-table join) is
+    grouped once and reused for every probe, instead of being re-touched per key on every batch."""
+
+    def __init__(self) -> None:
+        self._batches: list[pa.RecordBatch] = []
+        self._key_ids: list[np.ndarray] = []
+        self._index: tuple[pa.RecordBatch, np.ndarray, np.ndarray] | None = None
+
+    @property
+    def empty(self) -> bool:
+        return not self._batches
+
+    def add(self, batch: pa.RecordBatch, key_ids: np.ndarray) -> None:
+        self._batches.append(batch)
+        self._key_ids.append(key_ids)
+        self._index = (
+            None  # invalidate; the next probe rebuilds the grouped index over the new rows
+        )
+
+    def grouped(self, num_ids: int) -> tuple[pa.RecordBatch, np.ndarray, np.ndarray]:
+        """Rows reordered into contiguous per-key-id runs, with ``start`` / ``count`` arrays indexed by
+        key id (an id with no buffered rows has count 0). Built once and cached until the next ``add``.
+        """
+        if self._index is None:
+            rows = self._batches[0] if len(self._batches) == 1 else pa.concat_batches(self._batches)
+            ids = self._key_ids[0] if len(self._key_ids) == 1 else np.concatenate(self._key_ids)
+            order = np.argsort(ids, kind="stable")  # gather each id's rows into one run
+            start = np.zeros(num_ids, dtype=np.int64)
+            count = np.zeros(num_ids, dtype=np.int64)
+            if len(ids):
+                uniq, first, cnt = np.unique(ids[order], return_index=True, return_counts=True)
+                start[uniq] = first
+                count[uniq] = cnt
+            self._index = (rows.take(pa.array(order)), start, count)
+        return self._index
+
+    def clear(self) -> None:
+        self._batches.clear()
+        self._key_ids.clear()
+        self._index = None
 
 
 class HashJoin(TwoInputOperator):
     """An inner equi-join: for every left row and right row whose join keys are equal, emit one joined row.
 
-    It is a *symmetric hash join* — each side's rows are buffered by key as they arrive, and a new row on
-    one side is immediately matched against every buffered row on the other — so each pair is emitted
+    It is a *symmetric hash join* — each side's rows are buffered as they arrive, indexed by key, and a
+    new batch on one side is matched against every buffered row on the other — so each pair is emitted
     exactly once, when the later of the two arrives, independent of arrival order. Both inputs are
     co-partitioned on the join value by the keyed shuffle, so every row of a given key reaches the same
     instance from either side and the match is purely local.
@@ -307,7 +336,7 @@ class HashJoin(TwoInputOperator):
     different keys), matching how they co-partition. A null key matches a null key (``null == null``), as
     nulls co-partition like any other key.
 
-    State is the per-key buffers of both sides, held until end of stream and then cleared — the same
+    State is both sides' buffered rows, held until end of stream and then cleared — the same
     unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. ``on_watermark``
     is a no-op: matches are emitted as they form, so nothing waits on event time. A windowed variant that
     bounds and evicts this state on the watermark is the additive next step, and this operator leaves that
@@ -327,10 +356,12 @@ class HashJoin(TwoInputOperator):
             )
 
     def open(self, ctx: OperatorContext) -> None:
-        # Per-key buffers: each holds one running RecordBatch of the rows seen so far for that key. They
+        # Each side's rows accumulate in a _SideBuffer, indexed by key id for a vectorized probe. They
         # grow until close() — the documented unbounded-state tradeoff.
-        self._left: dict[tuple[object, ...], pa.RecordBatch] = {}
-        self._right: dict[tuple[object, ...], pa.RecordBatch] = {}
+        self._left_buf = _SideBuffer()
+        self._right_buf = _SideBuffer()
+        # One id map shared by both sides, so equal keys on left and right get the same integer id.
+        self._key_ids: dict[tuple[tuple[type, object], ...], int] = {}
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
         self._left_names: list[str] | None = None
         self._right_value_cols: list[str] | None = None
@@ -340,26 +371,25 @@ class HashJoin(TwoInputOperator):
         if self._left_names is None:
             self._left_names = list(batch.schema.names)
             self._check_columns()
-        for key, sub in _group_rows_by_key(batch, self.left_on).items():
-            buffered_right = self._right.get(key)
-            if buffered_right is not None:  # these right rows arrived first; complete the pairs now
-                out.emit(self._join(sub, buffered_right))
-            self._left[key] = _concat(self._left.get(key), sub)
+        ids = self._encode(batch, self.left_on)
+        self._probe_and_emit(batch, ids, self._right_buf, out, query_is_left=True)
+        if batch.num_rows:  # buffer for the right rows that arrive later
+            self._left_buf.add(batch, ids)
 
     def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
         if self._right_value_cols is None:
             keys = set(self.right_on)
             self._right_value_cols = [c for c in batch.schema.names if c not in keys]
             self._check_columns()
-        for key, sub in _group_rows_by_key(batch, self.right_on).items():
-            buffered_left = self._left.get(key)
-            if buffered_left is not None:
-                out.emit(self._join(buffered_left, sub))
-            self._right[key] = _concat(self._right.get(key), sub)
+        ids = self._encode(batch, self.right_on)
+        self._probe_and_emit(batch, ids, self._left_buf, out, query_is_left=False)
+        if batch.num_rows:
+            self._right_buf.add(batch, ids)
 
     def close(self) -> None:
-        self._left.clear()
-        self._right.clear()
+        self._left_buf.clear()
+        self._right_buf.clear()
+        self._key_ids.clear()
 
     def _check_columns(self) -> None:
         """Once both input schemas are known, reject a right non-key column that collides with a left
@@ -376,20 +406,63 @@ class HashJoin(TwoInputOperator):
             )
         self._checked = True
 
-    def _join(self, left: pa.RecordBatch, right: pa.RecordBatch) -> pa.RecordBatch:
-        """The cross product of ``left`` and ``right`` rows (all share the join key): each left row paired
-        with every right row, left columns then right non-key columns."""
-        assert self._left_names is not None and self._right_value_cols is not None
-        nl, nr = left.num_rows, right.num_rows
-        left_part = left.take(pa.array(np.repeat(np.arange(nl), nr), pa.int64()))
-        right_part = right.take(pa.array(np.tile(np.arange(nr), nl), pa.int64()))
-        arrays = [*left_part.columns, *(right_part.column(c) for c in self._right_value_cols)]
-        return pa.RecordBatch.from_arrays(
-            arrays, names=[*self._left_names, *self._right_value_cols]
+    def _encode(self, batch: pa.RecordBatch, key_columns: tuple[str, ...]) -> np.ndarray:
+        """Each row's integer key id, stable across batches and shared by both inputs, so equal keys on the
+        two sides get the same id. The map keys on each scalar's value *and* Python type — the distinction
+        the keyed shuffle's ``msgpack`` draws — so a left ``int`` 1 and a right ``bool`` ``True`` get
+        different ids (they would collapse under ``(1,) == (True,)`` and join at parallelism 1, yet the
+        shuffle routes them apart at parallelism > 1), while ``int32`` 1 and ``int64`` 1 share one id (both
+        surface as Python ``int``, matching the shuffle, which encodes the value not the width)."""
+        cols = [batch.column(c).to_pylist() for c in key_columns]
+        ids = self._key_ids
+        out = np.empty(batch.num_rows, dtype=np.int64)
+        for r in range(batch.num_rows):
+            key = tuple((type(col[r]), col[r]) for col in cols)
+            gid = ids.get(key)
+            if gid is None:
+                gid = len(ids)
+                ids[key] = gid
+            out[r] = gid
+        return out
+
+    def _probe_and_emit(
+        self,
+        query: pa.RecordBatch,
+        ids: np.ndarray,
+        other: _SideBuffer,
+        out: Collector,
+        *,
+        query_is_left: bool,
+    ) -> None:
+        """Emit every join of ``query``'s rows against the buffered other side, in bulk. For each query
+        row, its matches are the other side's contiguous run for that key id; the per-row match counts
+        drive one ragged ``take`` per side, so the whole batch's cross product is built without a per-key
+        Python loop."""
+        if other.empty:
+            return
+        grouped, start, count = other.grouped(len(self._key_ids))
+        nq = len(ids)
+        within = ids < count.shape[0]  # a key id unseen on the other side has no run there
+        qstart = np.zeros(nq, dtype=np.int64)
+        qcount = np.zeros(nq, dtype=np.int64)
+        qstart[within] = start[ids[within]]
+        qcount[within] = count[ids[within]]
+        total = int(qcount.sum())
+        if total == 0:
+            return
+        query_take = np.repeat(np.arange(nq), qcount)  # each query row repeated by its match count
+        # The other-side rows for query row i are grouped[qstart[i] : qstart[i] + qcount[i]]; expand those
+        # ranges into one index array via the running-offset trick (no per-row Python).
+        out_starts = np.zeros(nq, dtype=np.int64)
+        np.cumsum(qcount[:-1], out=out_starts[1:])
+        other_take = np.repeat(qstart - out_starts, qcount) + np.arange(total)
+        query_rows = query.take(pa.array(query_take))
+        other_rows = grouped.take(pa.array(other_take))
+        left_rows, right_rows = (
+            (query_rows, other_rows) if query_is_left else (other_rows, query_rows)
         )
-
-
-def _concat(buffered: pa.RecordBatch | None, sub: pa.RecordBatch) -> pa.RecordBatch:
-    """Append ``sub``'s rows to a key's running buffer (or start one). Same schema both sides — they come
-    from the one input — so the concatenation is well-defined."""
-    return sub if buffered is None else pa.concat_batches([buffered, sub])
+        assert self._left_names is not None and self._right_value_cols is not None
+        arrays = [*left_rows.columns, *(right_rows.column(c) for c in self._right_value_cols)]
+        out.emit(
+            pa.RecordBatch.from_arrays(arrays, names=[*self._left_names, *self._right_value_cols])
+        )
