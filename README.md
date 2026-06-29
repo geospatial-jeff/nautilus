@@ -1,15 +1,13 @@
 # Nautilus
 
-A decentralized, entirely-streaming parallel compute framework, inspired by Apache Flink.
+A decentralized, entirely-streaming parallel compute framework, heavily inspired by [Apache Flink](https://flink.apache.org/).
 
 - **Decentralized.** The computation is a dataflow graph of operators that run as actors and route
-  data to each other locally — no central component sits on the data path.
-- **Entirely streaming.** Bounded data is a finite stream that ends, so the same operators handle
-  bounded and unbounded inputs.
-- **Backpressure end to end.** Operators are joined by bounded channels with credit-based flow
-  control, so a slow sink slows the source instead of growing memory without bound.
+  data to each other locally.
+- **Streaming architecture.** Write a pipeline once and run it unchanged over a fixed dataset or a live data stream.
+- **Backpressure end to end.** Operators are joined by bounded channels with flow-control to handle backpressure.
 - **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar and micro-batched, passed by
-  reference in-process and serialized once to Arrow IPC across a socket.
+reference in-process and serialized once to Arrow across processes. Supports both geospatial and tensor types.
 
 For the vocabulary and data model (operators, frames, watermarks, …) see `docs/glossary.md`; for the
 architecture and the reasons behind it, `DESIGN.md`; for what's built and what's next,
@@ -17,12 +15,8 @@ architecture and the reasons behind it, `DESIGN.md`; for what's built and what's
 
 ## Status
 
-Early development. A single-process streaming engine runs today, plus the compiler and a multicore
-deployer that runs a graph across worker processes over a mix of in-process and socket edges. The same
-graph also runs across separate containers addressed by service DNS — a coordinator dialing long-lived
-worker daemons (see *Running multi-node* below); securing that on an untrusted network is the next stage.
-See `IMPLEMENTATION_PLAN.md`.
-
+Early development. Not production ready. A single-process streaming engine runs today, plus the compiler and a multicore
+deployer that runs a graph across multiple worker processes or containers.
 ## Python
 
 The fluent `Stream` DSL builds and runs a pipeline; each combinator returns a new stream.
@@ -71,8 +65,7 @@ nautilus bench-check              # re-run benchmarks/baseline.json (incl. a 2-w
 ```
 
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns
-`(source, transforms)`. Also available as `python -m nautilus`. Full command reference:
-[`docs/cli-reference.md`](docs/cli-reference.md).
+`(source, transforms)`. Full command reference: [`docs/cli-reference.md`](docs/cli-reference.md).
 
 ## Running multi-node
 
@@ -87,25 +80,20 @@ nautilus run wordcount --parallelism 2 --daemons worker-0:9000,worker-1:9000
 ```
 
 `docker-compose.yml` runs this locally across containers (two worker daemons + a coordinator on one
-bridge network, addressed by service DNS) — the same layout planned for a Kubernetes deployment:
+bridge network, addressed by service DNS):
 
 ```bash
 docker compose up --build      # workers come up, the coordinator runs the job across them
 ```
 
-Stage 4 is correct only on a **trusted, isolated network** — there is no authentication or encryption yet
-(do not publish the ports). See `IMPLEMENTATION_PLAN.md` (Stage 5) for the security work.
-
 ## Performance
 
-Rough order-of-magnitude throughput on a single modern x86 core — not guarantees; measure your own with
-`nautilus bench`:
+Rough order-of-magnitude throughput on a single modern x86 core — not guarantees; your mileage may vary:
 
 - **Stateless streaming** (map / filter / tokenize, in-process): tens of millions of rows/s.
 - **Streaming join** (inner equi-join, in-process): millions of rows/s.
 - **Keyed aggregation / shuffle** (count, windowed sum, in-process): hundreds of thousands to ~1M rows/s.
-- **Across worker processes** (a keyed shuffle or join over TCP): hundreds of thousands of rows/s —
-  bounded by Arrow-IPC serialization on the cross-worker edge, not the operators.
+- **Across worker processes** (a keyed shuffle or join over TCP): hundreds of thousands of rows/s.
 
 `nautilus bench` reports median-of-trials rows/s on your hardware; `PERFORMANCE_CHANGELOG.md` records what
 has been optimized and by how much.
