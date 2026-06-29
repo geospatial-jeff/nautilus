@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nautilus"
-version = "0.0.1"
+version = "0.1.0"
 description = "A decentralized, entirely-streaming parallel compute framework"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Jeff" }]
+authors = [{ name = "Jeff Albrecht", email = "geospatialjeff@gmail.com" }]
 dependencies = [
   "pyarrow>=17",
   "numpy>=1.26",
