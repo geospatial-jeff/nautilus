@@ -110,6 +110,12 @@ plane that never touches the data path. The coordinator compiles once, computes 
 workers, then only moves control messages and waits at the job boundary; it reads no data channel and
 grants no credit, so "no central scheduler on the data path" still holds with a coordinator present.
 
+The coordinator reaches its workers through a `WorkerCohort` — the three operations that differ between a
+single-machine run and a multi-node one (hand a worker a control message, take the next event with crash
+detection, reap them all). Pulling those behind the cohort keeps the bootstrap and completion loop free
+of any spawn, queue, or exit-code assumption. The one cohort today spawns local processes and moves
+messages over `multiprocessing` queues; the multi-node cohort that dials worker daemons is Stage 4.
+
 **Placement** is per-operator round-robin over the workers: subtask *i* of every operator goes to worker
 *i mod W*. Same-index subtasks co-locate, so a forward or diagonal edge stays a free in-process channel
 and only a genuine shuffle crosses workers. Each worker therefore runs a *hybrid* connector — in-process

@@ -9,17 +9,22 @@ no central ordering of individual connections is needed.
 
 This runs once, at startup, moving only these control messages. ``recv_event`` is the shared, fail-fast
 receiver — it surfaces a worker that crashed (a bad exit code) instead of letting the coordinator block
-forever on a peer that will never report.
+forever on a peer that will never report. :func:`bind_barrier` drives the two phases over a
+:class:`~nautilus.cluster.cohort.WorkerCohort`, so the bootstrap is independent of how the workers are
+reached (local processes today, dialed daemons in Stage 4.2).
 """
 
 from __future__ import annotations
 
 import queue
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from nautilus.cluster.membership import AddressBook
 from nautilus.cluster.protocol import Failed, Register
+
+if TYPE_CHECKING:
+    from nautilus.cluster.cohort import WorkerCohort
 
 
 class WorkerError(RuntimeError):
@@ -66,18 +71,13 @@ def recv_event(events: Any, procs: list[Any], timeout: float | None, poll: float
                 ) from None
 
 
-def bind_barrier(
-    events: Any,
-    commands: dict[int, Any],
-    procs: list[Any],
-    num_workers: int,
-    timeout: float,
-) -> None:
-    """Phase 1 → phase 2: collect every worker's :class:`Register`, then broadcast the address book. A
-    worker that fails before binding surfaces as :class:`WorkerError`."""
+def bind_barrier(cohort: WorkerCohort, num_workers: int, timeout: float) -> None:
+    """Phase 1 → phase 2: collect every worker's :class:`Register`, then broadcast the address book over
+    the ``cohort``. Every worker is watched throughout, since none has reported its ``Done`` yet; a worker
+    that fails before binding surfaces as :class:`WorkerError`."""
     addresses: dict[int, tuple[str, int]] = {}
     while len(addresses) < num_workers:
-        message = recv_event(events, procs, timeout)
+        message = cohort.next_event(timeout, None)
         if isinstance(message, Register):
             addresses[message.worker_id] = (message.host, message.port)
         elif isinstance(message, Failed):
@@ -85,5 +85,5 @@ def bind_barrier(
         else:
             raise RuntimeError(f"unexpected control message during bootstrap: {message!r}")
     book = AddressBook(addresses)
-    for command_queue in commands.values():
-        command_queue.put(book)
+    for worker_id in range(num_workers):
+        cohort.send(worker_id, book)

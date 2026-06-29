@@ -21,10 +21,11 @@ import cloudpickle
 import pyarrow as pa
 
 from nautilus.api import LogicalGraph
-from nautilus.cluster.launcher import reap, spawn_workers
+from nautilus.cluster.cohort import LocalCohort, WorkerCohort
+from nautilus.cluster.launcher import spawn_workers
 from nautilus.cluster.placement import max_parallelism, place
 from nautilus.cluster.protocol import Done, Failed, decode_batches
-from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier, recv_event
+from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier
 from nautilus.compile import compile_graph
 from nautilus.core.time import Clock, SystemClock
 from nautilus.driver.meta import make_run_meta
@@ -89,11 +90,11 @@ def deploy(
     # the reap try-block — which would orphan the live workers and break the "always reaps" guarantee.
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
-    procs, events, commands = spawn_workers(
-        plan_bytes, placement, host, capacity, worker_config, effective
+    cohort: WorkerCohort = LocalCohort(
+        *spawn_workers(plan_bytes, placement, host, capacity, worker_config, effective)
     )
     try:
-        bind_barrier(events, commands, procs, effective, bootstrap_timeout)
+        bind_barrier(cohort, effective, bootstrap_timeout)
 
         # Job-boundary completion: one Done per worker. No wall-clock timeout here — a busy worker is
         # silent until it finishes, so the wait is bounded only by the job's own length (crash detection
@@ -105,8 +106,8 @@ def deploy(
         while remaining:
             # Crash-detect only still-outstanding workers: a worker's whole contribution is in its Done
             # message, after which it tears down and may exit non-zero — that must not fail a run whose
-            # data is already complete. (procs is index-aligned with worker_ids via range(effective).)
-            message = recv_event(events, [procs[w] for w in remaining], None)
+            # data is already complete. The cohort narrows liveness to the watched set.
+            message = cohort.next_event(None, remaining)
             if isinstance(message, Failed):
                 raise WorkerError(message.worker_id, message.traceback)
             if not isinstance(message, Done):
@@ -131,7 +132,7 @@ def deploy(
         out_sink.emit_report(report)
         return RunResult(batches, report)
     finally:
-        reap(procs)
+        cohort.reap()
 
 
 __all__ = ["deploy", "WorkerError", "WorkerCrashed"]

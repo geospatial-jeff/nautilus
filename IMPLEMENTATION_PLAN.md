@@ -73,10 +73,65 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
 See `CODE_REVIEW.md` for the design forks these settled (join semantics, DSL surface, the hot path) and
 the Stage-3 API-consolidation note.
 
-### Stage 4 — Validate multi-node seams · Planned
+### Stage 4 — Multi-node via docker-compose · Planned
 
-The same `PhysicalPlan` runs over loopback and a real node-to-node connection with no operator or
-channel changes — validating cross-host addressing, connection setup, and security.
+The same `PhysicalPlan` runs across separate containers addressed by service DNS — only how a worker is
+*started* changes, not an operator or a channel. The data plane is already cross-host (the Stage 1
+`SocketChannel`/`EdgeListener` over TCP, dialed through the `AddressBook`); what is single-machine is the
+control plane — local process spawn, the `multiprocessing` queues carrying control messages, and
+exit-code crash detection. Stage 4 networks those three primitives behind one seam and leaves the data
+path untouched. The model is a long-lived worker daemon the coordinator dials, chosen as the foundation
+for the eventual Kubernetes deployment (each worker a Pod behind a stable Service DNS name, the
+coordinator a Job that dials them; the bind-vs-advertise split below maps straight onto a Pod that binds
+`0.0.0.0` and advertises its Pod DNS); local spawn stays the default for a single-machine run. Security
+is **out of scope** here — Stage 4 is correct only on an isolated, trusted network (see Stage 5).
+Landing in independently-shippable sub-stages, each green across pytest / mypy / ruff / black /
+import-linter:
+
+- **4.0 — Worker-cohort seam · Planned.** A `WorkerCohort` ABC abstracts the three machine-specific
+  control primitives behind `send` / `next_event(watch=)` / `reap`. `LocalCohort` wraps today's spawn +
+  `multiprocessing.Queue` + exit-code path unchanged, so `deploy`'s body and every `test_cluster_*` stay
+  byte-for-byte — a pure refactor that introduces the seam the remote path plugs into.
+- **4.1 — Bind-vs-advertise + bounded dials · Planned.** A worker binds all interfaces but *registers* a
+  separate routable advertised address, because `getsockname()` on a `0.0.0.0` bind returns the
+  undialable `0.0.0.0`. The data dial gains a connect timeout and the data sockets gain TCP keepalive, so
+  a misadvertised peer or a mid-job partition becomes a bounded error instead of an indefinite hang. The
+  local default keeps advertise == bind == loopback, so existing runs are unaffected.
+- **4.2 — Control link + daemon + RemoteCohort · Planned.** `nautilus worker` is a long-lived daemon the
+  coordinator dials; `cluster.control_link` frames `Launch`/`Abort` down and `Register`/`Done`/`Failed`
+  up one TCP control connection per worker. A control-connection drop before `Done` aborts the job (the
+  network replacement for a missing exit code); a wedged abort self-terminates the daemon out-of-band
+  (the replacement for the local SIGKILL); a normal job end returns the daemon to idle for the next
+  `Launch`. A hermetic loopback test runs `deploy(daemons=…)` against subprocess daemons, so the
+  multi-node *control* path is green without Docker.
+- **4.3 — docker-compose harness · Planned.** A Dockerfile and `docker-compose.yml` run N worker daemons
+  plus a coordinator on one bridge network, addressed by service DNS, with healthcheck/`depends_on`
+  ordering so the coordinator dials only bound daemons. Telemetry gains a physical-host attribute (sourced
+  from each daemon's identity, the k8s Pod name later) alongside the logical `worker-{id}` node, so a
+  multi-node report shows *which container* an operator ran on — without it the report collapses every host
+  to its worker id, blinding the development loop. A Docker-marked, skipped-by-default integration test
+  forces a cross-container keyed shuffle and asserts the distributed result matches a single-process run by
+  multiset and structural digest, that the keyed operator ran on more than one worker node, and that the
+  per-host attribute holds the distinct container names. The repo's first CI workflows land here (the base
+  gates, plus a separate Docker job).
+
+### Stage 5 — Security · Planned
+
+Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one — scoped here,
+not yet designed in depth:
+
+- **Schema the control wire.** The plan (cloudpickle) and the rest of the control messages (pickle) are
+  arbitrary-code-execution on receipt over TCP. Move the structured fields to a schema'd codec and the
+  snapshots to a typed path; the kind-tagged framer already leaves room.
+- **Authenticate both planes.** A shared secret or mTLS gates the control `Launch`/`Abort` path and the
+  data-edge handshake, so an unidentified peer can neither run a plan nor inject frames into an edge.
+- **Authorize the control port.** Restrict who may submit or abort a job, even once authenticated.
+- **Encrypt both planes (TLS).** Plan bytes, Arrow batches, and a failed worker's traceback cross in
+  clear today.
+- **Contain the `0.0.0.0` bind and the dashboard.** Harden the all-interfaces bind and the
+  `dashboard`/`serve --host 0.0.0.0` telemetry HTTP exposure.
+- **DoS hardening.** Rate-limit and cap connections on the control and data listeners; the frame-length
+  guards bound only a single allocation, and the liveness timeouts are not a security boundary.
 
 ## Telemetry · **Done**
 
