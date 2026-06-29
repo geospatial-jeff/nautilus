@@ -133,6 +133,17 @@ def _validate_key(key: tuple[object, ...]) -> None:
             )
 
 
+def _validate_batch_keys(batch: pa.RecordBatch, key_columns: tuple[str, ...]) -> None:
+    """Validate every *distinct* key scalar in a batch — the fail-fast check the per-row route runs inside
+    ``bucket_of``, pulled out so the single-owner (``num_downstream == 1``) path validates too. A bad key
+    type (e.g. a float, which co-partitions inconsistently) must error at parallelism 1, not silently work
+    there and only fail once the job is scaled to more instances."""
+    for column in key_columns:
+        encoded = pc.dictionary_encode(batch.column(column), null_encoding="encode")
+        for value in encoded.dictionary.to_pylist():
+            _validate_key((value,))
+
+
 class Partitioner(ABC):
     """Splits a batch into ``(downstream_index, sub_batch)`` pairs."""
 
@@ -206,7 +217,10 @@ class HashPartitioner(_KeyedPartitioner):
 
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
-            return [(0, batch)]  # one owner: skip per-row hashing entirely
+            _validate_batch_keys(
+                batch, self._key_columns
+            )  # fail fast on a bad key type even at Q==1
+            return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
         return _route_keyed(
             batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
         )
@@ -240,7 +254,10 @@ class KeyGroupPartitioner(_KeyedPartitioner):
 
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
         if num_downstream == 1:
-            return [(0, batch)]  # one owner: skip per-row hashing entirely
+            _validate_batch_keys(
+                batch, self._key_columns
+            )  # fail fast on a bad key type even at Q==1
+            return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
         return _route_keyed(
             batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
         )

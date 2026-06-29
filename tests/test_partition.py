@@ -113,11 +113,13 @@ def test_roundrobin_cursor_is_per_instance() -> None:
 # --- HashPartitioner: routing, conservation, co-location ---------------------------------------
 
 
-def test_hash_q1_short_circuits_without_keying() -> None:
-    # Q == 1 returns the whole batch untouched and never inspects the key column (a float column here
-    # would otherwise raise).
-    b = batch(key=[1.0, 2.0])
-    assert HashPartitioner(["key"]).route(b, 1) == [(0, b)]
+def test_hash_q1_routes_whole_batch_but_validates_keys() -> None:
+    # Q == 1 sends the whole batch to instance 0 without bucketing, but still validates key types — so a
+    # float key (rejected at Q>1) is rejected at Q==1 too (fail-fast), not silently working until scaled.
+    valid = batch(key=["a", "b"])
+    assert HashPartitioner(["key"]).route(valid, 1) == [(0, valid)]
+    with pytest.raises(TypeError):
+        HashPartitioner(["key"]).route(batch(key=[1.0, 2.0]), 1)
 
 
 def test_hash_routes_disjoint_covering_subbatches() -> None:
@@ -346,9 +348,11 @@ def test_keygroup_co_locates_and_conserves_for_g_ge_q() -> None:
         assert all(len(instances) == 1 for instances in where.values()), where
 
 
-def test_keygroup_q1_short_circuits_without_keying() -> None:
-    b = batch(key=[1.0, 2.0])  # a float key would raise if the key column were inspected
-    assert KeyGroupPartitioner(["key"], (0,)).route(b, 1) == [(0, b)]
+def test_keygroup_q1_routes_whole_batch_but_validates_keys() -> None:
+    valid = batch(key=["a", "b"])
+    assert KeyGroupPartitioner(["key"], (0,)).route(valid, 1) == [(0, valid)]
+    with pytest.raises(TypeError):
+        KeyGroupPartitioner(["key"], (0,)).route(batch(key=[1.0, 2.0]), 1)
 
 
 @pytest.mark.parametrize(
