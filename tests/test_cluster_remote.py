@@ -175,7 +175,9 @@ def test_daemons_recover_after_a_failed_job() -> None:
     with _daemons(2) as roster:
         with pytest.raises(WorkerError):
             deploy(failing, daemons=roster)
-        result = _deploy(_wordcount_graph(), roster)  # retries while the daemons finish tearing down
+        result = _deploy(
+            _wordcount_graph(), roster
+        )  # retries while the daemons finish tearing down
         assert _wc(result) == _wc(_serial())
         nodes = {o.node for o in result.telemetry.operators if o.operator_id == "op1"}
         assert nodes == {"worker-0@127.0.0.1", "worker-1@127.0.0.1"}
