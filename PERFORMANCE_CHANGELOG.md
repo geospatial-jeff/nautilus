@@ -22,6 +22,31 @@ Measured on **macOS-12.3-arm64-arm-64bit · Python 3.12.11 · nautilus 0.0.1**, 
 
 ---
 
+## Open performance items (found, not yet done)
+
+Costs measured during the join work (2026-06-29) and left unfixed, with the reason — so the next loop
+starts from evidence, not a cold read.
+
+- **Stream-stream join is super-linear (≈O(n²)).** A key-unique 1:1 stream⋈stream at fixed batch 4096
+  fell from ~906k rows/s at 100k rows to ~425k at 400k (wall grew 0.34s → 2.83s for 4× the rows). The
+  symmetric hash join buffers both sides until EOS and re-probes the *growing* state, so the buffered
+  side's grouped index (an `argsort` + `unique` over the whole buffer) rebuilds on every probe — O(n) per
+  probe, O(n²) over the run. The stream-table benchmarks (`bench-join`) don't show it: the bounded table is
+  indexed once and reused. The real fix is the windowed join `HashJoin`'s docstring already names — bound
+  and evict buffered state on the watermark — or a delta index (a large, rarely-rebuilt main index plus a
+  small recently-added delta probed directly and merged amortized). Both are feature-sized, not tweaks. A
+  constant-factor attempt (store the sort `order` + a zero-copy `Table` instead of reordering every
+  buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
+  common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.
+
+- **`HashJoin._encode` per-distinct-key intern.** After the two shipped vectorizations, the residual
+  stream-table cost is interning each distinct key to its integer id — a `((type, value),)` tuple build
+  plus a dict lookup per distinct key (cProfile: ~30% of the join at 1000 keys). A nested `type → {value:
+  id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
+  as diminishing returns next to the ~90–125× already shipped.
+
+---
+
 ## 2026-06-29 — Vectorized HashJoin single-column key encoding
 
 - **Commit:** `9f2dcb3`
