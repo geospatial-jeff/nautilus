@@ -153,6 +153,15 @@ def test_serial_join_allows_keyless_inputs() -> None:
     assert len(g.edges) == 2
 
 
+def test_half_keyed_parallel_join_rejected() -> None:
+    # one port keyed, the other keyless, at parallelism > 1 — the keyless side still scatters, so reject.
+    with pytest.raises(ValueError, match="keyless"):
+        LogicalGraph(
+            vertices=(_src("a"), _src("b"), two_input("j", lambda: object(), parallelism=2)),
+            edges=(LogicalEdge("a", "j", 0, ("k",)), LogicalEdge("b", "j", 1)),  # port 1 keyless
+        )
+
+
 def test_cycle_rejected() -> None:
     with pytest.raises(ValueError, match="cycle"):
         LogicalGraph(

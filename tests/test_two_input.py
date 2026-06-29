@@ -89,7 +89,7 @@ async def test_two_input_dispatches_by_port() -> None:
     )
 
 
-async def test_two_input_watermark_is_min_and_eos_after_both() -> None:
+async def test_two_input_eos_after_both_inputs_close() -> None:
     # Equal watermarks on both sides: the combined advances to 50 only once both have reported, and
     # neither EOS can push it past 50 until the other side is also closed — so the sequence is exactly
     # [50, WATERMARK_MAX] regardless of how the two inputs interleave.
@@ -103,6 +103,26 @@ async def test_two_input_watermark_is_min_and_eos_after_both() -> None:
     )
     rows = (await run_plan(g)).to_pylist()
     assert [r["wm"] for r in rows] == [50, WATERMARK_MAX]
+
+
+async def test_two_input_watermark_is_the_min_of_the_two_inputs() -> None:
+    # Asymmetric watermarks: left's (50) is higher than right's (30). Before either EOS, both sides have
+    # reported their real watermarks, so the combined — a MIN over inputs — first fires at the lower 30,
+    # never the higher 50. That first fire distinguishes min from a max- or left-only combine. (The exact
+    # later sequence depends on EOS interleaving, so we assert only the discriminating, deterministic
+    # facts: first fire = the min, monotonic, terminal WATERMARK_MAX.)
+    g = LogicalGraph(
+        vertices=(
+            source("L", lambda: InMemorySource([wm(50), EOS_FRAME])),
+            source("R", lambda: InMemorySource([wm(30), EOS_FRAME])),
+            two_input("j", lambda: _WatermarkLog()),
+        ),
+        edges=(LogicalEdge("L", "j", 0), LogicalEdge("R", "j", 1)),
+    )
+    fires = [r["wm"] for r in (await run_plan(g)).to_pylist()]
+    assert fires[0] == 30  # min(50, 30), not the max
+    assert fires == sorted(fires)  # monotonic non-decreasing
+    assert fires[-1] == WATERMARK_MAX  # terminal flush only after BOTH inputs EOS
 
 
 async def test_two_input_drains_a_parallel_left_before_flush() -> None:

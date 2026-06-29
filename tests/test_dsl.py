@@ -111,6 +111,31 @@ def test_dsl_apply_keys_by_the_operators_own_declaration() -> None:
     assert graph.edges[0].key_columns == ("word",)
 
 
+def test_dsl_apply_explicit_key_overrides_the_operators_declaration() -> None:
+    # An explicit key_columns on .apply wins over the operator's own — the deliberate trust-the-caller
+    # behavior the DSL kept when the Stage path (which raised on disagreement) was retired.
+    src = InMemorySource([data(word=["a", "a", "b"]), EOS_FRAME])
+    graph = source(src).apply(KeyedCount("word"), key_columns="other").to_graph()
+    assert graph.edges[0].key_columns == ("other",)  # the override, not KeyedCount's ("word",)
+
+
+async def test_dsl_join_of_joins_relabels_and_runs() -> None:
+    # a.join(b).join(c): the second join relabels an operand that is itself a multi-vertex joined stream,
+    # so this exercises the id-remap on a non-trivial subgraph and a three-source DAG end-to-end.
+    a = source(InMemorySource([data(id=[1, 2], av=["a1", "a2"]), EOS_FRAME]))
+    b = source(InMemorySource([data(id=[1, 2], bv=["b1", "b2"]), EOS_FRAME]))
+    c = source(InMemorySource([data(id=[1], cv=["c1"]), EOS_FRAME]))
+    joined = a.join(b, on="id").join(c, on="id")
+    assert (
+        len({v.id for v in joined.to_graph().vertices}) == 5
+    )  # 3 sources + 2 joins, all unique ids
+    rows = await joined.run_async()
+    # a⋈b on id -> (1,a1,b1),(2,a2,b2); ⋈c (only id 1) -> (1,a1,b1,c1)
+    assert Counter((r["id"], r["av"], r["bv"], r["cv"]) for r in rows.to_pylist()) == Counter(
+        {(1, "a1", "b1", "c1"): 1}
+    )
+
+
 def test_dsl_distributed_run_matches_single_process() -> None:
     joined = _left().join(_right(), on="id")
     distributed = joined.run(workers=2, parallelism=2)

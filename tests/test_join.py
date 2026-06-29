@@ -171,3 +171,50 @@ def test_join_distributed_matches_single_process() -> None:
     distributed = deploy(graph, num_workers=2)
     assert multiset(distributed) == multiset(serial)
     assert distributed.telemetry.structural_digest() == serial.telemetry.structural_digest()
+
+
+def _two_source_join(
+    left_frames: list,
+    right_frames: list,
+    left_on: str | list[str],
+    right_on: str | list[str],
+    parallelism: int,
+) -> LogicalGraph:
+    lk = (left_on,) if isinstance(left_on, str) else tuple(left_on)
+    rk = (right_on,) if isinstance(right_on, str) else tuple(right_on)
+    return LogicalGraph(
+        vertices=(
+            source("L", lambda: InMemorySource(list(left_frames))),
+            source("R", lambda: InMemorySource(list(right_frames))),
+            two_input("j", lambda: HashJoin(left_on, right_on), parallelism=parallelism),
+        ),
+        edges=(LogicalEdge("L", "j", 0, lk), LogicalEdge("R", "j", 1, rk)),
+    )
+
+
+async def test_composite_key_join_co_partitions_across_parallelism() -> None:
+    # A two-column join key exercises the operator's multi-element tuple grouping AND the partitioner's
+    # multi-column mixed-radix fold together — the P=2 result must still equal the serial run.
+    left = [data(a=[1, 1, 2], b=["x", "y", "x"], lval=["p", "q", "r"]), EOS_FRAME]
+    right = [data(c=[1, 2], d=["x", "x"], rval=[10, 20]), EOS_FRAME]
+    serial = multiset(await run_plan(_two_source_join(left, right, ["a", "b"], ["c", "d"], 1)))
+    parallel = multiset(await run_plan(_two_source_join(left, right, ["a", "b"], ["c", "d"], 2)))
+    assert serial == parallel
+    rows = (await run_plan(_two_source_join(left, right, ["a", "b"], ["c", "d"], 1))).to_pylist()
+    assert Counter((r["a"], r["b"], r["lval"], r["rval"]) for r in rows) == Counter(
+        {(1, "x", "p", 10): 1, (2, "x", "r", 20): 1}  # (1,y) and id 3/4 have no match
+    )
+
+
+async def test_join_matches_across_integer_widths() -> None:
+    # The type-fold tags keys by Python type (int for any Arrow width), so an int64 key joins an int32 one
+    # — matching the shuffle, which msgpack-encodes the value not the width. (The flip side of int!=bool.)
+    left = [data(id=pa.array([1, 2], pa.int64()), lval=["a", "b"]), EOS_FRAME]
+    right = [data(id=pa.array([1, 2], pa.int32()), rval=[10, 20]), EOS_FRAME]
+    serial = multiset(await run_plan(_two_source_join(left, right, "id", "id", 1)))
+    parallel = multiset(await run_plan(_two_source_join(left, right, "id", "id", 2)))
+    assert serial == parallel
+    rows = (await run_plan(_two_source_join(left, right, "id", "id", 1))).to_pylist()
+    assert Counter((r["id"], r["lval"], r["rval"]) for r in rows) == Counter(
+        {(1, "a", 10): 1, (2, "b", 20): 1}
+    )
