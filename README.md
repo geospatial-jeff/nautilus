@@ -1,6 +1,12 @@
-# Nautilus
+<p align="center">
+  <img src="docs/nautilus-lockup.svg" alt="Nautilus" width="340">
+</p>
 
-A decentralized, entirely-streaming parallel compute framework, heavily inspired by [Apache Flink](https://flink.apache.org/).
+<p align="center">
+  <em>A decentralized, entirely-streaming parallel compute framework, heavily inspired by <a href="https://flink.apache.org/">Apache Flink</a>.</em>
+</p>
+
+---
 
 - **Decentralized.** The computation is a dataflow graph of operators that run as actors and route
   data to each other locally.
