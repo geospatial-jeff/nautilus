@@ -123,6 +123,7 @@ async def run_worker_slice(
     config: TelemetryConfig,
     send_event: Callable[[Any], None],
     recv_address_book: Callable[[], Awaitable[AddressBook]],
+    node_host: str | None = None,
 ) -> None:
     """Run this worker's data-plane slice, independent of how its control messages travel. Binds the
     listener, registers via ``send_event``, awaits the address book via ``recv_address_book``, runs
@@ -131,7 +132,12 @@ async def run_worker_slice(
     with its control socket — so both run the exact same slice, the firewall against the two paths
     drifting. A failure is caught and reported as ``Failed`` (never raised) so the caller's transport
     always sees one terminal event; a *cancellation* (an abort) is deliberately not caught, so it unwinds
-    to the daemon's teardown."""
+    to the daemon's teardown.
+
+    ``node_host`` is the worker's physical-host identity for telemetry attribution. ``None`` (the local
+    spawn path) keeps the node label ``worker-<id>``, so single-machine reports are unchanged; a daemon
+    passes its advertised host, so a multi-node report tags each row ``worker-<id>@<host>`` and a reader
+    can tell *which container* an operator ran on — not just its logical worker id."""
     listener: EdgeListener | None = None
     try:
         plan = cast(PhysicalPlan, cloudpickle.loads(plan_bytes))
@@ -154,12 +160,14 @@ async def run_worker_slice(
             InProcessConnector(capacity),
             SocketConnector(listener, edge_resolver(placement, address_book), capacity=capacity),
         )
+        node = f"worker-{worker_id}" if node_host is None else f"worker-{worker_id}@{node_host}"
         deployment = Deployment(
-            node=f"worker-{worker_id}",
+            node=node,
             hosted=frozenset(instance for instance, w in placement.items() if w == worker_id),
         )
-        # Each worker samples its own process, attributed to its node (worker-<id>), so the report has
-        # one process row per worker. The config is the coordinator's, minus its clock (see deploy()).
+        # Each worker samples its own process, attributed to its node, so the report has one process row
+        # per worker; across machines the node carries the host so a reader sees which container it ran on.
+        # The config is the coordinator's, minus its clock (see deploy()).
         result = await execute(plan, connector, deployment, capacity=capacity, config=config)
         send_event(Done(worker_id, result.snapshots, encode_batches(result.sink_batches)))
     except Exception:

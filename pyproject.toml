@@ -45,6 +45,12 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 filterwarnings = ["error::DeprecationWarning"]
+# The docker-marked multi-node integration test needs Docker + docker compose; exclude it from the
+# default suite so the unit run stays hermetic and fast. Run it with `pytest -m docker`.
+addopts = "-m 'not docker'"
+markers = [
+  "docker: multi-node integration tests requiring Docker + docker compose (run with -m docker)",
+]
 
 [tool.ruff]
 line-length = 100

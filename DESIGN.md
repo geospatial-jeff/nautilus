@@ -25,8 +25,8 @@ nautilus.api        LogicalGraph (frozen IR)      explicit-edge DAG (linear chai
 nautilus.compile    PhysicalPlan                  one-time lowering  (Stage 2)
 nautilus.runtime    actors, channels, mailboxes   the data path
 nautilus.driver     RunResult                     the boundary: compile, run, build the report
-nautilus.transport  framed Arrow-IPC + control    TCP, loopback now / cross-host  (Stage 1/4)
-nautilus.cluster    placement, launcher, …        CONTROL PLANE ONLY  (Stage 2)
+nautilus.transport  framed Arrow-IPC + control    TCP, loopback and cross-host  (Stage 1/4)
+nautilus.cluster    placement, cohort, daemon, …  CONTROL PLANE ONLY  (Stage 2/4)
 ```
 
 "No central scheduler" is scoped precisely: a Compiler, Deployer, startup barrier, `CollectSink`,
@@ -185,5 +185,6 @@ cause-and-effect. See `docs/telemetry-reference.md`.
 
 The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, the
 compiler + cluster control plane (compile a graph and deploy it across worker processes), the fluent
-`Stream` DSL, and the two-input inner equi-join run today. Multi-node validation (Stage 4) is designed
-but not built. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.
+`Stream` DSL, and the two-input inner equi-join run today. The same plan also runs across separate
+containers addressed by service DNS — a coordinator dialing long-lived worker daemons (Stage 4); securing
+that path on an untrusted network is Stage 5. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.

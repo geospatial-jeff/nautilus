@@ -19,8 +19,10 @@ architecture and the reasons behind it, `DESIGN.md`; for what's built and what's
 ## Status
 
 Early development. A single-process streaming engine runs today, plus the compiler and a multicore
-deployer that runs a graph across worker processes over a mix of in-process and socket edges. Multi-node
-validation is designed but not yet built. See `IMPLEMENTATION_PLAN.md`.
+deployer that runs a graph across worker processes over a mix of in-process and socket edges. The same
+graph also runs across separate containers addressed by service DNS — a coordinator dialing long-lived
+worker daemons (see *Running multi-node* below); securing that on an untrusted network is the next stage.
+See `IMPLEMENTATION_PLAN.md`.
 
 ## Python
 
@@ -72,6 +74,28 @@ nautilus bench-check              # re-run benchmarks/baseline.json (incl. a 2-w
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns
 `(source, transforms)`. Also available as `python -m nautilus`. Full command reference:
 [`docs/cli-reference.md`](docs/cli-reference.md).
+
+## Running multi-node
+
+The same graph runs across separate machines. Instead of spawning local processes, each node runs a
+long-lived **worker daemon** and a **coordinator** dials them:
+
+```bash
+# on each worker node — a daemon that waits for jobs (advertise the host peers should dial)
+nautilus worker --listen 0.0.0.0:9000 --advertise worker-0
+# on the coordinator — dial the daemons; the same pipeline, now across nodes
+nautilus run wordcount --parallelism 2 --daemons worker-0:9000,worker-1:9000
+```
+
+`docker-compose.yml` brings this up locally across containers (two worker daemons + a coordinator on one
+bridge network, addressed by service DNS) — a rehearsal of the eventual Kubernetes topology:
+
+```bash
+docker compose up --build      # workers come up, the coordinator runs the job across them
+```
+
+Stage 4 is correct only on a **trusted, isolated network** — there is no authentication or encryption yet
+(do not publish the ports). See `IMPLEMENTATION_PLAN.md` (Stage 5) for the security work.
 
 ## Development
 

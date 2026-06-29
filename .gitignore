@@ -9,3 +9,4 @@ dist/
 build/
 /tmp/
 .DS_Store
+.compose-out/

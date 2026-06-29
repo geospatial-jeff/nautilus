@@ -91,6 +91,7 @@ async def _run_job(
             launch.config,
             send_event,
             lambda: address_book,
+            node_host=advertise_host,  # tag telemetry rows worker-<id>@<host> so the report shows the container
         )
     )
     abort_task = loop.create_task(abort.wait())

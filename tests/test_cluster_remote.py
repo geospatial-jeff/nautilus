@@ -123,9 +123,10 @@ def roster() -> Iterator[list[tuple[str, int]]]:
 def test_remote_deploy_matches_serial(roster: list[tuple[str, int]]) -> None:
     result = deploy(_wordcount_graph(), daemons=roster)
     assert _wc(result) == _wc(_serial())
-    # The keyed operator genuinely ran on both daemons — proof the shuffle crossed a real socket.
+    # The keyed operator genuinely ran on both daemons — proof the shuffle crossed a real socket. The node
+    # label carries the daemon's advertised host (worker-<id>@<host>), so the report shows which container.
     nodes = {o.node for o in result.telemetry.operators if o.operator_id == "op1"}
-    assert nodes == {"worker-0", "worker-1"}
+    assert nodes == {"worker-0@127.0.0.1", "worker-1@127.0.0.1"}
 
 
 def test_daemon_serves_a_second_job(roster: list[tuple[str, int]]) -> None:
