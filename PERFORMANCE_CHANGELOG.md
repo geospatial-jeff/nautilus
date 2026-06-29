@@ -22,6 +22,40 @@ Measured on **macOS-12.3-arm64-arm-64bit · Python 3.12.11 · nautilus 0.0.1**, 
 
 ---
 
+## 2026-06-29 — Vectorized HashJoin probe (drop the per-distinct-key loop)
+
+- **Commit:** `e8e6388`
+- **Change:** `HashJoin.process_left` / `process_right` (`src/nautilus/operators.py`) no longer loop over
+  the batch's distinct keys in Python (per key: a group-`take`, a probe of the other side's per-key
+  buffer, a cross-product `take`, an `emit`, and a `concat` into this side's running buffer). Each side
+  now accumulates whole batches in a `_SideBuffer` indexed by an integer key id — one id map shared by
+  both inputs, keyed on each scalar's value **and** Python type so it matches the keyed shuffle's
+  `msgpack` equality exactly (`int` 1 ≠ `bool` `True`; `int32` 1 = `int64` 1). A batch probes the other
+  side in one shot: a vectorized lookup of each row's key-id run (`start`/`count` arrays), then a ragged
+  `repeat`/offset expand to build the match index arrays and one `take` per side — no per-key Python, one
+  `emit` per call. The buffer is append-only (no per-key `concat`); the other side's grouped index is
+  built once and cached until it next grows, so the bounded table in a stream-table join is grouped once
+  and reused.
+- **Impact (median-of-trials script; Linux x86_64 · Python 3.12.3):** stream-table inner equi-join (a
+  large `key`-recurring stream ⋈ a small bounded table, 1:1 match), 250k rows / batch 4096 / 1000 keys,
+  single process: **70,260 → 1,650,587 rows/s (23.5×)**, IQR < 0.5% each. The old per-batch
+  `operator.process_micros` was ~93 ms and scaled with **distinct keys per batch** (throughput ∝ 1/K:
+  422k→110k→57k→15k rows/s at K = 100/500/1000/4000); the new path is flat at ~1.6M across all K, so the
+  factor grows with key cardinality (~100× at K = 4000). Measured with a median-of-trials script (warmup
+  + 5 trials via the harness's `summarize()`), **not** `nautilus bench`: the harness's `(source,
+  transforms)` pipeline shape can't express a two-source join. A first-class `bench-join` harness pipeline
+  (+ a baseline entry, so `bench-check` guards join regressions) is the follow-up.
+- **Correctness:** the output **multiset** is identical, proven old-vs-new on the benchmark input (same
+  `rows_out` = 53,248 and same order-independent multiset hash `83ba97cc…` at the 50k probe), and the full
+  join suite — cross-product, order-independence, composite key, `int32`==`int64`, `int`≠`bool`, null
+  keys, parallel co-partition, distributed — is green. The structural digest **does** change here, but only
+  because `operator.batches_out` is a structural metric and the join now emits one batch per `process`
+  call instead of one per key (**13,000 → 13** output batches on the 50k probe — a 1000× cut in batch
+  fragmentation, a secondary win); no row changed, so for this re-batching change the multiset is the
+  correctness anchor, not the digest.
+
+---
+
 ## 2026-06-28 — Vectorized keyed shuffle (route via Arrow dictionary-encode)
 
 - **Commit:** `8be9259`
