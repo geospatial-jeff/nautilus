@@ -16,7 +16,9 @@ architecture and the reasons behind it, `DESIGN.md`; for what's built and what's
 ## Status
 
 Early development. Not production ready. A single-process streaming engine runs today, plus the compiler and a multicore
-deployer that runs a graph across multiple worker processes or containers.
+deployer that runs a graph across multiple worker processes or containers. Will be ported to rust in the future.
+
+
 ## Python
 
 The fluent `Stream` DSL builds and runs a pipeline; each combinator returns a new stream.
