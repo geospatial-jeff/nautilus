@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,17 +67,47 @@ def _tier(name: str) -> Tier:
 
 
 def _run(
-    pipeline: str, tier: Tier, capacity: int, workers: int = 1, parallelism: int = 1
+    pipeline: str,
+    tier: Tier,
+    capacity: int,
+    workers: int = 1,
+    parallelism: int = 1,
+    daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     # run_once is the bench harness's builder+runner — shared so the CLI and bench can't drift on how a
     # pipeline is built or a topology selected, and so both run linear and graph (join) pipelines alike.
     try:
         return run_once(
-            pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+            pipeline,
+            parallelism=parallelism,
+            workers=workers,
+            capacity=capacity,
+            tier=tier,
+            daemons=daemons,
         )
     except (KeyError, ImportError, AttributeError) as e:
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
+
+
+def _split_host_port(value: str) -> tuple[str, int]:
+    """Parse a ``host:port`` string. IPv6 is out of scope here (Stage 4 addresses by service DNS)."""
+    host, sep, port = value.rpartition(":")
+    if not sep or not host:
+        raise typer.BadParameter(f"expected HOST:PORT, got {value!r}")
+    try:
+        return host, int(port)
+    except ValueError:
+        raise typer.BadParameter(f"invalid port in {value!r}") from None
+
+
+def _parse_daemons(value: str | None) -> list[tuple[str, int]] | None:
+    """Parse ``host:port,host:port,…`` (or ``$NAUTILUS_DAEMONS``) into a roster, or ``None`` for the
+    local spawn path."""
+    raw = value or os.environ.get("NAUTILUS_DAEMONS")
+    if not raw:
+        return None
+    return [_split_host_port(item.strip()) for item in raw.split(",") if item.strip()]
 
 
 def _summary_table(report: RunReport) -> Table:
@@ -157,9 +188,16 @@ def run(
         1, help="Worker processes to deploy across (>1 spawns and distributes)."
     ),
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
+    daemons: str = typer.Option(
+        None,
+        help="host:port,... of worker daemons to dial (or $NAUTILUS_DAEMONS); runs multi-node instead "
+        "of spawning locally.",
+    ),
 ) -> None:
     """Run a PIPELINE and show its output and telemetry."""
-    result = _run(pipeline, _tier(telemetry), capacity, workers, parallelism)
+    result = _run(
+        pipeline, _tier(telemetry), capacity, workers, parallelism, _parse_daemons(daemons)
+    )
     report = result.telemetry
 
     if head > 0 and len(result) > 0:
@@ -197,6 +235,40 @@ def run(
     if save is not None:
         save.write_text(report.to_json(indent=2))
         console.print(f"[green]wrote[/green] {save}")
+
+
+@app.command()
+def worker(
+    listen: str = typer.Option(
+        "0.0.0.0:9000", help="HOST:PORT control port the coordinator dials."
+    ),
+    advertise: str = typer.Option(
+        None,
+        help="Routable host peers dial for this worker's data edges (or $NAUTILUS_ADVERTISE_HOST) — "
+        "its service/DNS name. Required to serve jobs.",
+    ),
+    bind: str = typer.Option("0.0.0.0", help="Interface the data listener binds."),
+    healthcheck: str = typer.Option(
+        None, help="Probe a daemon's control HOST:PORT and exit 0/1 (for compose healthchecks)."
+    ),
+) -> None:
+    """Run a long-lived worker daemon a coordinator dials — the multi-node worker. It binds a control
+    port, waits, and runs one job per coordinator connection, then returns to idle."""
+    from nautilus.cluster.daemon import healthcheck as probe
+    from nautilus.cluster.daemon import run_daemon
+
+    if healthcheck is not None:
+        host, port = _split_host_port(healthcheck)
+        raise typer.Exit(0 if probe(host, port) else 1)
+    advertise_host = advertise or os.environ.get("NAUTILUS_ADVERTISE_HOST")
+    if not advertise_host:
+        err_console.print(
+            "[red]--advertise is required[/red] (or set $NAUTILUS_ADVERTISE_HOST): the routable host "
+            "peers dial for this worker's data edges."
+        )
+        raise typer.Exit(code=2)
+    host, port = _split_host_port(listen)
+    run_daemon(host, port, bind, advertise_host)
 
 
 @app.command()

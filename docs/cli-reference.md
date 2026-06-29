@@ -50,9 +50,29 @@ nautilus run PIPELINE [options]
 | `--head` | `5` | rows of pipeline output to preview |
 | `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
 | `--parallelism` | `1` | instances per operator (keyed operators shuffle by key) |
+| `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); runs multi-node instead of spawning locally |
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`
-Distributed: `uv run nautilus run wordcount --workers 2 --parallelism 2`
+Distributed (one machine): `uv run nautilus run wordcount --workers 2 --parallelism 2`
+Multi-node (dial daemons): `uv run nautilus run wordcount --parallelism 2 --daemons worker-1:9000,worker-2:9000`
+
+### worker
+
+Run a long-lived worker daemon a coordinator dials — the multi-node worker. It binds a control port,
+waits, and runs one job per coordinator connection, then returns to idle (it stays up across jobs).
+
+```
+nautilus worker [options]
+```
+
+| option | default | description |
+|---|---|---|
+| `--listen` | `0.0.0.0:9000` | `HOST:PORT` control port the coordinator dials |
+| `--advertise` | required | routable host peers dial for this worker's data edges (or `$NAUTILUS_ADVERTISE_HOST`) — its service/DNS name |
+| `--bind` | `0.0.0.0` | interface the data listener binds |
+| `--healthcheck` | none | probe a daemon's control `HOST:PORT` and exit `0`/`1` (for compose healthchecks) |
+
+Example: `nautilus worker --listen 0.0.0.0:9000 --advertise worker-1`
 
 ### examples
 

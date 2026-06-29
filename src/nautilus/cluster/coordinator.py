@@ -21,7 +21,7 @@ import cloudpickle
 import pyarrow as pa
 
 from nautilus.api import LogicalGraph
-from nautilus.cluster.cohort import LocalCohort, WorkerCohort
+from nautilus.cluster.cohort import LocalCohort, RemoteCohort, WorkerCohort
 from nautilus.cluster.launcher import spawn_workers
 from nautilus.cluster.placement import max_parallelism, place
 from nautilus.cluster.protocol import Done, Failed, decode_batches
@@ -35,6 +35,7 @@ from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.telemetry.report import NullSink, Sink, build_report
+from nautilus.transport.connector import DEFAULT_CONNECT_TIMEOUT
 
 _log = logging.getLogger(__name__)
 _DEFAULT_BOOTSTRAP_TIMEOUT = 60.0  # max seconds of silence between worker registrations during bind
@@ -48,25 +49,37 @@ def deploy(
     key_groups: int | None = None,
     host: str = "127.0.0.1",
     advertise_host: str | None = None,
+    daemons: list[tuple[str, int]] | None = None,
+    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
     clock: Clock | None = None,
     telemetry: TelemetryConfig | None = None,
     sink: Sink | None = None,
     bootstrap_timeout: float = _DEFAULT_BOOTSTRAP_TIMEOUT,
 ) -> RunResult:
-    """Compile ``graph`` and run it across ``num_workers`` spawned worker processes, returning the sink's
-    batches plus one aggregated telemetry report. ``num_workers`` must be >= 1 and is capped at the
-    plan's maximum parallelism (a wider W would only spawn idle workers). ``host`` is the interface every
-    worker's listener binds (loopback by default; ``0.0.0.0`` to accept on a container's bridge), and
-    ``advertise_host`` is the routable host peers dial — it defaults to ``host``, so a single-machine run
-    is unchanged while a multi-node run can bind all interfaces yet advertise a reachable name.
+    """Compile ``graph`` and run it across workers, returning the sink's batches plus one aggregated
+    telemetry report. Two backends, same body: with ``daemons`` ``None`` (the default) it spawns
+    ``num_workers`` local worker processes; with ``daemons`` a roster of ``(host, port)`` worker-daemon
+    control addresses it dials them instead (the multi-node path), assigning ``worker_id = roster index``
+    and inferring the worker count from the roster. Either count is capped at the plan's maximum
+    parallelism (a wider W would only idle a worker).
+
+    For the local path, ``host`` is the interface every worker's listener binds (loopback by default;
+    ``0.0.0.0`` to accept on a container's bridge) and ``advertise_host`` is the routable host peers dial
+    (defaults to ``host``, so a single-machine run is unchanged); the daemon supplies its own bind/advertise
+    in the remote path, so these are ignored there. ``connect_timeout`` bounds dialing each daemon's
+    control port.
 
     ``bootstrap_timeout`` bounds only the bind/register phase, where a silent worker means a hang; once
     the job is running the wait is unbounded, because a healthy job runs as long as its data does. The
-    full ``telemetry`` config reaches every worker; a custom ``clock``, however, cannot cross a spawn, so
-    it affects only the coordinator's run-meta timestamps — worker operators always use a ``SystemClock``.
+    full ``telemetry`` config reaches every worker; a custom ``clock``, however, cannot cross to a worker,
+    so it affects only the coordinator's run-meta timestamps — worker operators always use a ``SystemClock``.
     Always reaps every worker. Raises :class:`WorkerError` (with the failing worker's traceback) on a
-    caught operator error, :class:`WorkerCrashed` on a hard crash, or ``TimeoutError`` if a worker never
-    registers."""
+    caught operator error, :class:`WorkerCrashed` on a hard crash (or a daemon's control connection
+    closing before it reports), or ``TimeoutError`` if a worker never registers."""
+    if daemons is not None:
+        if not daemons:
+            raise ValueError("daemons roster is empty")
+        num_workers = len(daemons)  # the roster is the worker count in the remote path
     if num_workers < 1:
         raise ValueError(f"num_workers must be >= 1, got {num_workers}")
     plan = compile_graph(graph, key_groups=key_groups)
@@ -93,10 +106,17 @@ def deploy(
     # the reap try-block — which would orphan the live workers and break the "always reaps" guarantee.
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
-    advertise = advertise_host if advertise_host is not None else host
-    cohort: WorkerCohort = LocalCohort(
-        *spawn_workers(plan_bytes, placement, host, advertise, capacity, worker_config, effective)
-    )
+    if daemons is not None:
+        cohort: WorkerCohort = RemoteCohort.launch(
+            daemons, plan_bytes, placement, capacity, worker_config, effective, connect_timeout
+        )
+    else:
+        advertise = advertise_host if advertise_host is not None else host
+        cohort = LocalCohort(
+            *spawn_workers(
+                plan_bytes, placement, host, advertise, capacity, worker_config, effective
+            )
+        )
     try:
         bind_barrier(cohort, effective, bootstrap_timeout)
 

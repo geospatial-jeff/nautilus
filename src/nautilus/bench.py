@@ -196,12 +196,14 @@ def run_pipeline(
     workers: int,
     capacity: int,
     tier: Tier,
+    daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     """Run an already-loaded ``(source, transforms)`` at the given topology — single-process, in-process
-    parallel, or deployed across workers. The single topology-selection dispatch shared by the CLI's
-    ``run`` and this bench harness, so the two cannot drift."""
+    parallel, spawned across workers, or (``daemons`` set) dialed across worker daemons. The single
+    topology-selection dispatch shared by the CLI's ``run`` and this bench harness, so the two cannot
+    drift."""
     config = TelemetryConfig(tier=tier)
-    if workers == 1:
+    if workers == 1 and daemons is None:
         # Single process — run_local_chain handles both serial and in-process parallel (any parallelism).
         return asyncio.run(
             run_local_chain(
@@ -211,36 +213,59 @@ def run_pipeline(
     from nautilus.cluster import deploy
 
     graph = graph_from_pipeline(source, transforms, parallelism)
-    return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
+    return deploy(graph, num_workers=workers, daemons=daemons, capacity=capacity, telemetry=config)
 
 
-def run_graph_pipeline(graph: object, *, workers: int, capacity: int, tier: Tier) -> RunResult:
+def run_graph_pipeline(
+    graph: object,
+    *,
+    workers: int,
+    capacity: int,
+    tier: Tier,
+    daemons: list[tuple[str, int]] | None = None,
+) -> RunResult:
     """Run a multi-source graph pipeline (e.g. a join) at the given topology. The graph already carries
-    its operator parallelism (baked in by the builder); ``workers`` selects single-process vs deployed.
+    its operator parallelism (baked in by the builder); ``workers``/``daemons`` select single-process,
+    spawned, or dialed-daemon execution.
     """
     from nautilus.api import LogicalGraph
 
     assert isinstance(graph, LogicalGraph)
     config = TelemetryConfig(tier=tier)
-    if workers == 1:
+    if workers == 1 and daemons is None:
         return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
     from nautilus.cluster import deploy
 
-    return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
+    return deploy(graph, num_workers=workers, daemons=daemons, capacity=capacity, telemetry=config)
 
 
 def run_once(
-    pipeline: str, *, parallelism: int, workers: int, capacity: int, tier: Tier
+    pipeline: str,
+    *,
+    parallelism: int,
+    workers: int,
+    capacity: int,
+    tier: Tier,
+    daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     """Build the named pipeline and run it once at the given topology (a fresh source per call). A graph
     pipeline (more than one source — a join) is built at ``parallelism`` and run via run_plan/deploy; a
-    linear ``(source, transforms)`` pipeline goes through ``run_pipeline``."""
+    linear ``(source, transforms)`` pipeline goes through ``run_pipeline``. ``daemons`` runs across worker
+    daemons instead of spawning locally."""
     if is_graph_pipeline(pipeline):
         graph = load_graph_pipeline(pipeline, parallelism)
-        return run_graph_pipeline(graph, workers=workers, capacity=capacity, tier=tier)
+        return run_graph_pipeline(
+            graph, workers=workers, capacity=capacity, tier=tier, daemons=daemons
+        )
     source, transforms = load_pipeline(pipeline)
     return run_pipeline(
-        source, transforms, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+        source,
+        transforms,
+        parallelism=parallelism,
+        workers=workers,
+        capacity=capacity,
+        tier=tier,
+        daemons=daemons,
     )
 
 

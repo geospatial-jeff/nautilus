@@ -1,7 +1,10 @@
 """Control-plane messages between the coordinator and its workers.
 
-These cross a :class:`multiprocessing.Queue`, which pickles them, so they are plain frozen dataclasses.
-Two payloads do *not* ride as ordinary pickled objects, by necessity:
+These cross a :class:`multiprocessing.Queue` (the local path, which pickles them) or the
+:mod:`~nautilus.cluster.control_link` framed wire (the multi-node path, which cloudpickles them), so they
+are plain frozen dataclasses. ``Launch`` and ``Abort`` (coordinator → daemon) are wire-only and live in
+:mod:`~nautilus.cluster.control_link`. Two payloads here do *not* ride as ordinary pickled objects, by
+necessity:
 
 * the **plan** ships separately as cloudpickled bytes (a spawn argument) — stdlib pickle, which the
   queue uses, cannot carry the plan's lambda operator factories;

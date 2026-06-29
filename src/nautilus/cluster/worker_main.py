@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import traceback
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any, cast
 
@@ -113,7 +113,7 @@ def worker_main(
     )
 
 
-async def _run_worker(
+async def run_worker_slice(
     worker_id: int,
     plan_bytes: bytes,
     placement: dict[tuple[str, int], int],
@@ -121,9 +121,17 @@ async def _run_worker(
     advertise_host: str,
     capacity: int,
     config: TelemetryConfig,
-    events: Any,
-    commands: Any,
+    send_event: Callable[[Any], None],
+    recv_address_book: Callable[[], Awaitable[AddressBook]],
 ) -> None:
+    """Run this worker's data-plane slice, independent of how its control messages travel. Binds the
+    listener, registers via ``send_event``, awaits the address book via ``recv_address_book``, runs
+    :func:`~nautilus.runtime.execute.execute`, and reports ``Done`` or ``Failed`` via ``send_event``. The
+    local spawn path backs the callables with ``multiprocessing`` queues; the remote daemon backs them
+    with its control socket — so both run the exact same slice, the firewall against the two paths
+    drifting. A failure is caught and reported as ``Failed`` (never raised) so the caller's transport
+    always sees one terminal event; a *cancellation* (an abort) is deliberately not caught, so it unwinds
+    to the daemon's teardown."""
     listener: EdgeListener | None = None
     try:
         plan = cast(PhysicalPlan, cloudpickle.loads(plan_bytes))
@@ -131,12 +139,10 @@ async def _run_worker(
         await listener.start()
         # Register the routable advertised host with the concrete bound port — never the bind host, which
         # is 0.0.0.0 (undialable) when binding all interfaces.
-        events.put(Register(worker_id, advertise_host, listener.address[1]))
-        # Block for the address book off the event loop. The coordinator sends it only once every worker
-        # has registered (bound), so by now every destination listener exists and dialing can't miss one.
-        address_book = cast(
-            AddressBook, await asyncio.get_running_loop().run_in_executor(None, commands.get)
-        )
+        send_event(Register(worker_id, advertise_host, listener.address[1]))
+        # Await the address book. The coordinator sends it only once every worker has registered (bound),
+        # so by now every destination listener exists and dialing can't miss one.
+        address_book = await recv_address_book()
 
         def is_local(channel_id: ChannelId) -> bool:
             src = (channel_id.src_operator_id, channel_id.src_subtask)
@@ -155,12 +161,40 @@ async def _run_worker(
         # Each worker samples its own process, attributed to its node (worker-<id>), so the report has
         # one process row per worker. The config is the coordinator's, minus its clock (see deploy()).
         result = await execute(plan, connector, deployment, capacity=capacity, config=config)
-        events.put(Done(worker_id, result.snapshots, encode_batches(result.sink_batches)))
+        send_event(Done(worker_id, result.snapshots, encode_batches(result.sink_batches)))
     except Exception:
-        events.put(Failed(worker_id, traceback.format_exc()))
+        send_event(Failed(worker_id, traceback.format_exc()))
     finally:
         if listener is not None:
             # After execute() closed the connector (its SocketChannels); the listener is closed last,
             # per the teardown order EdgeListener.close() documents.
             with suppress(Exception):
                 await listener.close()
+
+
+async def _run_worker(
+    worker_id: int,
+    plan_bytes: bytes,
+    placement: dict[tuple[str, int], int],
+    bind_host: str,
+    advertise_host: str,
+    capacity: int,
+    config: TelemetryConfig,
+    events: Any,
+    commands: Any,
+) -> None:
+    """The local spawn path: back :func:`run_worker_slice`'s control callables with the worker's
+    ``multiprocessing`` queues — ``events.put`` to report, a blocking ``commands.get`` (off the event
+    loop) for the address book."""
+    loop = asyncio.get_running_loop()
+    await run_worker_slice(
+        worker_id,
+        plan_bytes,
+        placement,
+        bind_host,
+        advertise_host,
+        capacity,
+        config,
+        send_event=events.put,
+        recv_address_book=lambda: loop.run_in_executor(None, commands.get),
+    )

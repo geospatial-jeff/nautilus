@@ -113,8 +113,23 @@ grants no credit, so "no central scheduler on the data path" still holds with a 
 The coordinator reaches its workers through a `WorkerCohort` — the three operations that differ between a
 single-machine run and a multi-node one (hand a worker a control message, take the next event with crash
 detection, reap them all). Pulling those behind the cohort keeps the bootstrap and completion loop free
-of any spawn, queue, or exit-code assumption. The one cohort today spawns local processes and moves
-messages over `multiprocessing` queues; the multi-node cohort that dials worker daemons is Stage 4.
+of any spawn, queue, or exit-code assumption. The local cohort spawns worker processes and moves messages
+over `multiprocessing` queues, reading a crash from a child's exit code. The remote cohort instead dials a
+roster of long-lived `nautilus worker` daemons (one per container, addressed by service DNS), carries the
+same messages over one framed TCP control connection per worker (`cluster.control_link`), and reads a
+crash from that connection closing before a worker's `Done`. The roster is fixed membership: the
+coordinator dials the first `min(num_workers, max-parallelism)` daemons, assigns `worker_id = roster
+index`, and leaves any surplus daemon idle.
+
+**A worker advertises where peers dial it, which need not be where it binds.** A worker binds its listener
+on an interface (`0.0.0.0` to accept on a container's bridge) but registers a separate routable advertised
+address (its service name), because `getsockname()` on a `0.0.0.0` bind returns `0.0.0.0`, which no peer
+can dial. Only the concrete bound port is taken from the listener. Deadlock-freedom (below) now carries
+the precondition that every advertised address routes to its own listener — established by configuration,
+the rejection of a `0.0.0.0` advertise, and a connect timeout that turns a bad address from a hang into a
+bounded error, not by construction. Control and data sockets set TCP keepalive (idle 10s, interval 5s, 3
+probes) so a silent partition during a job — which sends no FIN — surfaces as a bounded connection error
+rather than indefinite silence, since the completion wait is otherwise unbounded.
 
 **Placement** is per-operator round-robin over the workers: subtask *i* of every operator goes to worker
 *i mod W*. Same-index subtasks co-locate, so a forward or diagonal edge stays a free in-process channel
@@ -138,6 +153,13 @@ worker skips the drain and abortively closes, so a peer's `recv` raises promptly
 re-raises the child's traceback and reaps every worker. The coordinator is also the telemetry boundary:
 workers return raw snapshots, and it translates the plan into the report topology and aggregates the one
 `RunReport`.
+
+Across machines the coordinator cannot SIGKILL a non-child worker, so a daemon enforces no-orphan itself:
+its control connection is per job, and a control drop *before* this job's `Done` cancels `execute()` and
+runs the failure-path teardown, returning the daemon to idle. A normal job end (control closed *after*
+`Done`) leaves the daemon up for the next job. Only a wedged abort — one asyncio cancellation cannot unwind
+because the loop is blocked in a non-yielding operator — trips an out-of-band watchdog that hard-exits the
+daemon's own process, the network replacement for the local SIGKILL.
 
 ## Telemetry
 

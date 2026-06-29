@@ -231,14 +231,21 @@ class Stream:
         workers: int | None = None,
         parallelism: int | None = None,
         key_groups: int | None = None,
+        daemons: list[tuple[str, int]] | None = None,
         **kwargs: Any,
     ) -> RunResult:
         """Compile and run this stream to completion, returning its :class:`RunResult`. ``workers`` > 1
-        deploys it across that many worker processes (the *same* graph), capped at the plan's maximum
-        operator parallelism (a wider value would only spawn idle workers); ``parallelism`` sets every
-        operator's instance count; ``key_groups`` sets the keyed-shuffle rescale ceiling. A synchronous
-        one-liner — inside a running event loop use :meth:`run_async` (single-process) instead."""
+        deploys it across that many spawned worker processes (the *same* graph), capped at the plan's
+        maximum operator parallelism (a wider value would only spawn idle workers); ``daemons`` (a
+        ``[(host, port), …]`` roster) deploys it across long-lived worker daemons instead — the multi-node
+        path, with the worker count taken from the roster. ``parallelism`` sets every operator's instance
+        count; ``key_groups`` sets the keyed-shuffle rescale ceiling. A synchronous one-liner — inside a
+        running event loop use :meth:`run_async` (single-process) instead."""
         graph = self.to_graph(parallelism=parallelism)
+        if daemons is not None:
+            from nautilus.cluster import deploy
+
+            return deploy(graph, daemons=daemons, key_groups=key_groups, **kwargs)
         if workers is not None and workers > 1:
             from nautilus.cluster import deploy
 

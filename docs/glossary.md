@@ -222,10 +222,22 @@ the set of frame types is fixed.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
   (`nautilus.driver.RunResult`; `result.telemetry`).
 - **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and
-  no shared memory. `deploy` runs W of them; routing within and between them is local to each sender.
-- **Coordinator** — The control plane behind `deploy`: it compiles the graph, computes placement, spawns
-  the workers, drives the bootstrap, and aggregates one report at the job boundary. It reads no data
-  channel and grants no credit, so there is still no central scheduler on the data path.
+  no shared memory. `deploy` runs W of them on a single machine; routing within and between them is local
+  to each sender.
+- **Worker daemon** — A long-lived `nautilus worker` process (one per container) that binds a control
+  port, waits, and runs one job per coordinator connection on a fresh event loop, then returns to idle.
+  The multi-node replacement for a spawned worker process — the coordinator *dials* it instead of spawning
+  it.
+- **Coordinator** — The control plane behind `deploy`: it compiles the graph, computes placement, starts
+  the workers (or dials the daemons), drives the bootstrap, and aggregates one report at the job boundary.
+  It reads no data channel and grants no credit, so there is still no central scheduler on the data path.
+- **Worker cohort** — The `WorkerCohort` seam abstracting how the coordinator reaches its workers: hand
+  one a control message, take the next event with crash detection, reap them. `LocalCohort` spawns
+  processes and uses `multiprocessing` queues and exit codes; `RemoteCohort` dials daemons over a framed
+  TCP control connection and reads a crash from the connection closing before a worker's `Done`.
+- **Roster** — The fixed list of daemon control addresses a coordinator dials (`--daemons` /
+  `$NAUTILUS_DAEMONS`). The coordinator assigns `worker_id = roster index`; the roster length is the
+  worker count, capped at the plan's max parallelism (a surplus daemon is left idle).
 - **Placement** — The map from each operator instance to the worker that hosts it (`cluster.placement`):
   per-operator round-robin over the workers, so same-index subtasks co-locate and only a real shuffle
   crosses workers.
@@ -236,9 +248,12 @@ the set of frame types is fixed.
 
 *Source: `nautilus.transport`, `nautilus.cluster`.* How an edge that crosses workers is established.
 
-- **Node address** — The `(host, port)` a worker's `EdgeListener` binds and accepts connections on;
-  producers on other workers dial it. Loopback between local processes today, a routable address across
-  machines later.
+- **Bind address** — The `(host, port)` a worker's `EdgeListener` actually binds (`getsockname()`).
+  Binding `0.0.0.0` accepts on every interface but is not itself dialable.
+- **Advertised address** — The routable `(host, port)` a worker registers for peers to dial: the *same*
+  concrete bound port, but a host that resolves from other containers (its service/DNS name). It differs
+  from the bind address whenever a worker binds all interfaces; on a single-machine run the two are equal
+  (both loopback).
 - **Edge handshake** — A one-shot preamble a producer writes right after connecting, naming the
   `ChannelId` of the edge it is opening, before any frame. The accepting `EdgeListener` reads it to route
   the socket to the right consumer, so connections may arrive in any order without the wires crossing.
@@ -246,10 +261,13 @@ the set of frame types is fixed.
   subtask, and the destination operator id and subtask. It is both the key the in-process connector maps
   to a queue and the value a socket announces in its handshake, so an edge is named the same way whatever
   the transport.
-- **Address book** — The `AddressBook` (`cluster.membership`) mapping each worker to its listener's
+- **Address book** — The `AddressBook` (`cluster.membership`) mapping each worker to its *advertised*
   `(host, port)`, built once after every worker binds. The socket connector takes a resolver over it (the
-  address a producer dials is the listener of the worker hosting the edge's destination), which is why
-  `transport` never imports `cluster`.
+  address a producer dials is the advertised listener of the worker hosting the edge's destination), which
+  is why `transport` never imports `cluster`.
+- **Control link** — `cluster.control_link`: the framed TCP wire (`[magic][length][cloudpickle payload]`)
+  carrying `Launch`/`Abort` down and `Register`/`Done`/`Failed` up between a coordinator and a daemon — the
+  multi-node replacement for the control `multiprocessing` queues.
 - **Rendezvous** — The two-phase startup that makes connection setup deadlock-free: every worker binds
   its listener (so all destinations exist) and registers before the coordinator broadcasts the address
   book that lets anyone dial. A connection arriving before its consumer accepts is parked, so no global

@@ -50,7 +50,7 @@ joined = source(orders).join(source(customers), on="customer_id")
 
 | Method | What it does |
 |---|---|
-| `.run(workers=None, parallelism=None, key_groups=None, …)` | Synchronous: compile and run to completion, returning a `RunResult`. `workers > 1` deploys the *same* graph across that many worker processes; `parallelism=N` sets every operator's instance count uniformly. |
+| `.run(workers=None, parallelism=None, key_groups=None, daemons=None, …)` | Synchronous: compile and run to completion, returning a `RunResult`. `workers > 1` deploys the *same* graph across that many spawned worker processes; `daemons=[(host, port), …]` deploys it across long-lived worker daemons instead (the multi-node path, worker count taken from the roster); `parallelism=N` sets every operator's instance count uniformly. |
 | `.run_async(…)` | The `await`-able single-process form, for use inside a running event loop. |
 | `.collect()` | Run and return the rows as `{column: value}` dicts (a convenience over `run().to_pylist()`). |
 | `.to_graph(parallelism=None)` | The `LogicalGraph` this stream describes, without running it. |
