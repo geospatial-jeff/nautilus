@@ -149,6 +149,23 @@ def test_remote_worker_failure_reraises_child_traceback() -> None:
     assert "boom at process" in exc.value.child_traceback
 
 
+def test_daemons_recover_after_a_failed_job() -> None:
+    # A job whose operator raises aborts the run (reap closes the control connections); the daemons must
+    # return to idle rather than wedge or orphan their work, so a normal job on the SAME daemons right
+    # afterward still succeeds. This exercises the abort/no-orphan path and recovery in one shot.
+    failing = staged_graph(
+        _source(),
+        [(Tokenize("line", "word"), 1, None), (_RaiseOnProcess(), 2, ("word",))],
+    )
+    with _daemons(2) as roster:
+        with pytest.raises(WorkerError):
+            deploy(failing, daemons=roster)
+        result = deploy(_wordcount_graph(), daemons=roster)
+        assert _wc(result) == _wc(_serial())
+        nodes = {o.node for o in result.telemetry.operators if o.operator_id == "op1"}
+        assert nodes == {"worker-0@127.0.0.1", "worker-1@127.0.0.1"}
+
+
 def test_roster_longer_than_parallelism_leaves_surplus_idle() -> None:
     # The plan's max parallelism is 2, so a 3-daemon roster dials only the first two; the surplus daemon
     # is never dialed (no Launch, not awaited, not treated as crashed) and stays healthy.

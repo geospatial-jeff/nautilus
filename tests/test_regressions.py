@@ -1,6 +1,7 @@
-"""Regression tests for the Stage-2 review fixes (see CODE_REVIEW.md).
+"""Regression tests that pin specific behavioral fixes and guards across the engine.
 
-Each test pins a specific behavioral fix so the footgun it closed cannot silently return.
+Each test locks in one fix — input validation, keying/shuffle, telemetry, deploy guards — so the footgun
+it closed cannot silently return.
 """
 
 from __future__ import annotations

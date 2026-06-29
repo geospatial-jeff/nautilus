@@ -1,10 +1,10 @@
 """Windowing primitives: window definitions and assigners.
 
 A :class:`WindowAssigner` maps a record's event time to the window(s) it belongs to and owns the
-boundary math, so an operator never recomputes it. Triggering (when to compute a window) is, for
-Stage 0, implicitly *on watermark*: a window fires once the operator watermark passes its end.
-Sliding/session windows and pluggable triggers arrive in Stage 3; the assigner abstraction is shaped to
-accommodate them (``assign`` already returns a *list*).
+boundary math, so an operator never recomputes it. Triggering (when to compute a window) is implicitly
+*on watermark*: a window fires once the operator watermark passes its end. Only tumbling windows
+(:class:`TumblingEventTimeWindows`) exist today; the assigner abstraction is shaped to admit sliding and
+session windows and pluggable triggers later (``assign`` already returns a *list*).
 """
 
 from __future__ import annotations

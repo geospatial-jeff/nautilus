@@ -70,8 +70,9 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   package-level import-linter contract, plus a fifth contract enforcing IR purity), and the redundant
   Stage-2 builder path (`Stage`/`graph_from_stages`/`run_parallel_chain`) is retired.
 
-See `CODE_REVIEW.md` for the design forks these settled (join semantics, DSL surface, the hot path) and
-the Stage-3 API-consolidation note.
+The design forks these settled live where they apply: join semantics and the hot-path firewall in
+`DESIGN.md`, the self-join deferral at the rejection site (`nautilus.api.graph`), and the report-layer
+and IR-purity firewalls as import-linter contracts in `pyproject.toml`.
 
 ### Stage 4 — Multi-node via docker-compose · Done
 
@@ -119,9 +120,10 @@ import-linter:
 Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one — scoped here,
 not yet designed in depth:
 
-- **Schema the control wire.** The plan (cloudpickle) and the rest of the control messages (pickle) are
-  arbitrary-code-execution on receipt over TCP. Move the structured fields to a schema'd codec and the
-  snapshots to a typed path; the kind-tagged framer already leaves room.
+- **Schema the control wire.** The plan and every control message cross the TCP control link as
+  cloudpickle — arbitrary-code-execution on receipt. Move the structured fields to a schema'd codec and
+  the snapshots to a typed path; the framer is payload-agnostic, so the codec can be swapped without
+  touching it.
 - **Authenticate both planes.** A shared secret or mTLS gates the control `Launch`/`Abort` path and the
   data-edge handshake, so an unidentified peer can neither run a plan nor inject frames into an edge.
 - **Authorize the control port.** Restrict who may submit or abort a job, even once authenticated.
@@ -141,7 +143,7 @@ catalog keys fill in as Stages 1.5–4 land.
 
 ## CLI · **Done**
 
-`nautilus` (also `python -m nautilus`): `run`, `examples`, `catalog`, `reference`, `dashboard` and
-`serve`, `version`, `task` (prints a ready-to-paste agent prompt), and the benchmarking pair `bench` /
-`bench-check` (median-of-trials throughput vs. a baseline; the CI regression gate). A pipeline is a
-built-in name or `module:function`.
+`nautilus` (also `python -m nautilus`): `run`, `worker` (the multi-node worker daemon a coordinator
+dials), `examples`, `catalog`, `reference`, `dashboard` and `serve`, `version`, `task` (prints a
+ready-to-paste agent prompt), and the benchmarking pair `bench` / `bench-check` (median-of-trials
+throughput vs. a baseline; the CI regression gate). A pipeline is a built-in name or `module:function`.

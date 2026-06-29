@@ -11,7 +11,7 @@ This runs once, at startup, moving only these control messages. ``recv_event`` i
 receiver — it surfaces a worker that crashed (a bad exit code) instead of letting the coordinator block
 forever on a peer that will never report. :func:`bind_barrier` drives the two phases over a
 :class:`~nautilus.cluster.cohort.WorkerCohort`, so the bootstrap is independent of how the workers are
-reached (local processes today, dialed daemons in Stage 4.2).
+reached — local spawned processes or dialed daemons.
 """
 
 from __future__ import annotations

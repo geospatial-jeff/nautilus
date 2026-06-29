@@ -54,12 +54,16 @@ nautilus run PIPELINE [options]
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`
 Distributed (one machine): `uv run nautilus run wordcount --workers 2 --parallelism 2`
-Multi-node (dial daemons): `uv run nautilus run wordcount --parallelism 2 --daemons worker-1:9000,worker-2:9000`
+Multi-node (dial daemons): `uv run nautilus run wordcount --parallelism 2 --daemons worker-0:9000,worker-1:9000`
 
 ### worker
 
 Run a long-lived worker daemon a coordinator dials — the multi-node worker. It binds a control port,
 waits, and runs one job per coordinator connection, then returns to idle (it stays up across jobs).
+
+**Security:** the daemon runs whatever plan a coordinator sends (it executes that code) with no
+authentication or encryption — run it only on a trusted, private network and never publish its ports.
+Hardening this is Stage 5.
 
 ```
 nautilus worker [options]
