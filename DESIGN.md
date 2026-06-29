@@ -32,10 +32,11 @@ nautilus.cluster    placement, launcher, …        CONTROL PLANE ONLY  (Stage 2
 "No central scheduler" is scoped precisely: a Compiler, Deployer, startup barrier, `CollectSink`,
 and completion detector are deliberate, bounded centralizations confined to the one-time control
 phase or to job boundaries; none grant data credits or gate per-record progress. The boundaries are
-enforced mechanically by import-linter contracts in CI: `nautilus.runtime`/`core`/`transport` may not
-import `nautilus.cluster`; the report layer is assembled only in `nautilus.driver` (and the coordinator),
-so the whole data-path package `nautilus.runtime` may not import it; and the IR (`nautilus.api`) imports
-nothing else in nautilus, so a `LogicalGraph` stays a pure, serializable value.
+enforced mechanically by import-linter contracts in CI (`pyproject.toml` has the full set) — for example:
+the data-path packages (`nautilus.runtime`/`core`/the operator packages) may not import
+`nautilus.cluster`; the report layer is assembled only in `nautilus.driver` (and the coordinator), so the
+data path may not import it; and the IR (`nautilus.api`) imports nothing else in nautilus, so a
+`LogicalGraph` stays a pure, serializable value.
 
 The compiler's output, the `PhysicalPlan`, is the unit of distribution: a worker is handed a plan it
 never compiled. So the plan is kept neutral — it carries operator factories and stateless partitioner

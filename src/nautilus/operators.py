@@ -304,7 +304,8 @@ class HashJoin(TwoInputOperator):
     sequence) and must have equal length; column *i* of ``left_on`` is matched against column *i* of
     ``right_on``. Keys are matched by value *and* scalar type — the same distinction the keyed shuffle
     draws — so an integer key column does not join a boolean one (an int ``1`` and a bool ``True`` are
-    different keys), matching how they co-partition.
+    different keys), matching how they co-partition. A null key matches a null key (``null == null``), as
+    nulls co-partition like any other key.
 
     State is the per-key buffers of both sides, held until end of stream and then cleared — the same
     unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. ``on_watermark``

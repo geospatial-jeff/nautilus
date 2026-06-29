@@ -173,7 +173,10 @@ class Stream:
         """Inner equi-join with ``other`` (:class:`~nautilus.operators.HashJoin`). Give ``on`` for a shared
         column name, or ``left_on``/``right_on`` for differently-named keys; both sides must name the same
         number of columns. The two inputs are shuffled on their join keys so equal keys meet on one
-        instance. The output is this stream's columns followed by ``other``'s non-key columns."""
+        instance. The output is this stream's columns followed by ``other``'s non-key columns.
+
+        Build each side from its own :func:`source`. If both inputs derive from one source (a diamond),
+        that source is read once per branch, so it must be replayable — the built-in sources are."""
         if other is self:
             raise ValueError(
                 "a stream cannot be joined to itself; build the two inputs as separate streams"
@@ -231,7 +234,8 @@ class Stream:
         **kwargs: Any,
     ) -> RunResult:
         """Compile and run this stream to completion, returning its :class:`RunResult`. ``workers`` > 1
-        deploys it across that many worker processes (the *same* graph); ``parallelism`` sets every
+        deploys it across that many worker processes (the *same* graph), capped at the plan's maximum
+        operator parallelism (a wider value would only spawn idle workers); ``parallelism`` sets every
         operator's instance count; ``key_groups`` sets the keyed-shuffle rescale ceiling. A synchronous
         one-liner — inside a running event loop use :meth:`run_async` (single-process) instead."""
         graph = self.to_graph(parallelism=parallelism)

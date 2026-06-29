@@ -18,8 +18,9 @@ For the simplest case the one-liner :func:`run` takes a source and a list of ope
 ``run(from_batches(lines), [Tokenize("line", "word"), KeyedCount("word")])``. ``from_batches`` wraps a
 bare ``pyarrow.RecordBatch`` and appends the terminal :data:`EOS_FRAME`; for an event-time stream it also
 accepts :class:`Batch` / :class:`Watermark` frames. Reach for ``InMemorySource([...])`` only when you need
-exact frame control. Anything not re-exported here is still importable from its concrete module (e.g.
-``nautilus.dsl``, ``nautilus.operators``, ``nautilus.telemetry``).
+exact frame control. (:func:`run_local_chain` is the ``await``-able form of ``run`` for an async caller.)
+Anything not re-exported here is still importable from its concrete module (e.g. ``nautilus.dsl``,
+``nautilus.operators``, ``nautilus.telemetry``).
 """
 
 from nautilus._version import __version__

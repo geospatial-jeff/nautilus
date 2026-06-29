@@ -261,6 +261,12 @@ def one_input(
 def two_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:
     """Build a two-input (join) vertex. Its keying lives on its two inbound :class:`LogicalEdge`\\ s (port
     0 = left, port 1 = right), each co-partitioned on its own columns, so it carries no ``key_columns``.
+
+    When hand-building the IR, those edges' ``key_columns`` must name the same columns the join operator
+    joins on (its ``left_on``/``right_on``): the edge decides where a row goes, the operator decides what
+    matches, so a mismatch shuffles on different columns than it joins and silently mis-joins. The fluent
+    :meth:`nautilus.dsl.Stream.join` derives both from one ``on=`` / ``left_on=`` / ``right_on=``, so they
+    cannot drift.
     """
     return LogicalVertex(id=id, factory=factory, kind=_TWO_INPUT, parallelism=parallelism)
 
