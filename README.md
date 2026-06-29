@@ -9,9 +9,9 @@ A decentralized, entirely-streaming parallel compute framework, heavily inspired
 - **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar and micro-batched, passed by
 reference in-process and serialized once to Arrow across processes. Supports both geospatial and tensor types.
 
-For the vocabulary and data model (operators, frames, watermarks, …) see `docs/glossary.md`; for the
-architecture and the reasons behind it, `DESIGN.md`; for what's built and what's next,
-`IMPLEMENTATION_PLAN.md`.
+For the vocabulary and data model (operators, frames, watermarks, …) see [`docs/glossary.md`](docs/glossary.md); for the
+architecture and the reasons behind it, [`DESIGN.md`](DESIGN.md); for what's built and what's next,
+[`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
 ## Status
 
@@ -97,7 +97,7 @@ Rough order-of-magnitude throughput on a single modern x86 core — not guarante
 - **Keyed aggregation / shuffle** (count, windowed sum, in-process): hundreds of thousands to ~1M rows/s.
 - **Across worker processes** (a keyed shuffle or join over TCP): hundreds of thousands of rows/s.
 
-`nautilus bench` reports median-of-trials rows/s on your hardware; `PERFORMANCE_CHANGELOG.md` records what
+`nautilus bench` reports median-of-trials rows/s on your hardware; [`PERFORMANCE_CHANGELOG.md`](PERFORMANCE_CHANGELOG.md) records what
 has been optimized and by how much.
 
 ## Development
