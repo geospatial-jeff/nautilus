@@ -1,0 +1,46 @@
+# Stage 4 multi-node harness: two worker daemons and a coordinator on one bridge network, addressed by
+# service DNS. The coordinator dials the daemons (it never spawns them) and runs a keyed word-count whose
+# shuffle, at parallelism 2, genuinely crosses the two containers; it saves the telemetry report to a
+# mounted volume the integration test reads back. Each worker advertises its service name, binds all
+# interfaces, and only becomes a depends_on target once its control port accepts (the healthcheck).
+#
+# No `ports:` — the worker control and data ports stay on the internal bridge. Binding 0.0.0.0 with no
+# auth (Stage 4) is contained only while the ports are not published to the host; securing this is Stage 5.
+
+services:
+  worker-0:
+    build: .
+    image: nautilus:stage4
+    command: worker --listen 0.0.0.0:9000 --advertise worker-0 --bind 0.0.0.0
+    healthcheck:
+      test: ["CMD", "nautilus", "worker", "--healthcheck", "127.0.0.1:9000"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped  # revive a daemon after a wedged-abort self-kill
+
+  worker-1:
+    build: .
+    image: nautilus:stage4
+    command: worker --listen 0.0.0.0:9000 --advertise worker-1 --bind 0.0.0.0
+    healthcheck:
+      test: ["CMD", "nautilus", "worker", "--healthcheck", "127.0.0.1:9000"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  coordinator:
+    build: .
+    image: nautilus:stage4
+    depends_on:
+      worker-0:
+        condition: service_healthy
+      worker-1:
+        condition: service_healthy
+    command: >
+      run wordcount --parallelism 2
+      --daemons worker-0:9000,worker-1:9000
+      --save /out/report.json --head 0 --show none
+    volumes:
+      - ./.compose-out:/out

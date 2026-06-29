@@ -1,0 +1,19 @@
+name: compose
+
+on:
+  push:
+  pull_request:
+
+# The multi-node integration test: builds the image and runs two worker daemons plus a coordinator across
+# separate containers via docker compose, asserting the distributed result matches a single-process run.
+# Separate from the base CI so a Docker-less contributor's run is unaffected; the GitHub-hosted ubuntu
+# runner ships Docker and the compose plugin.
+jobs:
+  multinode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[dev]"
+      - run: uv run pytest -m docker tests/integration -v

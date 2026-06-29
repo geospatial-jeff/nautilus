@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# The base gates: lint, format, types, the import-linter contracts, and the hermetic unit suite. The
+# multi-node integration test (Docker) is a separate workflow (compose.yml); `pytest` here excludes it via
+# the `-m 'not docker'` default in pyproject. `bench-check` is intentionally not run here — throughput is
+# only comparable on the baseline's hardware, so it belongs on a fixed/self-hosted runner, not a shared CI
+# machine; its structural-digest correctness check is already covered by the unit suite.
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.12
+      - run: uv pip install -e ".[dev,fast]"
+      - run: uv run ruff check src tests
+      - run: uv run black --check src tests
+      - run: uv run mypy
+      - run: uv run lint-imports
+      - run: uv run pytest -q

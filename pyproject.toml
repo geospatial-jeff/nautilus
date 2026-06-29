@@ -1,0 +1,205 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nautilus"
+version = "0.1.0"
+description = "A decentralized, entirely-streaming parallel compute framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jeff Albrecht", email = "geospatialjeff@gmail.com" }]
+dependencies = [
+  "pyarrow>=17",
+  "numpy>=1.26",
+  "msgpack>=1.0",
+  "cloudpickle>=3.0",
+  "typer>=0.12",
+  "rich>=13",
+]
+
+[project.scripts]
+nautilus = "nautilus.cli:main"
+
+[project.optional-dependencies]
+fast = ["uvloop>=0.19; sys_platform != 'win32'"]
+# Hardware/resource telemetry (process CPU, memory, fds). loop-lag works without it.
+system = ["psutil>=5.9"]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "black>=24",
+  "mypy>=1.10",
+  "import-linter>=2.0",
+  "psutil>=5.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nautilus"]
+artifacts = ["src/nautilus/telemetry/dashboard.html"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
+# The docker-marked multi-node integration test needs Docker + docker compose; exclude it from the
+# default suite so the unit run stays hermetic and fast. Run it with `pytest -m docker`.
+addopts = "-m 'not docker'"
+markers = [
+  "docker: multi-node integration tests requiring Docker + docker compose (run with -m docker)",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# B027: operator ABCs intentionally provide empty default lifecycle hooks (open/close/on_watermark)
+# that subclasses may override — a deliberate template-method pattern, not a mistake.
+# E501: black owns line length; it deliberately leaves long docstrings/comments unwrapped, so we do
+# not double-enforce a hard column limit on prose (black still wraps code at line-length=100).
+ignore = ["B027", "E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API intentionally puts typer.Option/Argument(...) calls in argument defaults (B008).
+"src/nautilus/cli.py" = ["B008"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["nautilus"]
+mypy_path = "src"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# pyarrow ships a py.typed marker but its compute functions (pc.max/value_counts/cast) are generated
+# dynamically and absent from the stubs; treat these libraries as untyped rather than fight it.
+module = ["pyarrow.*", "msgpack.*", "cloudpickle.*", "uvloop.*", "typer.*", "rich.*", "click.*", "psutil.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# numpy 2.x ships .pyi stubs using 3.12-only ``type`` aliases that fail to parse under
+# python_version 3.11. follow_imports_for_stubs makes "skip" apply to the stubs, so numpy is treated
+# as untyped instead of erroring at parse time.
+module = ["numpy", "numpy.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
+[[tool.mypy.overrides]]
+# Typer command decorators are untyped from mypy's view (typer is treated as untyped above).
+module = ["nautilus.cli"]
+disallow_untyped_decorators = false
+
+# Mechanically enforces the "no central scheduler on the data path" guarantee:
+# data-path packages may not import the control-plane package.
+[tool.importlinter]
+root_package = "nautilus"
+
+[[tool.importlinter.contracts]]
+name = "Data path must not import the control plane (cluster)"
+type = "forbidden"
+# Every package that runs in a worker (the data path + operator-authoring packages) is a source here, so
+# a forbidden chain is caught no matter which one starts it. nautilus.transport landed in Stage 1; the IR
+# (api) and compiler landed in Stage 2a; the operator/state/window/tensor packages are listed so new
+# operator code cannot import the control plane and pass CI. (nautilus.dsl is excluded: its terminal
+# legitimately reaches cluster.deploy, lazily, and it is the value layer above the data path, not in it.)
+source_modules = [
+  "nautilus.runtime",
+  "nautilus.core",
+  "nautilus.telemetry",
+  "nautilus.transport",
+  "nautilus.api",
+  "nautilus.compile",
+  "nautilus.operators",
+  "nautilus.state",
+  "nautilus.windows",
+  "nautilus.tensors",
+]
+forbidden_modules = ["nautilus.cluster"]
+
+[[tool.importlinter.contracts]]
+name = "The compiler imports only the IR (api)"
+type = "forbidden"
+# compile lowers api -> PhysicalPlan and nothing more. The forbidden list is every internal package
+# except api (and compile's own modules): a forbidden contract is a denylist, so to mean "imports only
+# api" it must name each sibling. Keeping the plan free of these imports is what lets it cloudpickle to
+# a worker that has only the data path, and keeps the compiler off the runtime and the report layer.
+source_modules = ["nautilus.compile"]
+forbidden_modules = [
+  "nautilus.core",
+  "nautilus.runtime",
+  "nautilus.driver",
+  "nautilus.transport",
+  "nautilus.telemetry",
+  "nautilus.state",
+  "nautilus.cluster",
+  "nautilus.operators",
+  "nautilus.dsl",
+  "nautilus.windows",
+  "nautilus.tensors",
+]
+
+[[tool.importlinter.contracts]]
+name = "Per-record data path must not import the telemetry report (boundary) layer"
+type = "forbidden"
+# The boundary runners moved to nautilus.driver, so the whole of nautilus.runtime is now the per-record
+# data path and is forbidden the report layer as a package — no hand-maintained submodule list. The
+# report is assembled in nautilus.driver (and the cluster coordinator); core/api/compile and the
+# operator-authoring packages (operators/state/windows/tensors) may not reach it either, so report
+# assembly can never creep onto the hot path and compile.lower can never reach telemetry.report.Topology.
+source_modules = [
+  "nautilus.core",
+  "nautilus.runtime",
+  "nautilus.api",
+  "nautilus.compile",
+  "nautilus.operators",
+  "nautilus.state",
+  "nautilus.windows",
+  "nautilus.tensors",
+]
+forbidden_modules = ["nautilus.telemetry.report", "nautilus.telemetry.live"]
+
+[[tool.importlinter.contracts]]
+name = "The IR (api) imports nothing else in nautilus"
+type = "forbidden"
+# api/graph.py is a pure value layer built from the standard library alone, so a LogicalGraph can be
+# built, diffed, and serialized without dragging in the runtime. Previously only documented; enforced
+# here so a stray import into the value layer is caught.
+source_modules = ["nautilus.api"]
+forbidden_modules = [
+  "nautilus.core",
+  "nautilus.operators",
+  "nautilus.dsl",
+  "nautilus.compile",
+  "nautilus.runtime",
+  "nautilus.driver",
+  "nautilus.transport",
+  "nautilus.telemetry",
+  "nautilus.state",
+  "nautilus.cluster",
+  "nautilus.windows",
+  "nautilus.tensors",
+]
+
+[[tool.importlinter.contracts]]
+name = "Telemetry data-path layer must not import the report (boundary) layer"
+type = "forbidden"
+source_modules = [
+  "nautilus.telemetry.model",
+  "nautilus.telemetry.catalog",
+  "nautilus.telemetry.recorder",
+  "nautilus.telemetry.registry",
+  "nautilus.telemetry.system",
+]
+forbidden_modules = ["nautilus.telemetry.report"]
