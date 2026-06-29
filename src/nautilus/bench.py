@@ -32,7 +32,7 @@ import nautilus
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.pipelines import load_pipeline
 from nautilus.telemetry.catalog import Tier

@@ -15,7 +15,7 @@ from typing import Any
 
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import Clock
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_plan
 from nautilus.runtime.channel import DEFAULT_CAPACITY

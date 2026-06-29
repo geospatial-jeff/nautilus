@@ -19,7 +19,7 @@ from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_compiled, run_plan
 from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize

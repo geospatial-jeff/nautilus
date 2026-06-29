@@ -74,6 +74,10 @@ class LogicalVertex:
             raise ValueError(
                 f"key_columns must be None (keyless) or a non-empty tuple, got () for {self.id!r}"
             )
+        if self.key_columns is not None and any(not c or not c.strip() for c in self.key_columns):
+            raise ValueError(
+                f"key_columns must be non-empty column names, got {self.key_columns!r} for {self.id!r}"
+            )
         if self.key_columns is not None and self.kind != _ONE_INPUT:
             # Only a one-input vertex has a single input the synthesized linear edge can key. A source
             # has no input; a join keys per edge (left_on/right_on) — reject a value that has no effect.
@@ -108,6 +112,11 @@ class LogicalEdge:
         if self.key_columns is not None and not self.key_columns:
             raise ValueError(
                 f"key_columns must be None or a non-empty tuple, got () for {self.src!r}->{self.dst!r}"
+            )
+        if self.key_columns is not None and any(not c or not c.strip() for c in self.key_columns):
+            raise ValueError(
+                f"key_columns must be non-empty column names, got {self.key_columns!r} for "
+                f"{self.src!r}->{self.dst!r}"
             )
 
 

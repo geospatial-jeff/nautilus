@@ -13,7 +13,7 @@ runners the DSL terminal and the cluster coordinator both call.
 """
 
 from nautilus.driver.local import run, run_local_chain
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import plan_to_topology, run_compiled, run_plan
 

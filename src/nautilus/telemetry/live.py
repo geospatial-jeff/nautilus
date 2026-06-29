@@ -26,7 +26,7 @@ from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
 from nautilus.driver.meta import make_run_meta
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.run import plan_to_topology, run_compiled
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig

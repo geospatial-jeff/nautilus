@@ -104,6 +104,14 @@ def test_dsl_join_rejects_unequal_key_arity() -> None:
         _left().join(_right(), left_on=["id", "lval"], right_on=["id"])
 
 
+def test_dsl_rejects_empty_key_names() -> None:
+    # an empty/blank key name builds an unusable graph; reject it up front, not at run time
+    with pytest.raises(ValueError, match="non-empty column names"):
+        _left().join(_right(), on="")
+    with pytest.raises(ValueError, match="non-empty column names"):
+        source(InMemorySource([data(word=["a"]), EOS_FRAME])).count_by("  ")
+
+
 def test_dsl_apply_keys_by_the_operators_own_declaration() -> None:
     # .apply with a keyed operator picks up its key_columns() so the edge is a keyed shuffle.
     src = InMemorySource([data(word=["a", "a", "b"]), EOS_FRAME])

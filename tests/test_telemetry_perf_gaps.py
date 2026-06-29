@@ -6,7 +6,7 @@ step_micros), state growth is visible (state.entries/keys), and keyed-shuffle co
 from nautilus.core.records import EOS_FRAME
 from nautilus.core.time import TestClock
 from nautilus.driver.local import run_local_chain
-from nautilus.driver.parallel import graph_from_pipeline
+from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.run import run_plan
 from nautilus.operators import InMemorySource, KeyedTumblingSum
 from nautilus.state import InMemoryStateBackend, StateScope
