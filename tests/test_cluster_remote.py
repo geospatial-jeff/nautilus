@@ -26,7 +26,7 @@ import cloudpickle
 import pyarrow as pa
 import pytest
 
-from nautilus.cluster import WorkerError, deploy
+from nautilus.cluster import WorkerCrashed, WorkerError, deploy
 from nautilus.cluster.daemon import healthcheck
 from nautilus.core.operator import Collector, OneInputOperator
 from nautilus.core.records import EOS_FRAME
@@ -114,6 +114,21 @@ def _serial() -> RunResult:
     return asyncio.run(run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")]))
 
 
+def _deploy(graph: object, roster: list[tuple[str, int]]) -> RunResult:
+    """``deploy`` against daemons that may still be tearing down a previous job. A daemon serves one job
+    at a time and refuses a connection arriving mid-teardown by closing it, which the coordinator reads as
+    ``WorkerCrashed``; a real client retries until the daemon is idle again. Bounded, so a genuinely dead
+    daemon still fails the test."""
+    deadline = time.monotonic() + 30.0
+    while True:
+        try:
+            return deploy(graph, daemons=roster)
+        except WorkerCrashed:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.25)
+
+
 @pytest.fixture(scope="module")
 def roster() -> Iterator[list[tuple[str, int]]]:
     with _daemons(2) as addresses:
@@ -121,7 +136,7 @@ def roster() -> Iterator[list[tuple[str, int]]]:
 
 
 def test_remote_deploy_matches_serial(roster: list[tuple[str, int]]) -> None:
-    result = deploy(_wordcount_graph(), daemons=roster)
+    result = _deploy(_wordcount_graph(), roster)
     assert _wc(result) == _wc(_serial())
     # The keyed operator genuinely ran on both daemons — proof the shuffle crossed a real socket. The node
     # label carries the daemon's advertised host (worker-<id>@<host>), so the report shows which container.
@@ -132,9 +147,9 @@ def test_remote_deploy_matches_serial(roster: list[tuple[str, int]]) -> None:
 def test_daemon_serves_a_second_job(roster: list[tuple[str, int]]) -> None:
     # The same daemons run another job after the first — they stay up (the run completing doesn't stop
     # them), and the result matches the single-process run again.
-    result = deploy(_wordcount_graph(), daemons=roster)
+    result = _deploy(_wordcount_graph(), roster)
     assert _wc(result) == _wc(_serial())
-    digest_again = deploy(_wordcount_graph(), daemons=roster).telemetry.structural_digest()
+    digest_again = _deploy(_wordcount_graph(), roster).telemetry.structural_digest()
     assert digest_again == result.telemetry.structural_digest()
 
 
@@ -160,7 +175,7 @@ def test_daemons_recover_after_a_failed_job() -> None:
     with _daemons(2) as roster:
         with pytest.raises(WorkerError):
             deploy(failing, daemons=roster)
-        result = deploy(_wordcount_graph(), daemons=roster)
+        result = _deploy(_wordcount_graph(), roster)  # retries while the daemons finish tearing down
         assert _wc(result) == _wc(_serial())
         nodes = {o.node for o in result.telemetry.operators if o.operator_id == "op1"}
         assert nodes == {"worker-0@127.0.0.1", "worker-1@127.0.0.1"}
@@ -170,7 +185,7 @@ def test_roster_longer_than_parallelism_leaves_surplus_idle() -> None:
     # The plan's max parallelism is 2, so a 3-daemon roster dials only the first two; the surplus daemon
     # is never dialed (no Launch, not awaited, not treated as crashed) and stays healthy.
     with _daemons(3) as addresses:
-        result = deploy(_wordcount_graph(), daemons=addresses)
+        result = _deploy(_wordcount_graph(), addresses)
         assert _wc(result) == _wc(_serial())
         surplus_host, surplus_port = addresses[2]
         assert healthcheck(surplus_host, surplus_port)  # untouched, still accepting
