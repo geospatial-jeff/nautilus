@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/nautilus-lockup.svg" alt="Nautilus" width="340">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/nautilus-lockup-dark.svg">
+    <img src="docs/nautilus-lockup.svg" alt="Nautilus" width="460">
+  </picture>
 </p>
 
 <p align="center">
