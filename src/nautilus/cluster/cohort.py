@@ -145,8 +145,14 @@ class _DaemonConn:
         self._sock.sendall(encode(message))
 
     def read_available(self) -> bool:
-        """Read whatever is ready into the buffer; return True at EOF (the daemon closed)."""
-        chunk = self._sock.recv(65536)
+        """Read whatever is ready into the buffer; return True if the connection dropped. A clean close
+        gives an empty read (EOF); a daemon that refuses by closing with unread bytes (a busy daemon
+        rejecting a new job) sends a reset, so ``recv`` raises ``ConnectionResetError`` — both mean the
+        same thing here, the worker is gone."""
+        try:
+            chunk = self._sock.recv(65536)
+        except OSError:
+            return True
         if not chunk:
             return True
         self._buffer += chunk
@@ -189,7 +195,13 @@ class RemoteCohort(WorkerCohort):
                 host, port = daemons[worker_id]
                 conns[worker_id] = _DaemonConn(_dial_control(host, port, connect_timeout))
             for worker_id, conn in conns.items():
-                conn.send(Launch(worker_id, plan_bytes, placement, capacity, config))
+                try:
+                    conn.send(Launch(worker_id, plan_bytes, placement, capacity, config))
+                except OSError as exc:
+                    # A daemon already serving a job refuses by closing, so the launch send hits a reset.
+                    raise WorkerCrashed(
+                        f"worker {worker_id} closed before accepting Launch"
+                    ) from exc
         except BaseException:
             for conn in conns.values():
                 conn.close()
@@ -197,7 +209,12 @@ class RemoteCohort(WorkerCohort):
         return cls(conns)
 
     def send(self, worker_id: int, message: Any) -> None:
-        self._conns[worker_id].send(message)
+        try:
+            self._conns[worker_id].send(message)
+        except OSError as exc:
+            raise WorkerCrashed(
+                f"worker {worker_id} control connection closed before it could be sent to"
+            ) from exc
 
     def next_event(self, timeout: float | None, watch: set[int] | None = None) -> Any:
         watched = set(self._conns) if watch is None else set(watch)

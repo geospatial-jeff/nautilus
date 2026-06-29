@@ -112,3 +112,15 @@ def test_remote_next_event_ignores_eof_outside_the_watch_set() -> None:
     finally:
         for s in (o0, t0, o1):
             s.close()
+
+
+def test_remote_read_available_treats_a_reset_as_a_drop() -> None:
+    # A busy daemon refusing a job closes with the coordinator's bytes unread, which arrives as a reset:
+    # recv raises rather than returning EOF. read_available must report a drop (so next_event surfaces a
+    # clean WorkerCrashed), not leak the raw OSError. (A reset is awkward to force on a socketpair, so the
+    # recv error is injected directly.)
+    class _ResetSock:
+        def recv(self, _n: int) -> bytes:
+            raise ConnectionResetError(104, "connection reset by peer")
+
+    assert _DaemonConn(_ResetSock()).read_available() is True  # type: ignore[arg-type]
