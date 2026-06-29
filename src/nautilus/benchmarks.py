@@ -221,3 +221,41 @@ class SyntheticTextSource(SourceOperator):
                 lines.append(" ".join(words))
             yield Batch(pa.record_batch({"line": pa.array(lines, pa.string())}))
         yield EOS_FRAME
+
+
+class SyntheticJoinStreamSource(SourceOperator):
+    """The large *probe* side of the join benchmark: a ``key`` that recurs over ``[0, key_cardinality)``
+    across every batch — the way a real streaming join re-touches each key many times, not once — plus a
+    constant ``lval`` payload. ``num_batches`` × ``batch_rows`` rows, no watermarks (the join is not
+    windowed), then EOS. Deterministic and unpaced."""
+
+    def __init__(self, *, num_batches: int, batch_rows: int, key_cardinality: int) -> None:
+        self._num_batches = num_batches
+        self._batch_rows = batch_rows
+        self._key_cardinality = key_cardinality
+
+    async def frames(self) -> AsyncIterator[Frame]:
+        n = self._batch_rows
+        lval = pa.array(np.ones(n, dtype=np.int64))
+        idx = 0
+        for _ in range(self._num_batches):
+            keys = pa.array(np.arange(idx, idx + n) % self._key_cardinality)
+            yield Batch(pa.record_batch({"key": keys, "lval": lval}))
+            idx += n
+        yield EOS_FRAME
+
+
+class SyntheticJoinTableSource(SourceOperator):
+    """The small bounded *build* side of the join benchmark: each key ``0..key_cardinality-1`` exactly
+    once with an ``rval`` payload, in one batch, then EOS — the dimension table a stream-table join
+    enriches against. Every probe row matches exactly one table row, so it is a 1:1 join whose output row
+    count equals the stream's: the cost measured is the join's internals, not a cross-product blow-up.
+    """
+
+    def __init__(self, *, key_cardinality: int) -> None:
+        self._key_cardinality = key_cardinality
+
+    async def frames(self) -> AsyncIterator[Frame]:
+        keys = pa.array(np.arange(self._key_cardinality))
+        yield Batch(pa.record_batch({"key": keys, "rval": keys}))
+        yield EOS_FRAME

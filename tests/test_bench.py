@@ -89,6 +89,45 @@ def test_measure_requires_telemetry_for_the_digest_anchor():
         bench.measure("wordcount", trials=2, tier=Tier.OFF)
 
 
+def test_bench_join_is_a_graph_pipeline_run_through_the_harness(monkeypatch):
+    # bench-join has two sources, so the harness must run it via run_plan (the graph path), not the linear
+    # (source, transforms) one — and still produce the 1:1 stream-table result. At parallelism 2 the keyed
+    # shuffle co-partitions both sides, so the output row count is identical to the serial run.
+    from nautilus.pipelines import is_graph_pipeline
+
+    assert is_graph_pipeline("bench-join")
+    for k, v in {
+        "NAUTILUS_BENCH_ROWS": "8192",
+        "NAUTILUS_BENCH_BATCH": "4096",
+        "NAUTILUS_BENCH_KEYS": "100",
+    }.items():
+        monkeypatch.setenv(k, v)
+    serial = bench.run_once("bench-join", parallelism=1, workers=1, capacity=16, tier=Tier.COUNTERS)
+    parallel = bench.run_once(
+        "bench-join", parallelism=2, workers=1, capacity=16, tier=Tier.COUNTERS
+    )
+    serial_rows = sum(b.num_rows for b in serial)
+    assert serial_rows > 0
+    assert sum(b.num_rows for b in parallel) == serial_rows
+
+
+def test_measure_handles_a_graph_pipeline():
+    # the full median-of-trials path (measure -> run_once -> run_plan) works on a graph pipeline and the
+    # join's result is deterministic across trials.
+    env = Environment("0.0.1", "3.12", "test", "cpu", None)
+    r = bench.measure(
+        "bench-join",
+        rows=8192,
+        batch=4096,
+        keys=100,
+        trials=2,
+        warmup=0,
+        tier=Tier.COUNTERS,
+        environment=env,
+    )
+    assert r.deterministic and r.throughput_rows_per_sec.median > 0
+
+
 def test_baseline_round_trips_through_json(tmp_path):
     path = tmp_path / "baseline.json"
     original = {"p": _result(12345.0, digest="deadbeef")}

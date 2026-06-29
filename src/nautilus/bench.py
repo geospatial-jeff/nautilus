@@ -34,7 +34,8 @@ from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
-from nautilus.pipelines import load_pipeline
+from nautilus.driver.run import run_plan
+from nautilus.pipelines import is_graph_pipeline, load_graph_pipeline, load_pipeline
 from nautilus.telemetry.catalog import Tier
 from nautilus.telemetry.recorder import TelemetryConfig
 
@@ -213,10 +214,30 @@ def run_pipeline(
     return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
 
 
+def run_graph_pipeline(graph: object, *, workers: int, capacity: int, tier: Tier) -> RunResult:
+    """Run a multi-source graph pipeline (e.g. a join) at the given topology. The graph already carries
+    its operator parallelism (baked in by the builder); ``workers`` selects single-process vs deployed.
+    """
+    from nautilus.api import LogicalGraph
+
+    assert isinstance(graph, LogicalGraph)
+    config = TelemetryConfig(tier=tier)
+    if workers == 1:
+        return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
+    from nautilus.cluster import deploy
+
+    return deploy(graph, num_workers=workers, capacity=capacity, telemetry=config)
+
+
 def run_once(
     pipeline: str, *, parallelism: int, workers: int, capacity: int, tier: Tier
 ) -> RunResult:
-    """Build the named pipeline and run it once at the given topology (a fresh source per call)."""
+    """Build the named pipeline and run it once at the given topology (a fresh source per call). A graph
+    pipeline (more than one source — a join) is built at ``parallelism`` and run via run_plan/deploy; a
+    linear ``(source, transforms)`` pipeline goes through ``run_pipeline``."""
+    if is_graph_pipeline(pipeline):
+        graph = load_graph_pipeline(pipeline, parallelism)
+        return run_graph_pipeline(graph, workers=workers, capacity=capacity, tier=tier)
     source, transforms = load_pipeline(pipeline)
     return run_pipeline(
         source, transforms, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier

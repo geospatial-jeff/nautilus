@@ -14,8 +14,11 @@ from collections.abc import Callable
 import numpy as np
 import pyarrow as pa
 
+from nautilus.api import LogicalGraph
 from nautilus.benchmarks import (
     SlowMap,
+    SyntheticJoinStreamSource,
+    SyntheticJoinTableSource,
     SyntheticKeyedSource,
     SyntheticTextSource,
     bench_params,
@@ -23,6 +26,7 @@ from nautilus.benchmarks import (
 )
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.demos import DemoStreamSource
+from nautilus.dsl import source as dsl_source
 from nautilus.operators import (
     KeyedCount,
     KeyedTumblingSum,
@@ -183,6 +187,23 @@ def bench_backpressure() -> Pipeline:
     return source, [SlowMap(delay)]
 
 
+def bench_join(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: a stream-table inner equi-join — a large ``key``-recurring stream joined on ``key`` to a
+    small bounded table (1:1 match, so output rows = stream rows). Stresses HashJoin's per-batch probe;
+    at parallelism > 1 the keyed shuffle co-partitions both sides onto the same instance. Scale via
+    NAUTILUS_BENCH_* (the stream is ``rows`` rows; the table is ``keys`` rows). A *graph* pipeline (two
+    sources), so it is run via ``run_plan`` / ``deploy``, not the linear ``(source, transforms)`` path.
+    """
+    p = bench_params()
+    stream = SyntheticJoinStreamSource(
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+    )
+    table = SyntheticJoinTableSource(key_cardinality=p["key_cardinality"])
+    return dsl_source(stream).join(dsl_source(table), on="key").to_graph(parallelism=parallelism)
+
+
 EXAMPLES: dict[str, Builder] = {
     "wordcount": wordcount,
     "windowed-sum": windowed_sum,
@@ -195,6 +216,23 @@ EXAMPLES: dict[str, Builder] = {
     "bench-late": bench_late,
     "bench-backpressure": bench_backpressure,
 }
+
+#: Graph pipelines have more than one source (e.g. a join), so they are a LogicalGraph the harness runs
+#: with run_plan/deploy — they can't be expressed as the linear (source, transforms) an EXAMPLES entry is.
+GraphBuilder = Callable[[int], LogicalGraph]
+GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
+    "bench-join": bench_join,
+}
+
+
+def is_graph_pipeline(spec: str) -> bool:
+    """Whether ``spec`` names a multi-source graph benchmark (run via run_plan/deploy)."""
+    return spec in GRAPH_EXAMPLES
+
+
+def load_graph_pipeline(spec: str, parallelism: int) -> LogicalGraph:
+    """Build a graph pipeline's :class:`LogicalGraph` at the given operator parallelism."""
+    return GRAPH_EXAMPLES[spec](parallelism)
 
 
 def load_pipeline(spec: str) -> Pipeline:

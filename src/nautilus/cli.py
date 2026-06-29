@@ -31,13 +31,13 @@ from nautilus.bench import (
     load_baseline,
     measure,
     measure_like,
-    run_pipeline,
+    run_once,
     save_baseline,
 )
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
 from nautilus.core.time import SystemClock
 from nautilus.driver.result import RunResult
-from nautilus.pipelines import EXAMPLES, load_pipeline
+from nautilus.pipelines import EXAMPLES, GRAPH_EXAMPLES, load_pipeline
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport
@@ -68,16 +68,15 @@ def _tier(name: str) -> Tier:
 def _run(
     pipeline: str, tier: Tier, capacity: int, workers: int = 1, parallelism: int = 1
 ) -> RunResult:
+    # run_once is the bench harness's builder+runner — shared so the CLI and bench can't drift on how a
+    # pipeline is built or a topology selected, and so both run linear and graph (join) pipelines alike.
     try:
-        source, transforms = load_pipeline(pipeline)
+        return run_once(
+            pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
+        )
     except (KeyError, ImportError, AttributeError) as e:
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
-    # The single-process / in-process-parallel / multi-worker dispatch is shared with the bench harness
-    # (run_pipeline), so the CLI and bench can't drift on how a topology is selected.
-    return run_pipeline(
-        source, transforms, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
-    )
 
 
 def _summary_table(report: RunReport) -> Table:
@@ -206,7 +205,7 @@ def examples() -> None:
     table = Table(title="built-in pipelines", header_style="bold")
     table.add_column("name")
     table.add_column("description")
-    for name, builder in EXAMPLES.items():
+    for name, builder in {**EXAMPLES, **GRAPH_EXAMPLES}.items():
         # Fall back to the registered name if a builder has no/blank docstring (don't IndexError).
         table.add_row(name, next(iter((builder.__doc__ or "").strip().splitlines()), name))
     console.print(table)
@@ -313,7 +312,16 @@ _STATUS_STYLE = {
     "OUTPUT-CHANGED": "red bold",
     "unchanged": "dim",
     "machine-differs": "yellow",
+    "nondeterministic": "yellow",
 }
+
+
+def _status_cell(status: str) -> str:
+    """A status styled for a table cell. Guards the empty-style case: an unmapped status would otherwise
+    render ``[]status[/]``, whose stray closing tag makes rich raise and take the whole report down.
+    """
+    style = _STATUS_STYLE.get(status, "")
+    return f"[{style}]{status}[/{style}]" if style else status
 
 
 def _fmt(n: float) -> str:
@@ -337,9 +345,8 @@ def _bench_panel(r: BenchResult) -> Panel:
 
 
 def _comparison_line(c: Comparison) -> str:
-    style = _STATUS_STYLE.get(c.status, "")
     return (
-        f"vs baseline: [{style}]{c.status}[/{style}] {c.delta:+.1%} "
+        f"vs baseline: {_status_cell(c.status)} {c.delta:+.1%} "
         f"(median {_fmt(c.base_median)} → {_fmt(c.new_median)} rows/s; needs ±{c.threshold:.1%} to count)"
     )
 
@@ -462,14 +469,13 @@ def bench_check(
             cur = measure_like(b, recorded_at=now)
         cmp = compare(b, cur, min_threshold=threshold)
         updated[name] = cur
-        style = _STATUS_STYLE.get(cmp.status, "")
         table.add_row(
             name,
             _fmt(cmp.base_median),
             _fmt(cmp.new_median),
             f"{cmp.delta:+.1%}",
             f"{cur.throughput_rows_per_sec.rel_spread:.1%}",
-            f"[{style}]{cmp.status}[/{style}]",
+            _status_cell(cmp.status),
         )
         if is_failure(cmp.status):
             failures.append(name)
