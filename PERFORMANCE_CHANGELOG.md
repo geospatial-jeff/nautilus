@@ -22,6 +22,28 @@ Measured on **macOS-12.3-arm64-arm-64bit · Python 3.12.11 · nautilus 0.0.1**, 
 
 ---
 
+## 2026-06-29 — Vectorized HashJoin single-column key encoding
+
+- **Commit:** `9f2dcb3`
+- **Change:** After the probe was vectorized (below), `HashJoin._encode` (`src/nautilus/operators.py`)
+  became ~92% of the join's time (cProfile): it built a `(type, value)` tuple and did a dict lookup *per
+  row* — O(rows) Python. The single-column case (the common one) now mirrors the keyed shuffle:
+  `dictionary_encode` finds the distinct values and a per-row index, the value→id intern runs once per
+  *distinct* key (factored into `_intern`), and the per-row ids are a single numpy take. The multi-column
+  case keeps the per-row fallback.
+- **Impact (`nautilus bench bench-join`, median of 5 trials; Linux x86_64 · Python 3.12.3):** at the
+  baseline scale (200k rows / batch 4096 / 500 keys, single process) **1,650,587 → 8,700,249 rows/s
+  (+423%)**; at 250k / 1000 keys **1.65M → 6.29M rows/s (3.8×)**. Combined with the probe vectorization,
+  **~90× over the original** per-key-loop join. The distributed variant (`bench-join-dist`, 4 instances /
+  2 workers) moves less — **593k → 681k rows/s** — because the cross-process shuffle, not the join's
+  Python, dominates there.
+- **Correctness:** structural digest **identical** (`020174c88ba4` at the bench-join baseline config) —
+  the key ids are computed differently but the matches, rows, and batching are unchanged, so unlike the
+  probe change this one is digest-preserving. Full join suite (`int`≠`bool`, `int32`==`int64`, null keys,
+  composite key, parallel co-partition, distributed) green; `bench-check` green.
+
+---
+
 ## 2026-06-29 — Vectorized HashJoin probe (drop the per-distinct-key loop)
 
 - **Commit:** `e8e6388`
@@ -42,9 +64,10 @@ Measured on **macOS-12.3-arm64-arm-64bit · Python 3.12.11 · nautilus 0.0.1**, 
   `operator.process_micros` was ~93 ms and scaled with **distinct keys per batch** (throughput ∝ 1/K:
   422k→110k→57k→15k rows/s at K = 100/500/1000/4000); the new path is flat at ~1.6M across all K, so the
   factor grows with key cardinality (~100× at K = 4000). Measured with a median-of-trials script (warmup
-  + 5 trials via the harness's `summarize()`), **not** `nautilus bench`: the harness's `(source,
-  transforms)` pipeline shape can't express a two-source join. A first-class `bench-join` harness pipeline
-  (+ a baseline entry, so `bench-check` guards join regressions) is the follow-up.
+  + 5 trials via the harness's `summarize()`) because at the time `nautilus bench`'s `(source,
+  transforms)` pipeline shape couldn't express a two-source join; a first-class `bench-join` /
+  `bench-join-dist` harness pipeline and baseline entry now exist (commits `51f709e` / `537256d`), so
+  `bench-check` guards the join — including the cross-process co-partitioned shuffle.
 - **Correctness:** the output **multiset** is identical, proven old-vs-new on the benchmark input (same
   `rows_out` = 53,248 and same order-independent multiset hash `83ba97cc…` at the 50k probe), and the full
   join suite — cross-product, order-independence, composite key, `int32`==`int64`, `int`≠`bool`, null
