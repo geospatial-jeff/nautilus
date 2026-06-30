@@ -136,23 +136,16 @@ not yet designed in depth:
 
 ### Stage 6 — Async I/O in operators and sinks · In progress
 
-Until now async/await — efficient I/O-bound code — could be written only in a source, so a pipeline that
-needs to write its results to an external store had to collect them and write afterward, outside the
-streaming model. Stage 6 opens the awaiting seam to terminals and (next) to intermediate operators, while
-keeping keyed state single-writer. The full design and the staged plan are in `ASYNC_IO_PLAN.md`.
+Opens the awaiting seam beyond the source — to write results to an external store, and (next) to
+intermediate operators — while keeping keyed state single-writer. Design and staged plan in
+`ASYNC_IO_PLAN.md`; the async-sink decision and invariants are `DESIGN.md` mechanism 9.
 
-- **6.0–6.2 — Async sink · Done.** `core.operator.AsyncSink` is an authored terminal whose `write` may
-  `await`; `runtime.actor.run_async_sink` drives it with bounded, overlapping in-flight writes, an EOS
-  drain, fail-fast (a failed write or per-request timeout cancels-and-awaits its siblings), and
-  at-least-once semantics. The compiler synthesizes its `CollectSink` only when the leaf is not an
-  `AsyncSink` (every existing graph is byte-for-byte unchanged — same plan, same structural digest); the
-  DSL gains `source(...).…​.sink(my_sink)` returning a `SinkHandle`, and the run path, telemetry
-  (`async.requests`/`request_micros`/`in_flight`/`capacity`/`timeouts`), and the cross-process executor
-  all carry it. `DESIGN.md` mechanism 9.
-- **6.3+ — Async transform + the example · Planned.** The fetch/integrate split for an awaiting
-  *intermediate* operator (`fetch` does the state-free I/O concurrently; `integrate` folds into keyed
-  state synchronously on the actor task), ordered/unordered emission, then reworking the Sentinel-2 NDVI
-  example so COG decode leaves the source for its own async stage. Detail in `ASYNC_IO_PLAN.md`.
+- **6.0–6.2 — Async sink · Done.** `AsyncSink` (an authored, awaiting terminal) and `run_async_sink`;
+  the conditional `CollectSink` synthesis that leaves every existing graph byte-for-byte unchanged; the
+  DSL `.sink()` → `SinkHandle`; the `async.*` telemetry; and the cross-process path.
+- **6.3+ — Async transform + the NDVI example rework · Planned.** The fetch/integrate split for an
+  awaiting *intermediate* operator, ordered/unordered emission, and moving COG decode out of the
+  Sentinel-2 source into its own async stage. Detail in `ASYNC_IO_PLAN.md`.
 
 ## Telemetry · **Done**
 

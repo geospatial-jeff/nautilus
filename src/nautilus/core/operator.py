@@ -180,21 +180,15 @@ class OneInputOperator(ABC):
 
 
 class AsyncSink(ABC):
-    """A terminal that writes each batch to an external store, and the one operator besides a source that
-    may ``await`` inside its own code. It has no output — it is the graph's leaf — so it emits nothing and
-    forwards nothing.
+    """A terminal that writes each batch to an external store — the one operator besides a source that may
+    ``await``. It is the graph's leaf: no output, so it emits and forwards nothing.
 
-    The engine drives it like a source in reverse: it reads batches from upstream and issues each one as
-    a :meth:`write` task, keeping up to :meth:`max_in_flight` of them in flight at once so their I/O
-    overlaps, and the bound is the backpressure to upstream. At end of stream it awaits every outstanding
-    write, then :meth:`close`. The actor — not a write task — owns all of that bookkeeping, so the
-    concurrency is confined to the awaiting :meth:`write` itself.
-
-    :meth:`write` is handed only the batch: it must not touch nautilus keyed state (a sink keeps its state
-    in the external store it writes to, reached by the ``await``) and emits nothing. Writes are
-    **at-least-once** — a failed run re-runs the whole job (``DESIGN.md`` robustness), so a write must be
-    idempotent under replay (deterministic keys / upsert), and a sink keyed on ``key_columns`` co-partitions
-    so a parallel run's instances own disjoint keys.
+    Implement :meth:`write` (the awaited write); override :meth:`open`/:meth:`close` to acquire and
+    release the client and :meth:`max_in_flight`/:meth:`timeout_micros`/:meth:`key_columns` to tune
+    concurrency, deadline, and partitioning. Writes are **at-least-once** — a failed run re-runs the whole
+    job — so a write must be idempotent under replay (deterministic keys / upsert). Why a sink may
+    ``await`` where a transform may not, and how it replaces the synthesized collecting sink, is
+    ``DESIGN.md`` mechanism 9; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
     """
 
     def open(self, ctx: OperatorContext) -> None:
