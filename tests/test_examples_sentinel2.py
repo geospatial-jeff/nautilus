@@ -8,6 +8,7 @@ The example module is loaded by file path (examples/ is not an installed package
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 
 from nautilus.driver.local import run
 from nautilus.operators import from_batches
+from nautilus.telemetry import TelemetryConfig, Tier
 
 _PATH = Path(__file__).resolve().parent.parent / "examples" / "sentinel2_ndvi.py"
 _spec = importlib.util.spec_from_file_location("sentinel2_example", _PATH)
@@ -128,6 +130,27 @@ async def test_source_emits_one_batch_per_tile_row() -> None:
     batches = [f.data async for f in source.frames() if isinstance(f, Batch)]
     assert len(batches) == 2  # two rows
     assert all(b.num_rows == 2 for b in batches)  # two tiles per row
+
+
+def test_source_io_wait_is_recorded_separately_from_compute() -> None:
+    # ctx.io_wait() must capture the source's awaited I/O as io.wait_micros — the metric that tells an
+    # I/O-bound source from a compute-bound one (its runtime.step_micros counts both).
+    class SlowReader(FakeReader):
+        async def fetch_tile(self, cog: Any, x: int, y: int) -> np.ndarray:
+            await asyncio.sleep(0.002)  # stands in for a range request
+            return await super().fetch_tile(cog, x, y)
+
+    source, transforms = s2.sentinel2_ndvi(
+        ["ITEM_A"],
+        reader=SlowReader({"ITEM_A": _uniform_scene(3000, 1000, grid=3)}),
+        resolver=_resolver,
+    )
+    report = run(source, transforms, telemetry=TelemetryConfig(tier=Tier.COUNTERS)).telemetry
+    counters = {
+        p.name: p.value for o in report.operators if o.operator_id == "source" for p in o.counters
+    }
+    assert counters.get("io.wait_micros", 0) > 0  # the awaited sleeps were captured
+    assert counters["io.wait_micros"] <= counters["runtime.step_micros"]  # part of step, not on top
 
 
 @pytest.mark.network

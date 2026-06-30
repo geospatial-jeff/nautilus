@@ -79,7 +79,9 @@ class Sentinel2NdviSource(SourceOperator):
     at a time: a row's tiles are range-read and decoded concurrently, then emitted as one batch of
     ``(row, H, W)`` tensor columns. The row is the fan-out unit, and batching a row into one tensor (rather
     than a batch per tile) amortizes the Arrow construction the downstream stages pay per batch. The two
-    10 m bands share a tile grid, so red and nir align by ``(x, y)``."""
+    10 m bands share a tile grid, so red and nir align by ``(x, y)``. It brackets its range requests in
+    ``ctx.io_wait()`` so the report separates time spent waiting on I/O from the CPU of building tensors.
+    """
 
     def __init__(
         self,
@@ -93,21 +95,29 @@ class Sentinel2NdviSource(SourceOperator):
         self.level = level
         self._reader = reader
         self._resolver = resolver
+        self._ctx = OperatorContext("source")  # replaced in open(); records io.wait_micros once on
+
+    def open(self, ctx: OperatorContext) -> None:
+        self._ctx = ctx
 
     async def frames(self) -> AsyncIterator[Frame]:
         reader = self._reader or AsyncGeotiffReader()
         resolve = self._resolver or resolve_sentinel2_assets
         for item_id in self.item_ids:
-            red_href, nir_href = await resolve(item_id)
-            red, nir = await asyncio.gather(
-                reader.open(red_href, self.level), reader.open(nir_href, self.level)
-            )
+            # per-item metadata I/O: the STAC item lookup + opening the two COG headers
+            async with self._ctx.io_wait():
+                red_href, nir_href = await resolve(item_id)
+                red, nir = await asyncio.gather(
+                    reader.open(red_href, self.level), reader.open(nir_href, self.level)
+                )
             nx, ny = red.tile_count
             for y in range(ny):
-                tiles = await asyncio.gather(
-                    *(reader.fetch_tile(red, x, y) for x in range(nx)),
-                    *(reader.fetch_tile(nir, x, y) for x in range(nx)),
-                )
+                # range-read + decode a row of tiles for both bands
+                async with self._ctx.io_wait():
+                    tiles = await asyncio.gather(
+                        *(reader.fetch_tile(red, x, y) for x in range(nx)),
+                        *(reader.fetch_tile(nir, x, y) for x in range(nx)),
+                    )
                 yield Batch(_row_batch(item_id, tiles[:nx], tiles[nx:]))
         yield EOS_FRAME
 

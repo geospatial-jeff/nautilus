@@ -216,10 +216,11 @@ async def execute(
                     continue  # the sink has no outbound edge; its mailbox is wired in phase B
                 instances[key] = _instantiate(op)
                 outputs[key] = await build_outputs(op.operator_id, subtask, op_recorders[key])
-                if op.kind in ("one_input", "two_input"):
-                    # A SEPARATE recorder for operator-author custom metrics (ctx.metrics), preserving
-                    # the single-writer invariant; both carry the same (operator_id, subtask) and merge
-                    # at build. owner=AUTHOR so it can only write author-owned metrics, never engine keys.
+                if op.kind in ("source", "one_input", "two_input"):
+                    # A SEPARATE recorder for author custom metrics (ctx.metrics) — e.g. a source's
+                    # ctx.io_wait() — preserving the single-writer invariant; both carry the same
+                    # (operator_id, subtask) and merge at build. owner=AUTHOR so it can only write
+                    # author-owned metrics, never engine keys.
                     metrics_recorders[key] = rec(
                         op.operator_id, op.op_class, op.kind, subtask, owner=Owner.AUTHOR
                     )
@@ -233,7 +234,11 @@ async def execute(
             key = (op.operator_id, subtask)
             if op.kind == "source":
                 ctx = OperatorContext(
-                    op.operator_id, subtask_index=subtask, num_subtasks=op.parallelism, clock=clk
+                    op.operator_id,
+                    subtask_index=subtask,
+                    num_subtasks=op.parallelism,
+                    clock=clk,
+                    metrics=metrics_recorders[key],
                 )
                 coros.append(
                     run_source(

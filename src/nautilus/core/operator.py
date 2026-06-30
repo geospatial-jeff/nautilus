@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from time import perf_counter_ns
 from typing import Any
 
 import pyarrow as pa
@@ -94,6 +96,23 @@ class OperatorContext:
         """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key/window
         enumerated via :meth:`entries`)."""
         self.state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
+
+    @asynccontextmanager
+    async def io_wait(self) -> AsyncIterator[None]:
+        """Record the wall time of an awaited I/O region as ``io.wait_micros`` (an author metric).
+
+        A :class:`SourceOperator` is the one operator that may ``await`` inside its own code, so its
+        ``runtime.step_micros`` counts the I/O it waits on together with the CPU it spends building frames.
+        Wrapping the network awaits — ``async with ctx.io_wait(): batch = await fetch()`` — records that
+        wait on its own, so the report can tell an I/O-bound source from a compute-bound one. A no-op when
+        telemetry is off (``metrics`` is then the null recorder)."""
+        start = perf_counter_ns()
+        try:
+            yield
+        finally:
+            self.metrics.incr(
+                "io.wait_micros", (perf_counter_ns() - start) // 1000, operator_id=self.operator_id
+            )
 
 
 class SourceOperator(ABC):
