@@ -211,10 +211,11 @@ def test_write_timeout_fails_the_job() -> None:
         asyncio.run(asyncio.wait_for(handle.run_async(), timeout=10))
 
 
-async def test_every_failure_in_one_reap_turn_is_counted() -> None:
-    # Two writes are released together (by an external controller, so both resume in the same event-loop
-    # pass) and both fail. Fail-fast still raises the first, but BOTH must be recorded — the teardown
-    # gather must not swallow the second's telemetry. (Driven directly to control the timing.)
+async def test_concurrent_write_failures_are_all_counted() -> None:
+    # Two writes are released together (by an external controller arriving last on a 3-party barrier, so
+    # both resume in the same event-loop pass) and both fail. The TaskGroup raises only one, but each task
+    # records its own error first, so the count must be 2 — a failure must not lose its telemetry to the
+    # group's cancellation. Driven directly to control the timing.
     from nautilus.core.operator import OperatorContext
     from nautilus.core.records import EOS_FRAME, Batch
     from nautilus.runtime.actor import run_async_sink
@@ -222,8 +223,6 @@ async def test_every_failure_in_one_reap_turn_is_counted() -> None:
     from nautilus.runtime.mailbox import Mailbox
     from nautilus.telemetry import Owner, RecorderRegistry, TelemetryConfig, make_recorder
 
-    # A 3-party barrier: both writes and the controller meet on it. The controller arrives last, so the
-    # two parked writes are released in the same event-loop pass and both finish before the next reap.
     barrier = asyncio.Barrier(3)
 
     class GatedSink(AsyncSink):
@@ -257,7 +256,7 @@ async def test_every_failure_in_one_reap_turn_is_counted() -> None:
     await ch.send(Batch(pa.record_batch({"v": [2]})))
     await ch.send(EOS_FRAME)
     ctrl = asyncio.create_task(controller())
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(ExceptionGroup):  # the TaskGroup wraps the write failures
         await run_async_sink(GatedSink(), OperatorContext("op0"), Mailbox([ch]), recorder=rec)
     await ctrl
     assert rec.counter("operator.errors", operator_id="op0", exc_type="RuntimeError").value == 2

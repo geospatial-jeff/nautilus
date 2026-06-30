@@ -8,11 +8,10 @@ There are four actor-loop entry points. ``run_source`` drives a source; ``run_tr
 differing only in how each data batch is dispatched to the operator (``process`` vs
 ``process_left``/``process_right`` by the input's side). ``run_async_sink`` is the one loop that lets an
 operator ``await``: it drives an :class:`~nautilus.core.operator.AsyncSink`, issuing each batch as one of
-several in-flight ``write`` tasks so their I/O overlaps, while the actor stays the sole reader and
-bookkeeper — so the concurrency is confined to the awaiting ``write`` and never to nautilus state or a
-send. It is a separate loop (not a branch in ``_run_operator_loop``) because its in-flight/drain logic
-differs enough that folding it in would muddy the proven synchronous path. ``_run_operator_loop`` encodes
-the core streaming semantics:
+several in-flight ``write`` tasks (a :class:`~asyncio.Semaphore` bounds them, an
+:class:`~asyncio.TaskGroup` owns them) so their I/O overlaps while the actor goes on reading. It is a
+separate loop, not a branch in ``_run_operator_loop``, because that structured-concurrency shape shares
+nothing with the proven synchronous one. ``_run_operator_loop`` encodes the core streaming semantics:
 
 * per-input watermark combination (min over non-idle inputs — a join's is therefore ``min(left, right)``),
 * fire windows/timers when the combined watermark advances, *then* forward the watermark,
@@ -29,12 +28,10 @@ entirely.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import traceback
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
-from typing import Any
 
 import pyarrow as pa
 
@@ -588,17 +585,19 @@ async def run_async_sink(
     *,
     recorder: Recorder = NULL_RECORDER,
 ) -> None:
-    """Drive an async sink to completion: write each inbound batch to its external store with bounded
-    concurrency, drain every in-flight write at end of stream, then close. The sink is the graph's
-    terminal — it has no outputs, so it emits and forwards nothing.
+    """Drive an async sink to completion: write each inbound batch to its external store, then close. The
+    sink is the graph's terminal — no outputs, so it emits and forwards nothing.
 
-    The actor is the sole reader and the sole bookkeeper; only the ``write`` calls run concurrently, as
-    up to ``max_in_flight`` :class:`asyncio.Task`s. The in-flight bound is the backpressure: while it is
-    reached the actor does not arm a new ``mailbox.get()``, so the bounded upstream channel / credit
-    window fills and stalls the producer. Failure is fail-fast: every in-flight write is awaited each
-    turn, so a write (or a per-request timeout) that raises is observed promptly, and teardown cancels
-    *and awaits* the rest so each task's own cleanup runs — the same discipline ``run_source`` applies by
-    awaiting ``frames.aclose()`` before ``close()``."""
+    Two asyncio primitives carry the contract. A :class:`~asyncio.Semaphore` bounds the writes in flight;
+    the loop acquires a slot before reading the next batch, so at the bound it stops reading and the
+    upstream channel fills and stalls the producer (the backpressure). An :class:`~asyncio.TaskGroup` owns
+    the write tasks, which gives the rest for free: leaving the group awaits every outstanding write (the
+    end-of-stream drain), and the first write to raise — or to exceed ``timeout_micros`` — cancels and
+    awaits its siblings and propagates as an ``ExceptionGroup`` (fail-fast with prompt cleanup).
+
+    Each write task records its own ``async.*`` and error metrics. That is still single-writer in the
+    sense the recorder means: every task shares this actor's one event loop, and a counter add never
+    ``await``s, so two tasks' updates can never interleave."""
     op_id, opcls, loc = ctx.operator_id, type(sink).__name__, _source_location(sink)
     sub, n = ctx.subtask_index, mailbox.num_inputs
 
@@ -617,16 +616,28 @@ async def run_async_sink(
     recorder.set_gauge("async.capacity", cap, operator_id=op_id, subtask_index=sub)
     timeout_us = sink.timeout_micros()
     timeout_s = None if timeout_us is None else timeout_us / 1_000_000
+    sem = asyncio.Semaphore(cap)
+    in_flight = 0
     started = perf_counter_ns()
 
-    async def _write(batch: pa.RecordBatch) -> int:
-        """Time one write and return its microseconds; the actor records it on reap (single-writer)."""
-        t0 = perf_counter_ns()
-        if timeout_s is None:
-            await sink.write(batch)
-        else:
-            await asyncio.wait_for(sink.write(batch), timeout_s)
-        return (perf_counter_ns() - t0) // 1000
+    async def write_one(batch: pa.RecordBatch) -> None:
+        nonlocal in_flight
+        try:
+            t0 = perf_counter_ns()
+            with _capture(recorder, op_id, opcls, loc, "write"):
+                try:
+                    if timeout_s is None:
+                        await sink.write(batch)
+                    else:
+                        await asyncio.wait_for(sink.write(batch), timeout_s)
+                except TimeoutError:
+                    timeouts.add(1)
+                    raise
+            requests.add(1)
+            req_micros.add((perf_counter_ns() - t0) // 1000)
+        finally:
+            in_flight -= 1
+            sem.release()
 
     with _capture(recorder, op_id, opcls, loc, "open"):
         sink.open(ctx)
@@ -638,61 +649,21 @@ async def run_async_sink(
         num_inputs=n,
     )
 
-    in_flight: set[asyncio.Task[int]] = set()
-    get_task: asyncio.Task[tuple[int, Frame]] | None = None
-    armed_at = 0
     try:
-        while True:
-            # Arm one recv while an input is open and there is in-flight capacity. One outstanding get
-            # preserves the mailbox's one-recv-per-channel contract; the capacity gate is the backpressure.
-            if get_task is None and not mailbox.exhausted and len(in_flight) < cap:
-                get_task = asyncio.ensure_future(mailbox.get())
-                armed_at = perf_counter_ns()
-            # Terminal drain as a loop invariant: once every input has closed and every write has drained,
-            # there is nothing left to do. Checked here (not only on the EOS frame) because at EOS-read time
-            # writes are still in flight; the loop keeps draining them and breaks once they are all reaped.
-            if get_task is None and not in_flight and mailbox.exhausted:
-                break
-
-            # Wake on the armed recv AND every in-flight write, so a write that raises (or times out) is
-            # observed promptly (fail-fast), not deferred behind other writes.
-            wakes: list[asyncio.Future[Any]] = []
-            wakes.extend(in_flight)
-            if get_task is not None:
-                wakes.append(get_task)
-            await asyncio.wait(wakes, return_when=asyncio.FIRST_COMPLETED)
-
-            # Reap every write that finished this turn (checked on the typed in-flight set). Each is
-            # accounted before any failure is raised — several can complete in one turn, and the finally's
-            # gather would otherwise swallow the siblings' telemetry — so a failed/timed-out write is
-            # recorded here, the first one is re-raised after the loop (fail-fast), and the finally then
-            # cancels-and-awaits whatever is still running.
-            first_error: BaseException | None = None
-            for t in [w for w in in_flight if w.done()]:
-                in_flight.discard(t)
-                exc = t.exception()
-                if exc is None:
-                    requests.add(1)
-                    req_micros.add(t.result())
-                    continue
-                if isinstance(exc, TimeoutError):
-                    timeouts.add(1)
-                _record_operator_error(recorder, op_id, opcls, loc, "write", exc)
-                if first_error is None:
-                    first_error = exc
-            in_flight_gauge.set(len(in_flight))
-            if first_error is not None:
-                raise first_error
-
-            if get_task is not None and get_task.done():
-                input_wait.add((perf_counter_ns() - armed_at) // 1000)
-                i, frame = get_task.result()
-                get_task = None
+        async with asyncio.TaskGroup() as tg:
+            while not mailbox.exhausted:
+                t0 = perf_counter_ns()
+                i, frame = await mailbox.get()
+                input_wait.add((perf_counter_ns() - t0) // 1000)
                 if isinstance(frame, Batch):
                     batches_in.add(1)
                     rows_in.add(frame.num_rows)
-                    in_flight.add(asyncio.ensure_future(_write(frame.data)))
-                    in_flight_gauge.set(len(in_flight))
+                    await sem.acquire()  # backpressure: hold off reading until a write slot frees
+                    in_flight += 1
+                    in_flight_gauge.set(
+                        in_flight
+                    )  # gauge keeps the max, so this is the peak in flight
+                    tg.create_task(write_one(frame.data))
                 elif isinstance(frame, EOS):
                     recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
                     mailbox.close_input(i)
@@ -703,18 +674,8 @@ async def run_async_sink(
                         f"async sink {op_id!r} received an unhandled frame on input {i}: "
                         f"{type(frame).__name__}"
                     )
+            # leaving the group awaits every outstanding write — the end-of-stream drain
     finally:
-        # Fail-fast/cancellation: cancel and AWAIT the armed get and every in-flight write so each task's
-        # own try/finally (release a pooled connection, abort a request) runs promptly, then close.
-        if get_task is not None and not get_task.done():
-            get_task.cancel()
-        for t in in_flight:
-            t.cancel()
-        if in_flight:
-            await asyncio.gather(*in_flight, return_exceptions=True)
-        if get_task is not None:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await get_task
         mailbox.close()
         with _capture(recorder, op_id, opcls, loc, "close"):
             await sink.close()
