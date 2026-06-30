@@ -3,11 +3,15 @@
 An :class:`Output` routes one upstream instance's frames to a downstream operator's instances: data
 batches go through a partitioner, control frames are broadcast to *all* downstream instances.
 
-There are three actor-loop entry points: ``run_source`` drives a source, and ``run_transform`` (one
-input) and ``run_two_input`` (a join's two inputs) are thin wrappers over the shared ``_run_operator_loop``
-— differing only in how each data batch is dispatched to the operator (``process`` vs
-``process_left``/``process_right`` by the input's side). ``_run_operator_loop`` encodes the core streaming
-semantics:
+There are four actor-loop entry points. ``run_source`` drives a source; ``run_transform`` (one input) and
+``run_two_input`` (a join's two inputs) are thin wrappers over the shared ``_run_operator_loop`` —
+differing only in how each data batch is dispatched to the operator (``process`` vs
+``process_left``/``process_right`` by the input's side). ``run_async_sink`` is the one loop that lets an
+operator ``await``: it drives an :class:`~nautilus.core.operator.AsyncSink`, issuing each batch as one of
+several in-flight ``write`` tasks (a :class:`~asyncio.Semaphore` bounds them, an
+:class:`~asyncio.TaskGroup` owns them) so their I/O overlaps while the actor goes on reading. It is a
+separate loop, not a branch in ``_run_operator_loop``, because that structured-concurrency shape shares
+nothing with the proven synchronous one. ``_run_operator_loop`` encodes the core streaming semantics:
 
 * per-input watermark combination (min over non-idle inputs — a join's is therefore ``min(left, right)``),
 * fire windows/timers when the combined watermark advances, *then* forward the watermark,
@@ -23,6 +27,7 @@ entirely.
 
 from __future__ import annotations
 
+import asyncio
 import traceback
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
@@ -31,6 +36,7 @@ from time import perf_counter_ns
 import pyarrow as pa
 
 from nautilus.core.operator import (
+    AsyncSink,
     Collector,
     ListCollector,
     OneInputOperator,
@@ -61,6 +67,37 @@ def _source_location(op: object) -> str:
     return f"{t.__module__}:{t.__qualname__}"
 
 
+def _record_operator_error(
+    recorder: Recorder,
+    op_id: str,
+    op_class: str,
+    location: str,
+    phase: str,
+    exc: BaseException,
+    *,
+    frame_kind: str | None = None,
+    input_index: int | None = None,
+    batch_rows: int | None = None,
+) -> None:
+    """Record one operator-lifecycle exception (counter + rich event). Factored out of :func:`_capture`
+    so a caller that holds an exception value it did not catch in an ``except`` block — the async sink,
+    reaping a finished write task's ``.exception()`` — records it the same way."""
+    recorder.incr("operator.errors", 1, operator_id=op_id, exc_type=type(exc).__name__)
+    recorder.event(
+        "operator.error",
+        operator_id=op_id,
+        op_class=op_class,
+        phase=phase,
+        exc_type=type(exc).__name__,
+        message=str(exc),
+        traceback="".join(traceback.format_exception(exc)),
+        frame_kind=frame_kind,
+        input_index=input_index,
+        batch_rows=batch_rows,
+        source_location=location,
+    )
+
+
 @contextmanager
 def _capture(
     recorder: Recorder,
@@ -77,19 +114,16 @@ def _capture(
     try:
         yield
     except Exception as e:
-        recorder.incr("operator.errors", 1, operator_id=op_id, exc_type=type(e).__name__)
-        recorder.event(
-            "operator.error",
-            operator_id=op_id,
-            op_class=op_class,
-            phase=phase,
-            exc_type=type(e).__name__,
-            message=str(e),
-            traceback=traceback.format_exc(),
+        _record_operator_error(
+            recorder,
+            op_id,
+            op_class,
+            location,
+            phase,
+            e,
             frame_kind=frame_kind,
             input_index=input_index,
             batch_rows=batch_rows,
-            source_location=location,
         )
         raise
 
@@ -542,3 +576,118 @@ async def run_two_input(
             op.process_right(batch, out)
 
     await _run_operator_loop(op, ctx, mailbox, outputs, dispatch, recorder=recorder)
+
+
+async def run_async_sink(
+    sink: AsyncSink,
+    ctx: OperatorContext,
+    mailbox: Mailbox,
+    *,
+    recorder: Recorder = NULL_RECORDER,
+) -> None:
+    """Drive an async sink to completion: write each inbound batch to its external store, then close. The
+    sink is the graph's terminal — no outputs, so it emits and forwards nothing.
+
+    Two asyncio primitives carry the contract. A :class:`~asyncio.Semaphore` bounds the writes in flight;
+    at the bound the loop stops reading, so the upstream channel fills and stalls the producer (the
+    backpressure). An :class:`~asyncio.TaskGroup` owns the write tasks, which gives the rest for free:
+    leaving the group awaits every outstanding write (the end-of-stream drain), and the first write to
+    raise — or to exceed ``timeout_micros`` — cancels and awaits its siblings and propagates as an
+    ``ExceptionGroup`` (fail-fast with prompt cleanup).
+
+    Each write task records its own ``async.*`` and error metrics. That is still single-writer in the
+    sense the recorder means: every task shares this actor's one event loop, and a counter add never
+    ``await``s, so two tasks' updates can never interleave."""
+    op_id, opcls, loc = ctx.operator_id, type(sink).__name__, _source_location(sink)
+    sub, n = ctx.subtask_index, mailbox.num_inputs
+
+    rows_in = recorder.counter("operator.rows_in", operator_id=op_id, subtask_index=sub)
+    batches_in = recorder.counter("operator.batches_in", operator_id=op_id, subtask_index=sub)
+    input_wait = recorder.counter("edge.input_wait_micros", operator_id=op_id)
+    requests = recorder.counter("async.requests", operator_id=op_id, subtask_index=sub)
+    req_micros = recorder.counter("async.request_micros", operator_id=op_id, subtask_index=sub)
+    timeouts = recorder.counter("async.timeouts", operator_id=op_id, subtask_index=sub)
+    in_flight_gauge = recorder.gauge("async.in_flight", operator_id=op_id, subtask_index=sub)
+    recorder.set_gauge("eos.expected", n, operator_id=op_id)
+
+    cap = sink.max_in_flight()
+    if cap < 1:
+        raise ValueError(f"async sink {op_id!r} max_in_flight() returned {cap}; it must be >= 1")
+    recorder.set_gauge("async.capacity", cap, operator_id=op_id, subtask_index=sub)
+    timeout_us = sink.timeout_micros()
+    timeout_s = None if timeout_us is None else timeout_us / 1_000_000
+    sem = asyncio.Semaphore(cap)
+    in_flight = 0
+    started = perf_counter_ns()
+
+    async def write_one(batch: pa.RecordBatch) -> None:
+        nonlocal in_flight
+        try:
+            t0 = perf_counter_ns()
+            with _capture(recorder, op_id, opcls, loc, "write"):
+                try:
+                    if timeout_s is None:
+                        await sink.write(batch)
+                    else:
+                        await asyncio.wait_for(sink.write(batch), timeout_s)
+                except TimeoutError:
+                    timeouts.add(1)
+                    raise
+            requests.add(1)
+            req_micros.add((perf_counter_ns() - t0) // 1000)
+        finally:
+            in_flight -= 1
+            sem.release()
+
+    with _capture(recorder, op_id, opcls, loc, "open"):
+        sink.open(ctx)
+    recorder.event(
+        "operator.lifecycle.open",
+        operator_id=op_id,
+        op_class=opcls,
+        source_location=loc,
+        num_inputs=n,
+    )
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            while not mailbox.exhausted:
+                t0 = perf_counter_ns()
+                i, frame = await mailbox.get()
+                input_wait.add((perf_counter_ns() - t0) // 1000)
+                if isinstance(frame, Batch):
+                    batches_in.add(1)
+                    rows_in.add(frame.num_rows)
+                    # acquire after the read, not before: a pre-read acquire would idle a write slot
+                    # whenever the loop is blocked waiting for input.
+                    await sem.acquire()
+                    in_flight += 1
+                    in_flight_gauge.set(
+                        in_flight
+                    )  # gauge keeps the max — this is the peak in flight
+                    tg.create_task(write_one(frame.data))
+                elif isinstance(frame, EOS):
+                    recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
+                    mailbox.close_input(i)
+                elif frame.is_control:
+                    pass  # a v1 sink has no event-time logic: watermarks / idle / active are ignored
+                else:
+                    raise TypeError(
+                        f"async sink {op_id!r} received an unhandled frame on input {i}: "
+                        f"{type(frame).__name__}"
+                    )
+            # leaving the group awaits every outstanding write — the end-of-stream drain
+    finally:
+        mailbox.close()
+        with _capture(recorder, op_id, opcls, loc, "close"):
+            await sink.close()
+        decoded = mailbox.decode_micros()
+        if decoded:
+            recorder.incr("transport.decode_micros", decoded, operator_id=op_id)
+        recorder.event(
+            "operator.lifecycle.close",
+            operator_id=op_id,
+            rows_in=rows_in.value,
+            rows_out=0,
+            wall_micros=(perf_counter_ns() - started) // 1000,
+        )

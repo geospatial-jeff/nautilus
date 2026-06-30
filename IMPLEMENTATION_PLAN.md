@@ -134,6 +134,19 @@ not yet designed in depth:
 - **DoS hardening.** Rate-limit and cap connections on the control and data listeners; the frame-length
   guards bound only a single allocation, and the liveness timeouts are not a security boundary.
 
+### Stage 6 — Async I/O in operators and sinks · In progress
+
+Opens the awaiting seam beyond the source — to write results to an external store, and (next) to
+intermediate operators — while keeping keyed state single-writer. Design and staged plan in
+`ASYNC_IO_PLAN.md`; the async-sink decision and invariants are `DESIGN.md` mechanism 9.
+
+- **6.0–6.2 — Async sink · Done.** `AsyncSink` (an authored, awaiting terminal) and `run_async_sink`;
+  the conditional `CollectSink` synthesis that leaves every existing graph byte-for-byte unchanged; the
+  DSL `.sink()` → `SinkHandle`; the `async.*` telemetry; and the cross-process path.
+- **6.3+ — Async transform + the NDVI example rework · Planned.** The fetch/integrate split for an
+  awaiting *intermediate* operator, ordered/unordered emission, and moving COG decode out of the
+  Sentinel-2 source into its own async stage. Detail in `ASYNC_IO_PLAN.md`.
+
 ## Telemetry · **Done**
 
 Self-describing telemetry, with analysis left outside the engine (see `DESIGN.md`). Every run ships a

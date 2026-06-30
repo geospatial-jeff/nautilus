@@ -31,16 +31,19 @@ from dataclasses import dataclass
 #: that returns one shared instance is only safe at parallelism 1.
 VertexFactory = Callable[[], object]
 
-#: The kinds of vertex the IR supports. The sink is synthesized by the compiler, never authored here.
+#: The kinds of vertex the IR supports. The *collecting* sink is synthesized by the compiler and never
+#: authored here; an ``async_sink`` is the one authored terminal — a user operator that writes to an
+#: external store and so takes the place of the synthesized collector as the graph's leaf.
 _SOURCE = "source"
 _ONE_INPUT = "one_input"
 _TWO_INPUT = "two_input"
-_KINDS = frozenset({_SOURCE, _ONE_INPUT, _TWO_INPUT})
+_ASYNC_SINK = "async_sink"
+_KINDS = frozenset({_SOURCE, _ONE_INPUT, _TWO_INPUT, _ASYNC_SINK})
 
 #: How many inbound ports each kind consumes — the number of edges that must arrive at it, on the ports
-#: ``0 .. n-1``. A source has none; a one-input transform one (port 0); a two-input join two (port 0 is
-#: the left input, port 1 the right).
-_NUM_INPUTS = {_SOURCE: 0, _ONE_INPUT: 1, _TWO_INPUT: 2}
+#: ``0 .. n-1``. A source has none; a one-input transform and an async sink one (port 0); a two-input
+#: join two (port 0 is the left input, port 1 the right).
+_NUM_INPUTS = {_SOURCE: 0, _ONE_INPUT: 1, _TWO_INPUT: 2, _ASYNC_SINK: 1}
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,21 +158,35 @@ class LogicalGraph:
                 "a two_input (join) vertex needs explicit edges for its two inputs; it cannot appear "
                 "in a linear graph"
             )
+        if any(v.kind == _ASYNC_SINK for v in self.vertices):
+            raise ValueError(
+                "an async_sink vertex needs an explicit edge from its input; it cannot appear in a "
+                "linear graph (build it with the DSL .sink())"
+            )
 
     def _validate_dag(self) -> None:
         """An explicit-edge DAG: every endpoint exists, sources have no inbound, each non-source has its
         kind's full set of input ports, no self-join, and no cycle."""
         by_id = {v.id: v for v in self.vertices}
         inbound: dict[str, list[LogicalEdge]] = {v.id: [] for v in self.vertices}
+        has_outbound: set[str] = set()
         for e in self.edges:
             if e.src not in by_id:
                 raise ValueError(f"edge references unknown src vertex {e.src!r}")
             if e.dst not in by_id:
                 raise ValueError(f"edge references unknown dst vertex {e.dst!r}")
             inbound[e.dst].append(e)
+            has_outbound.add(e.src)
         if not any(v.kind == _SOURCE for v in self.vertices):
             raise ValueError("a graph needs at least one source vertex (a vertex with no input)")
         for v in self.vertices:
+            if v.kind == _ASYNC_SINK and v.id in has_outbound:
+                # A sink writes to an external store and has no output, so it must be the graph's leaf —
+                # chaining a combinator off it would feed an edge from a vertex that produces no frames.
+                raise ValueError(
+                    f"async_sink vertex {v.id!r} has an outbound edge; a sink must be a leaf (no "
+                    "downstream)"
+                )
             ins = inbound[v.id]
             if v.kind == _SOURCE:
                 if ins:
@@ -269,6 +286,14 @@ def two_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> Logic
     cannot drift.
     """
     return LogicalVertex(id=id, factory=factory, kind=_TWO_INPUT, parallelism=parallelism)
+
+
+def async_sink(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:
+    """Build an async-sink vertex — an authored terminal that writes its one input to an external store
+    (an :class:`~nautilus.core.operator.AsyncSink`). It must be a leaf. Like a join, its keying lives on
+    its inbound :class:`LogicalEdge` (so a parallel keyed sink co-partitions), not on the vertex, so it
+    carries no ``key_columns``."""
+    return LogicalVertex(id=id, factory=factory, kind=_ASYNC_SINK, parallelism=parallelism)
 
 
 def linear_graph(source_factory: VertexFactory, vertices: Sequence[LogicalVertex]) -> LogicalGraph:

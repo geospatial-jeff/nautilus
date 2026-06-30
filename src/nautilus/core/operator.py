@@ -179,6 +179,54 @@ class OneInputOperator(ABC):
         """Called once after EOS has been fully processed. Override to release resources."""
 
 
+class AsyncSink(ABC):
+    """A terminal that writes each batch to an external store — the one operator besides a source that may
+    ``await``. It is the graph's leaf: no output, so it emits and forwards nothing.
+
+    Implement :meth:`write` (the awaited write); override :meth:`open`/:meth:`close` to acquire and
+    release the client and :meth:`max_in_flight`/:meth:`timeout_micros`/:meth:`key_columns` to tune
+    concurrency, deadline, and partitioning. Writes are **at-least-once** — a failed run re-runs the whole
+    job — so a write must be idempotent under replay (deterministic keys / upsert). Why a sink may
+    ``await`` where a transform may not, and how it replaces the synthesized collecting sink, is
+    ``DESIGN.md`` mechanism 9; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
+    """
+
+    def open(self, ctx: OperatorContext) -> None:
+        """Called once on the actor task before any write. Acquire the external client/connection here,
+        not in ``__init__``: the executor builds a fresh sink per subtask and may cloudpickle the factory
+        to a worker that never imported your module, so a live client must not ride along."""
+
+    @abstractmethod
+    async def write(self, batch: pa.RecordBatch) -> None:
+        """Write one batch to the external store. Runs as one of up to :meth:`max_in_flight` concurrent
+        tasks, so several writes overlap; may ``await``. Handed only the batch — it must not emit (a sink
+        has no downstream) nor mutate nautilus keyed state. Raising fails the whole job (fail-fast).
+        """
+
+    def key_columns(self) -> tuple[str, ...] | None:
+        """The columns this sink's input is co-partitioned on, or ``None`` if keyless. A keyed sink
+        declares its key so a parallel run routes each key to one instance (e.g. for per-key upsert);
+        keyless, a parallel run round-robins batches across instances — the write fan-out."""
+        return None
+
+    def max_in_flight(self) -> int:
+        """How many :meth:`write` tasks may be in flight at once (>= 1). The bound is this sink's
+        backpressure: once it is reached the actor stops reading, so a slow external store stalls upstream
+        with bounded memory rather than buffering without limit."""
+        return 8
+
+    def timeout_micros(self) -> int | None:
+        """Per-write deadline in microseconds, or ``None`` for no timeout. A write that exceeds it is
+        cancelled and the job fails fast (counted as ``async.timeouts``). Retry is the author's concern.
+        """
+        return None
+
+    async def close(self) -> None:
+        """Called once on the actor task after every in-flight write has finished (at end of stream, or on
+        teardown). Flush/commit any buffered writes and release the client. Under at-least-once a re-run
+        repeats every write, so a commit here need not be transactional across the run."""
+
+
 class TwoInputOperator(ABC):
     """An operator with two input streams and one output — a join. The actor drives it like a one-input
     operator (see :func:`~nautilus.runtime.actor.run_two_input`), with one difference: a data batch

@@ -30,7 +30,7 @@ its own per-instance context.
 from __future__ import annotations
 
 from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex
-from nautilus.api.graph import _SOURCE, _topological_order
+from nautilus.api.graph import _ASYNC_SINK, _SOURCE, _topological_order
 from nautilus.compile.plan import (
     ForwardSpec,
     KeyGroupSpec,
@@ -144,19 +144,23 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
             )
         )
 
-    # The collecting sink attaches to the graph's single leaf (the vertex with no outbound edge — the
-    # last transform, or the join's output). Fan-out to several leaves/sinks is not built yet.
+    # The graph has exactly one leaf (the vertex with no outbound edge — the last transform, the join's
+    # output, or an authored async sink). Fan-out to several leaves/sinks is not built yet.
     has_outbound = {e.src for e in edges}
     leaves = [vid for vid in order if vid not in has_outbound]
     if len(leaves) != 1:
         raise ValueError(
-            f"a graph must have exactly one leaf (output) vertex to attach the sink to, got "
+            f"a graph must have exactly one leaf (output) vertex, got "
             f"{len(leaves)}: {[phys[v] for v in leaves]}"
         )
-    operators.append(PhysicalOperator(SINK_ID, SINK_CLASS, "sink", 1, None))
 
-    # One physical edge per logical edge (spec from the downstream operator's width and the edge's keys),
-    # plus the synthesized leaf -> sink edge (one instance, unkeyed -> Forward).
+    # Synthesize the collecting sink ONLY when the leaf is not an authored async sink. An async_sink leaf
+    # writes to an external store and IS the terminal, so it needs no CollectSink (and its RunResult
+    # correctly carries no batches). Every other graph — every existing one — still appends the identical
+    # CollectSink and its leaf -> sink Forward edge, so its plan and structural digest are unchanged.
+    leaf_is_async_sink = by_id[leaves[0]].kind == _ASYNC_SINK
+
+    # One physical edge per logical edge (spec from the downstream operator's width and the edge's keys).
     physical_edges = [
         PhysicalEdge(
             phys[e.src],
@@ -166,7 +170,11 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
         )
         for e in edges
     ]
-    physical_edges.append(PhysicalEdge(phys[leaves[0]], SINK_ID, _spec_for(1, None, key_groups), 0))
+    if not leaf_is_async_sink:
+        operators.append(PhysicalOperator(SINK_ID, SINK_CLASS, "sink", 1, None))
+        physical_edges.append(
+            PhysicalEdge(phys[leaves[0]], SINK_ID, _spec_for(1, None, key_groups), 0)
+        )
 
     if key_groups is not None and not any(isinstance(e.spec, KeyGroupSpec) for e in physical_edges):
         # key_groups only means anything for a keyed shuffle; if the graph has none, the argument was
