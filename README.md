@@ -78,21 +78,6 @@ nautilus bench-check              # re-run benchmarks/baseline.json (incl. a 2-w
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns
 `(source, transforms)`. Full command reference: [`docs/cli-reference.md`](docs/cli-reference.md).
 
-## Imagery
-
-`sentinel2-ndvi` is a worked imagery pipeline ([`examples/sentinel2_ndvi.py`](examples/sentinel2_ndvi.py)):
-it streams [Sentinel-2](https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a) STAC item ids
-and reports each scene's average [NDVI](https://en.wikipedia.org/wiki/Normalized_difference_vegetation_index).
-An async source range-reads and decodes each Cloud-Optimized GeoTIFF tile with
-[async-geotiff](https://github.com/developmentseed/async-geotiff) (no GDAL/rasterio), emitting the bands as
-Arrow tensors; the per-tile NDVI then fans out across cores and a keyed reducer averages each scene — I/O,
-compute, and reduction as separate backpressured stages. It needs the `geo` extra:
-
-```bash
-pip install 'nautilus[geo]'
-nautilus run sentinel2-ndvi --parallelism 4
-```
-
 ## Running multi-node
 
 The same graph runs across separate machines. Instead of spawning local processes, each node runs a
