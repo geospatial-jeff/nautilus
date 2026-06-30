@@ -71,7 +71,16 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
 - **Occupancy** = `busy_us / wall` per instance (`by_occupancy`). The stage that gates the run but shows
   *low* occupancy is spending wall on something `step_micros` doesn't count: the keyed shuffle
   (`partition.route_micros`), waiting for input (`edge.input_wait_micros`), or cross-process I/O
-  (`transport.*`). High occupancy on a stage means it is CPU-bound in its own `process`/`on_watermark`.
+  (`transport.*`). High occupancy means CPU-bound in its own `process`/`on_watermark` — *except a source*,
+  whose `step_micros` also counts the awaits its `frames()` performs, so a fully-occupied source may be
+  I/O-bound, not compute-bound (next).
+- **I/O-bound source** = `io.wait_micros / runtime.step_micros`. A source is the only operator that may
+  `await` in its own code, so its `step_micros` counts network/disk wait together with the CPU of building
+  batches — it reads as fully busy even when it is blocked on I/O. `io.wait_micros` (the wait a source
+  brackets with `ctx.io_wait()`) splits them: `step_micros - io.wait_micros` is the on-CPU time. When wait
+  dominates, the lever is concurrency / request coalescing in `frames()`, not faster code. A source with
+  *no* `io.wait_micros` is uninstrumented, not necessarily compute-bound — bracket its awaits and re-run
+  before concluding.
 - **Self-time** (`by_self_time`, `operator.process_micros` / `operator.on_watermark_micros` histograms):
   the operator with the most busy time is the CPU bottleneck. Read its `process()` — per-row Python and
   `to_pylist()` materialization are the usual cause; the histogram shows whether it is a few slow batches
@@ -95,11 +104,15 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
 State it as a falsifiable sentence tied to a metric and a line of code, e.g. "`Tokenize` self-time is X%
 of wall because `process` loops in Python over every row (the `for s in ...to_pylist(): ...split()` in
 `Tokenize.process`); vectorizing with Arrow string kernels will cut `operator.process_micros` and raise
-throughput." If the real
-cost is invisible — wall greatly exceeds every accounted metric and no lens explains it — the gap is in
-the *telemetry*, not the code: add the instrument first (a fact, declared in `telemetry/catalog.py`,
-never a verdict; see the `writing-docs` standards and the catalog's banned-words lint), re-run, then
-continue. The loop improves the measurement too.
+throughput." When no lens explains the gating cost, the gap is in the *telemetry*, not the code — in one
+of two forms. **Unaccounted:** wall greatly exceeds every accounted metric. **Conflated:** one
+load-bearing bucket is most of the wall but mixes two costs you cannot separate — e.g. a source's
+`runtime.step_micros`, which counts I/O wait and compute together (this is why `io.wait_micros` exists). A
+quick way to expose a conflated bucket: diff against a run with the suspect cost removed (swap the network
+source for an in-memory one) — whatever the bucket sheds is what it was hiding. Either way add the
+instrument first — a fact, declared in `telemetry/catalog.py`, never a verdict (see the `writing-docs`
+standards and the catalog's banned-words lint) — re-run, then continue. The loop improves the measurement
+too.
 
 ## 4. Change the code, then prove you only changed the speed
 
