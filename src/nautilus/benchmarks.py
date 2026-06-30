@@ -29,6 +29,7 @@ benchmark without code edits:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from time import perf_counter_ns
@@ -47,6 +48,16 @@ _SEED = 0x5EED
 def passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
     """Identity map — the linear benchmark's transform. A module-level function (not a lambda) so a
     ``--workers`` run can cloudpickle the operator to a spawned worker."""
+    return batch
+
+
+async def async_passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Identity ``fetch`` for the async-transform benchmark: one event-loop yield (so the overlap/reorder
+    machinery actually runs) then the batch unchanged — no real I/O, so what is measured is the async
+    loop's per-batch engine overhead, the async analog of :func:`passthrough`. Identity output keeps the
+    structural digest stable. Module-level (not a lambda) so a ``--workers`` run can cloudpickle it.
+    """
+    await asyncio.sleep(0)
     return batch
 
 

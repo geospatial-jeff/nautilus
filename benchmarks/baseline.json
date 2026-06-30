@@ -1,6 +1,47 @@
 {
   "note": "Throughput is machine-specific (see each entry's environment); re-baseline per machine. structural_digest is portable and anchors output correctness across machines. Maintained by `nautilus bench --update` / `nautilus bench-check`.",
   "results": {
+    "bench-async": {
+      "deterministic": true,
+      "environment": {
+        "commit": "2ad7456",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1017-aws-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.12.3"
+      },
+      "pipeline": "bench-async",
+      "recorded_at": "2026-06-30T17:06:34+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "wm_every": 8,
+        "workers": 1
+      },
+      "structural_digest": "1bcf9d55d7cad6687358b1b22278b6e2160a2cf6a483ab866291c941495f1cee",
+      "throughput_rows_per_sec": {
+        "iqr": 144199.08689723164,
+        "max": 39336756.69319117,
+        "median": 38990577.95046139,
+        "min": 38567997.07911374,
+        "rel_spread": 0.00369830596203115,
+        "samples": [
+          38567997.07911374,
+          38894616.48773303,
+          38956521.73913043,
+          38957277.89747471,
+          38990577.95046139,
+          39074077.67935365,
+          39100720.82602766,
+          39259809.86659364,
+          39336756.69319117
+        ]
+      },
+      "trials": 9
+    },
     "bench-backpressure": {
       "deterministic": true,
       "environment": {

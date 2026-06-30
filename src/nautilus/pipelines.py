@@ -23,6 +23,7 @@ from nautilus.benchmarks import (
     SyntheticJoinTableSource,
     SyntheticKeyedSource,
     SyntheticTextSource,
+    async_passthrough,
     bench_params,
     passthrough,
 )
@@ -233,6 +234,23 @@ def bench_join(parallelism: int = 1) -> LogicalGraph:
     return dsl_source(stream).join(dsl_source(table), on="key").to_graph(parallelism=parallelism)
 
 
+def bench_async(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: a stateless async map (``.map_async``) over a large stream — the async-transform loop's
+    per-batch engine overhead (a task per fetch, the reorder buffer, the wakeup), with a near-free fetch
+    (:func:`~nautilus.benchmarks.async_passthrough`, no real I/O) so the loop, not the I/O, is what is
+    measured. The async analog of ``bench-linear``; a *graph* pipeline because the async kind needs
+    explicit edges, so it is run via ``run_plan`` / ``deploy``. Scale via NAUTILUS_BENCH_*;
+    ``--parallelism N`` fans the I/O out N ways.
+    """
+    p = bench_params()
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+    )
+    return dsl_source(source).map_async(async_passthrough).to_graph(parallelism=parallelism)
+
+
 EXAMPLES: dict[str, Builder] = {
     "wordcount": wordcount,
     "windowed-sum": windowed_sum,
@@ -247,11 +265,13 @@ EXAMPLES: dict[str, Builder] = {
     "bench-backpressure": bench_backpressure,
 }
 
-#: Graph pipelines have more than one source (e.g. a join), so they are a LogicalGraph the harness runs
-#: with run_plan/deploy — they can't be expressed as the linear (source, transforms) an EXAMPLES entry is.
+#: Graph pipelines are a LogicalGraph the harness runs with run_plan/deploy rather than the linear
+#: (source, transforms) an EXAMPLES entry is — either because they have more than one source (a join) or
+#: because they use a kind only explicit edges express (an async transform).
 GraphBuilder = Callable[[int], LogicalGraph]
 GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
     "bench-join": bench_join,
+    "bench-async": bench_async,
 }
 
 
