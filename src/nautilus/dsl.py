@@ -22,8 +22,14 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 
 from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex
-from nautilus.core.operator import AsyncSink, OneInputOperator, SourceOperator
+from nautilus.core.operator import (
+    AsyncOneInputOperator,
+    AsyncSink,
+    OneInputOperator,
+    SourceOperator,
+)
 from nautilus.operators import (
+    AsyncMapBatch,
     FilterRows,
     HashJoin,
     KeyedCount,
@@ -35,7 +41,7 @@ from nautilus.operators import (
 from nautilus.windows import TumblingEventTimeWindows
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from nautilus.driver.result import RunResult
 
@@ -84,11 +90,13 @@ class Stream:
         *,
         key_columns: tuple[str, ...] | None,
         parallelism: int,
+        kind: str = "one_input",
     ) -> Stream:
-        """Append a one-input vertex fed from the current tail. Keying rides on the *edge* (this is an
-        explicit-edge graph), so the vertex itself carries none."""
+        """Append a one-input vertex — synchronous ``one_input`` or awaiting ``async_one_input`` — fed
+        from the current tail. Keying rides on the *edge* (this is an explicit-edge graph), so the vertex
+        itself carries none."""
         vid = f"v{self._next}"
-        vertex = LogicalVertex(vid, factory, "one_input", parallelism, None)
+        vertex = LogicalVertex(vid, factory, kind, parallelism, None)
         edge = LogicalEdge(self._tail, vid, 0, key_columns)
         return Stream((*self._vertices, vertex), (*self._edges, edge), vid, self._next + 1)
 
@@ -158,6 +166,49 @@ class Stream:
             (lambda: operator) if parallelism == 1 else (lambda: copy.deepcopy(operator))
         )
         return self._extend(factory, key_columns=keys, parallelism=parallelism)
+
+    # --- async one-input combinators ------------------------------------------------------------
+
+    def map_async(
+        self,
+        fn: Callable[[pa.RecordBatch], Awaitable[pa.RecordBatch]],
+        *,
+        max_in_flight: int = 8,
+        parallelism: int = 1,
+    ) -> Stream:
+        """Apply an async ``batch -> batch`` function with overlapping I/O
+        (:class:`~nautilus.operators.AsyncMapBatch`): up to ``max_in_flight`` calls run at once and
+        results are emitted in input order. The stateless async map — enrich a batch from an awaited
+        lookup without crowding the I/O into the source. Keyless, so a parallel run round-robins batches
+        across instances (the I/O fan-out)."""
+        return self._extend(
+            lambda: AsyncMapBatch(fn, max_in_flight=max_in_flight),
+            key_columns=None,
+            parallelism=parallelism,
+            kind="async_one_input",
+        )
+
+    def apply_async(
+        self,
+        operator: AsyncOneInputOperator,
+        *,
+        key_columns: _Keys | None = None,
+        parallelism: int = 1,
+    ) -> Stream:
+        """Append an arbitrary async one-input operator — the escape hatch mirroring :meth:`apply` for an
+        :class:`~nautilus.core.operator.AsyncOneInputOperator` (e.g. a keyed async enrich that folds each
+        lookup into state in ``integrate``). The edge is keyed by ``key_columns`` if given, else the
+        operator's own :meth:`~nautilus.core.operator.AsyncOneInputOperator.key_columns`, so a keyed async
+        stage co-partitions and its per-key state is never split. At parallelism > 1 the instance is
+        deep-copied per subtask (acquire its client in ``open()``, not ``__init__``); a parallelism-1
+        ``apply_async`` shares the one instance, so scale it by passing ``parallelism`` here."""
+        keys = _norm(key_columns) if key_columns is not None else operator.key_columns()
+        factory: Callable[[], object] = (
+            (lambda: operator) if parallelism == 1 else (lambda: copy.deepcopy(operator))
+        )
+        return self._extend(
+            factory, key_columns=keys, parallelism=parallelism, kind="async_one_input"
+        )
 
     # --- two-input combinator -------------------------------------------------------------------
 

@@ -511,8 +511,9 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "count",
             _OP,
             Reduction.SUM,
-            "Number of async I/O tasks an async stage completed — one per batch written by an async "
-            "sink. Recorded by the actor when it reaps the task, not by the awaiting code.",
+            "Number of async I/O tasks an async stage completed — one per batch an async sink writes or an "
+            "async transform fetches. Recorded by the actor when it reaps the task, not by the awaiting "
+            "code.",
             relates_to=("async.request_micros", "async.in_flight"),
             since_stage=6,
             stability=Stability.EXPERIMENTAL,
@@ -523,10 +524,11 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "microseconds",
             _OP,
             Reduction.SUM,
-            "Summed wall time an async stage's I/O tasks spent awaiting external I/O (each write's "
-            "perf_counter span). Several tasks run at once, so this sum can exceed the run's wall time; "
-            "the gap to wall is the overlap. Distinct from runtime.step_micros, which for an async stage "
-            "counts only the actor's own coordination, never the awaited I/O.",
+            "Summed wall time an async stage's I/O tasks spent awaiting external I/O (each write's or "
+            "fetch's perf_counter span). Several tasks run at once, so this sum can exceed the run's wall "
+            "time; the gap to wall is the overlap. Distinct from runtime.step_micros, which for an async "
+            "stage counts only the actor's own coordination (a transform's integrate/on_watermark "
+            "self-time), never the awaited I/O.",
             relates_to=("async.requests", "async.in_flight", "runtime.step_micros"),
             since_stage=6,
             stability=Stability.EXPERIMENTAL,

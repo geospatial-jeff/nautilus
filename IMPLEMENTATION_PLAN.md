@@ -136,16 +136,21 @@ not yet designed in depth:
 
 ### Stage 6 — Async I/O in operators and sinks · In progress
 
-Opens the awaiting seam beyond the source — to write results to an external store, and (next) to
-intermediate operators — while keeping keyed state single-writer. Design and staged plan in
-`ASYNC_IO_PLAN.md`; the async-sink decision and invariants are `DESIGN.md` mechanism 9.
+Opens the awaiting seam beyond the source — to write results to an external store and to enrich a record
+inside intermediate operators — while keeping keyed state single-writer. Design and staged plan in
+`ASYNC_IO_PLAN.md`; the async-stage decisions and invariants are `DESIGN.md` mechanism 9.
 
 - **6.0–6.2 — Async sink · Done.** `AsyncSink` (an authored, awaiting terminal) and `run_async_sink`;
   the conditional `CollectSink` synthesis that leaves every existing graph byte-for-byte unchanged; the
   DSL `.sink()` → `SinkHandle`; the `async.*` telemetry; and the cross-process path.
-- **6.3+ — Async transform + the NDVI example rework · Planned.** The fetch/integrate split for an
-  awaiting *intermediate* operator, ordered/unordered emission, and moving COG decode out of the
-  Sentinel-2 source into its own async stage. Detail in `ASYNC_IO_PLAN.md`.
+- **6.3 — Async transform · Done.** The fetch/integrate split for an awaiting *intermediate* operator
+  (`AsyncOneInputOperator`, `AsyncMapBatch`), driven by `run_async_transform`'s ordered reorder loop —
+  stateless and keyed, with the await-time state guard enforced on `OperatorContext`. DSL `.map_async` /
+  `.apply_async`; the `async_one_input` IR kind; the cross-process path. Emission is ordered (the digest
+  stays reproducible); unordered is rejected for now.
+- **6.4 — Unordered mode + the NDVI example rework · Planned.** Completion-order emission for stateless
+  maps, and moving COG decode out of the Sentinel-2 source into its own async stage. Detail in
+  `ASYNC_IO_PLAN.md`.
 
 ## Telemetry · **Done**
 

@@ -33,17 +33,20 @@ VertexFactory = Callable[[], object]
 
 #: The kinds of vertex the IR supports. The *collecting* sink is synthesized by the compiler and never
 #: authored here; an ``async_sink`` is the one authored terminal — a user operator that writes to an
-#: external store and so takes the place of the synthesized collector as the graph's leaf.
+#: external store and so takes the place of the synthesized collector as the graph's leaf. An
+#: ``async_one_input`` is an interior transform that does awaiting I/O (a ``fetch``/``integrate`` split),
+#: a one-input vertex like ``one_input`` but driven by the awaiting actor loop.
 _SOURCE = "source"
 _ONE_INPUT = "one_input"
 _TWO_INPUT = "two_input"
+_ASYNC_ONE_INPUT = "async_one_input"
 _ASYNC_SINK = "async_sink"
-_KINDS = frozenset({_SOURCE, _ONE_INPUT, _TWO_INPUT, _ASYNC_SINK})
+_KINDS = frozenset({_SOURCE, _ONE_INPUT, _TWO_INPUT, _ASYNC_ONE_INPUT, _ASYNC_SINK})
 
 #: How many inbound ports each kind consumes — the number of edges that must arrive at it, on the ports
-#: ``0 .. n-1``. A source has none; a one-input transform and an async sink one (port 0); a two-input
-#: join two (port 0 is the left input, port 1 the right).
-_NUM_INPUTS = {_SOURCE: 0, _ONE_INPUT: 1, _TWO_INPUT: 2, _ASYNC_SINK: 1}
+#: ``0 .. n-1``. A source has none; a one-input transform (sync or async) and an async sink one (port 0);
+#: a two-input join two (port 0 is the left input, port 1 the right).
+_NUM_INPUTS = {_SOURCE: 0, _ONE_INPUT: 1, _TWO_INPUT: 2, _ASYNC_ONE_INPUT: 1, _ASYNC_SINK: 1}
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,10 +161,14 @@ class LogicalGraph:
                 "a two_input (join) vertex needs explicit edges for its two inputs; it cannot appear "
                 "in a linear graph"
             )
-        if any(v.kind == _ASYNC_SINK for v in self.vertices):
+        async_kinds = {_ASYNC_ONE_INPUT, _ASYNC_SINK}
+        if any(v.kind in async_kinds for v in self.vertices):
+            # The linear shape builds every transform as a synchronous one-input and appends a collecting
+            # sink, so neither an awaiting transform nor an authored sink has a place in it. They need the
+            # explicit-edge (Stream) shape; the DSL's .map_async / .apply_async / .sink build it.
             raise ValueError(
-                "an async_sink vertex needs an explicit edge from its input; it cannot appear in a "
-                "linear graph (build it with the DSL .sink())"
+                "an async_one_input or async_sink vertex needs explicit edges; it cannot appear in a "
+                "linear graph (build it with the DSL .map_async / .apply_async / .sink)"
             )
 
     def _validate_dag(self) -> None:
@@ -286,6 +293,14 @@ def two_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> Logic
     cannot drift.
     """
     return LogicalVertex(id=id, factory=factory, kind=_TWO_INPUT, parallelism=parallelism)
+
+
+def async_one_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:
+    """Build an async one-input transform vertex — an interior operator that does awaiting I/O
+    (an :class:`~nautilus.core.operator.AsyncOneInputOperator`). Like a join, its keying lives on its
+    inbound :class:`LogicalEdge` (so a parallel keyed async enrich co-partitions), not on the vertex, so it
+    carries no ``key_columns``; it may have downstream edges like any transform."""
+    return LogicalVertex(id=id, factory=factory, kind=_ASYNC_ONE_INPUT, parallelism=parallelism)
 
 
 def async_sink(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:

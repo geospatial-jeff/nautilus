@@ -6,10 +6,13 @@ async I/O**, not only the source. This is a working plan; when the work lands it
 (Stage 6). The design below was generated and then adversarially verified against the code; the four
 defects that verification found are folded into the loop contract here, not left open.
 
-> **Status.** The **async sink** (the sink scope of stages 6.0–6.2 — `AsyncSink`, `run_async_sink`,
-> conditional `CollectSink` synthesis, the DSL `.sink()`, the `async.*` metrics, the cross-process path)
-> has landed; `DESIGN.md` mechanism 9 records it. The async **transform** (the fetch/integrate split),
-> **unordered** mode, and the **NDVI example rework** below are still planned.
+> **Status.** The **async sink** (sink scope of 6.0–6.2) and the **async transform** (6.3 — the
+> fetch/integrate split: `AsyncOneInputOperator`, `AsyncMapBatch`, `run_async_transform`'s ordered reorder
+> loop, the enforced `OperatorContext` state guard, the DSL `.map_async`/`.apply_async`, the
+> `async_one_input` IR kind, the cross-process path) have landed — stateless *and* keyed; `DESIGN.md`
+> mechanism 9 records them. Still planned (6.4): **unordered** mode (stateless-only, completion-order) and
+> the **NDVI example rework**. Ordered-only is shipped, so the unordered-rejected-for-keyed rule below is
+> moot until unordered lands; the loop rejects `ordered()=False` for now.
 
 ## The problem
 
