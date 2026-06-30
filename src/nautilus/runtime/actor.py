@@ -589,11 +589,11 @@ async def run_async_sink(
     sink is the graph's terminal — no outputs, so it emits and forwards nothing.
 
     Two asyncio primitives carry the contract. A :class:`~asyncio.Semaphore` bounds the writes in flight;
-    the loop acquires a slot before reading the next batch, so at the bound it stops reading and the
-    upstream channel fills and stalls the producer (the backpressure). An :class:`~asyncio.TaskGroup` owns
-    the write tasks, which gives the rest for free: leaving the group awaits every outstanding write (the
-    end-of-stream drain), and the first write to raise — or to exceed ``timeout_micros`` — cancels and
-    awaits its siblings and propagates as an ``ExceptionGroup`` (fail-fast with prompt cleanup).
+    at the bound the loop stops reading, so the upstream channel fills and stalls the producer (the
+    backpressure). An :class:`~asyncio.TaskGroup` owns the write tasks, which gives the rest for free:
+    leaving the group awaits every outstanding write (the end-of-stream drain), and the first write to
+    raise — or to exceed ``timeout_micros`` — cancels and awaits its siblings and propagates as an
+    ``ExceptionGroup`` (fail-fast with prompt cleanup).
 
     Each write task records its own ``async.*`` and error metrics. That is still single-writer in the
     sense the recorder means: every task shares this actor's one event loop, and a counter add never
@@ -658,11 +658,13 @@ async def run_async_sink(
                 if isinstance(frame, Batch):
                     batches_in.add(1)
                     rows_in.add(frame.num_rows)
-                    await sem.acquire()  # backpressure: hold off reading until a write slot frees
+                    # acquire after the read, not before: a pre-read acquire would idle a write slot
+                    # whenever the loop is blocked waiting for input.
+                    await sem.acquire()
                     in_flight += 1
                     in_flight_gauge.set(
                         in_flight
-                    )  # gauge keeps the max, so this is the peak in flight
+                    )  # gauge keeps the max — this is the peak in flight
                     tg.create_task(write_one(frame.data))
                 elif isinstance(frame, EOS):
                     recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
