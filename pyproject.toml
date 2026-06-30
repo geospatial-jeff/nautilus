@@ -26,6 +26,9 @@ nautilus = "nautilus.cli:main"
 fast = ["uvloop>=0.19; sys_platform != 'win32'"]
 # Hardware/resource telemetry (process CPU, memory, fds). loop-lag works without it.
 system = ["psutil>=5.9"]
+# Cloud-Optimized GeoTIFF imagery (the Sentinel-2 NDVI example): async, range-request COG reads with
+# no GDAL/rasterio in the stack. async-geotiff (over async-tiff) does the decoding; obstore does the I/O.
+geo = ["async-geotiff>=0.5", "obstore>=0.11"]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
@@ -47,9 +50,10 @@ testpaths = ["tests"]
 filterwarnings = ["error::DeprecationWarning"]
 # The docker-marked multi-node integration test needs Docker + docker compose; exclude it from the
 # default suite so the unit run stays hermetic and fast. Run it with `pytest -m docker`.
-addopts = "-m 'not docker'"
+addopts = "-m 'not docker and not network'"
 markers = [
   "docker: multi-node integration tests requiring Docker + docker compose (run with -m docker)",
+  "network: tests that reach the public internet (e.g. the Sentinel-2 example); run with -m network",
 ]
 
 [tool.ruff]

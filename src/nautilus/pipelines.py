@@ -7,9 +7,11 @@ returns ``(source, transforms)``).
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import os
+import sys
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
@@ -90,6 +92,33 @@ def image_embed() -> Pipeline:
     """Image tiles in, one embedding per tile out, using fixed_shape_tensor columns."""
     source = from_batches(_image_tiles(4, 0), _image_tiles(3, 100))
     return source, [MapBatch(_embed_tiles)]
+
+
+def _load_example_builder(filename: str, fn_name: str) -> Builder:
+    """Load a builder defined in an ``examples/`` file by path. Those files aren't an installed package
+    (and ship only in a source checkout, not the wheel), so the CLI reaches a heavier example — one that
+    pulls an optional extra — without that extra's imports landing at ``nautilus.pipelines`` import time.
+    """
+    path = Path(__file__).resolve().parents[2] / "examples" / filename
+    if not path.exists():
+        raise ImportError(
+            f"example file {path} not found (examples/ ships in a source checkout only)"
+        )
+    spec = importlib.util.spec_from_file_location(f"nautilus_example_{path.stem}", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # so the example's @dataclass can resolve its own annotations
+    spec.loader.exec_module(module)
+    builder: Builder = getattr(module, fn_name)
+    return builder
+
+
+def sentinel2_ndvi() -> Pipeline:
+    """Average NDVI over a Sentinel-2 L2A scene read straight from cloud COGs: a stream of STAC item ids ->
+    async-geotiff range-reads and decodes each internal tile -> NDVI per tile (fan-out) -> average per
+    scene (reduce). Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see
+    examples/sentinel2_ndvi.py."""
+    return _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")()
 
 
 def bench_keyed() -> Pipeline:
@@ -209,6 +238,7 @@ EXAMPLES: dict[str, Builder] = {
     "windowed-sum": windowed_sum,
     "demo-stream": demo_stream,
     "image-embed": image_embed,
+    "sentinel2-ndvi": sentinel2_ndvi,
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
     "bench-fanout": bench_fanout,
