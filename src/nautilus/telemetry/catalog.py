@@ -489,6 +489,21 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("runtime.step_micros",),
             deterministic=True,
         ),
+        MetricSpec(
+            "io.wait_micros",
+            MetricKind.COUNTER,
+            "microseconds",
+            ("operator_id",),
+            Reduction.SUM,
+            "Wall time a source spent awaiting external I/O, recorded by the source itself via "
+            "ctx.io_wait(). A source is the one operator that may await inside its own code, so its "
+            "runtime.step_micros counts both its on-CPU frame construction and the awaits it performs "
+            "between frames; subtracting this from step_micros leaves the on-CPU time, so a source whose "
+            "io.wait_micros is most of its step_micros is I/O-bound, not compute-bound. Zero unless a "
+            "source brackets its awaits.",
+            relates_to=("runtime.step_micros",),
+            owner=Owner.AUTHOR,
+        ),
         # --- errors --------------------------------------------------------------------------
         MetricSpec(
             "operator.errors",
