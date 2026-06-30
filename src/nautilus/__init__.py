@@ -25,6 +25,7 @@ Anything not re-exported here is still importable from its concrete module (e.g.
 
 from nautilus._version import __version__
 from nautilus.core.operator import (
+    AsyncSink,
     Collector,
     OneInputOperator,
     OperatorContext,
@@ -33,7 +34,7 @@ from nautilus.core.operator import (
 from nautilus.core.records import EOS_FRAME, Batch, Watermark
 from nautilus.driver.local import run, run_local_chain
 from nautilus.driver.result import RunResult
-from nautilus.dsl import Stream, source
+from nautilus.dsl import SinkHandle, Stream, source
 from nautilus.operators import (
     FilterRows,
     HashJoin,
@@ -51,14 +52,16 @@ __all__ = [
     "__version__",
     # the fluent DSL (the primary way to build a pipeline)
     "Stream",
+    "SinkHandle",
     "source",
     # runners
     "run",
     "run_local_chain",
     "RunResult",
-    # authoring a source / operator
+    # authoring a source / operator / sink
     "SourceOperator",
     "OneInputOperator",
+    "AsyncSink",
     "OperatorContext",
     "Collector",
     # built-in operators + source factory

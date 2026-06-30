@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 import pyarrow as pa
 
 from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex
-from nautilus.core.operator import OneInputOperator, SourceOperator
+from nautilus.core.operator import AsyncSink, OneInputOperator, SourceOperator
 from nautilus.operators import (
     FilterRows,
     HashJoin,
@@ -200,6 +200,36 @@ class Stream:
         )
         return Stream(vertices, edges, jid, shift + len(other._vertices) + 1)
 
+    # --- sink terminal --------------------------------------------------------------------------
+
+    def sink(
+        self,
+        sink: AsyncSink,
+        *,
+        key_columns: _Keys | None = None,
+        parallelism: int = 1,
+    ) -> SinkHandle:
+        """Write this stream to an external store through an :class:`~nautilus.core.operator.AsyncSink`,
+        returning a :class:`SinkHandle` to run it. A sink is a terminal — it has no output — so a
+        ``SinkHandle`` exposes only the runners (:meth:`SinkHandle.run` / :meth:`SinkHandle.run_async`),
+        never the combinators; the resulting ``RunResult`` carries the telemetry report and no batches
+        (the data went to the store).
+
+        The edge is keyed by ``key_columns`` if given, else the sink's own
+        :meth:`~nautilus.core.operator.AsyncSink.key_columns`, so a keyed sink co-partitions for per-key
+        writes. At ``parallelism > 1`` the sink is deep-copied per subtask (acquire its client in
+        ``open()``, not ``__init__``, so the copy carries no live connection); a parallelism-1 ``sink``
+        shares the one instance, so scale it by passing ``parallelism`` here rather than to ``run``.
+        """
+        keys = _norm(key_columns) if key_columns is not None else sink.key_columns()
+        factory: Callable[[], object] = (
+            (lambda: sink) if parallelism == 1 else (lambda: copy.deepcopy(sink))
+        )
+        vid = f"v{self._next}"
+        vertex = LogicalVertex(vid, factory, "async_sink", parallelism, None)
+        edge = LogicalEdge(self._tail, vid, 0, keys)
+        return SinkHandle((*self._vertices, vertex), (*self._edges, edge))
+
     # --- terminal -------------------------------------------------------------------------------
 
     def to_graph(self, *, parallelism: int | None = None) -> LogicalGraph:
@@ -260,6 +290,65 @@ class Stream:
         """Run the stream and return its rows as ``{column: value}`` dicts (a convenience over
         ``run().to_pylist()``)."""
         return self.run(**kwargs).to_pylist()
+
+
+@dataclass(frozen=True, slots=True)
+class SinkHandle:
+    """A stream that ends in an :class:`~nautilus.core.operator.AsyncSink` — a terminal. It exposes only
+    the runners, because a sink has no output to chain off; build it with :meth:`Stream.sink`."""
+
+    _vertices: tuple[LogicalVertex, ...]
+    _edges: tuple[LogicalEdge, ...]
+
+    def to_graph(self, *, parallelism: int | None = None) -> LogicalGraph:
+        """The :class:`~nautilus.api.LogicalGraph` this sink pipeline describes. ``parallelism`` overrides
+        every non-source vertex's parallelism uniformly; a parallelism-1 ``sink`` shares one instance and
+        cannot be scaled this way (give that ``sink`` its own ``parallelism`` instead)."""
+        if parallelism is None:
+            return LogicalGraph(self._vertices, self._edges)
+        vertices = tuple(
+            v if v.kind == "source" else replace(v, parallelism=parallelism) for v in self._vertices
+        )
+        return LogicalGraph(vertices, self._edges)
+
+    async def run_async(
+        self, *, parallelism: int | None = None, key_groups: int | None = None, **kwargs: Any
+    ) -> RunResult:
+        """Compile and run this sink pipeline in the current event loop, single-process. The returned
+        :class:`~nautilus.driver.result.RunResult` carries the telemetry report and no batches."""
+        from nautilus.driver.run import run_plan
+
+        return await run_plan(
+            self.to_graph(parallelism=parallelism), key_groups=key_groups, **kwargs
+        )
+
+    def run(
+        self,
+        *,
+        workers: int | None = None,
+        parallelism: int | None = None,
+        key_groups: int | None = None,
+        daemons: list[tuple[str, int]] | None = None,
+        **kwargs: Any,
+    ) -> RunResult:
+        """Compile and run this sink pipeline to completion, returning its :class:`RunResult` (telemetry
+        only; no batches). ``workers``/``daemons`` deploy the same graph across worker processes / daemons
+        exactly as :meth:`Stream.run`; a synchronous one-liner — inside a running event loop use
+        :meth:`run_async`."""
+        graph = self.to_graph(parallelism=parallelism)
+        if daemons is not None:
+            from nautilus.cluster import deploy
+
+            return deploy(graph, daemons=daemons, key_groups=key_groups, **kwargs)
+        if workers is not None and workers > 1:
+            from nautilus.cluster import deploy
+
+            return deploy(graph, num_workers=workers, key_groups=key_groups, **kwargs)
+        import asyncio
+
+        from nautilus.driver.run import run_plan
+
+        return asyncio.run(run_plan(graph, key_groups=key_groups, **kwargs))
 
 
 def _join_keys(

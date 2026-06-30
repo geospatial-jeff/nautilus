@@ -504,6 +504,70 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("runtime.step_micros",),
             owner=Owner.AUTHOR,
         ),
+        # --- async I/O stages (an async sink, driven by run_async_sink) ----------------------
+        MetricSpec(
+            "async.requests",
+            MetricKind.COUNTER,
+            "count",
+            _OP,
+            Reduction.SUM,
+            "Number of async I/O tasks an async stage completed — one per batch written by an async "
+            "sink. Recorded by the actor when it reaps the task, not by the awaiting code.",
+            relates_to=("async.request_micros", "async.in_flight"),
+            since_stage=6,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "async.request_micros",
+            MetricKind.COUNTER,
+            "microseconds",
+            _OP,
+            Reduction.SUM,
+            "Summed wall time an async stage's I/O tasks spent awaiting external I/O (each write's "
+            "perf_counter span). Several tasks run at once, so this sum can exceed the run's wall time; "
+            "the gap to wall is the overlap. Distinct from runtime.step_micros, which for an async stage "
+            "counts only the actor's own coordination, never the awaited I/O.",
+            relates_to=("async.requests", "async.in_flight", "runtime.step_micros"),
+            since_stage=6,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "async.in_flight",
+            MetricKind.GAUGE,
+            "count",
+            _OP,
+            Reduction.MAX,
+            "High-water number of async I/O tasks in flight at once on one instance. At most "
+            "async.capacity.",
+            relates_to=("async.capacity", "async.requests"),
+            since_stage=6,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "async.capacity",
+            MetricKind.GAUGE,
+            "count",
+            _OP,
+            Reduction.LAST,
+            "The configured max_in_flight bound on concurrent async I/O tasks for an async stage — the "
+            "ceiling async.in_flight rises to before the actor stops reading (the stage's backpressure).",
+            relates_to=("async.in_flight",),
+            since_stage=6,
+            stability=Stability.EXPERIMENTAL,
+            deterministic=True,
+        ),
+        MetricSpec(
+            "async.timeouts",
+            MetricKind.COUNTER,
+            "count",
+            _OP,
+            Reduction.SUM,
+            "Number of async I/O tasks cancelled for exceeding the stage's per-request timeout_micros. "
+            "Zero unless a timeout is configured.",
+            relates_to=("async.requests",),
+            since_stage=6,
+            stability=Stability.EXPERIMENTAL,
+        ),
         # --- errors --------------------------------------------------------------------------
         MetricSpec(
             "operator.errors",

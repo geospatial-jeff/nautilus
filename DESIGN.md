@@ -77,7 +77,9 @@ real event times are kept strictly below that sentinel so they can never collide
    ends when all sinks see `EOS` — no central poller.
 5. **Synchronous critical section** — `process`/`on_watermark` never `await`; they emit into an
    in-memory `Collector` and the actor performs all backpressured sends *between* steps. Each
-   per-batch step is therefore a race-free critical section under the GIL.
+   per-batch step is therefore a race-free critical section under the GIL. (An `AsyncSink` is the
+   deliberate exception — mechanism 9 — and it is *because* its awaiting code touches no keyed state
+   and emits nothing that letting it `await` keeps this guarantee.)
 6. **Keyed state** (`nautilus.state`) — scoped by `(operator_id, name, key, namespace)` and accessed
    through a `KeyContext` captured by each handle (no shared mutable "current key" cursor).
    `snapshot`/`restore` are in the ABC from day one so a spilling/checkpointing backend is additive.
@@ -100,6 +102,21 @@ real event times are kept strictly below that sentinel so they can never collide
    result is independent of the order the two sides arrive; like the keyed aggregations it holds unbounded
    state until EOS — an accepted MVP tradeoff, since the inputs here are bounded. How it buffers and the
    `on_watermark` eviction seam for a future windowed variant are the operator's concern.
+9. **Async sink** (`core.operator.AsyncSink`, driven by `runtime.actor.run_async_sink`) — the one operator
+   besides a source that may `await`, so a pipeline can write its results to an external store inside the
+   streaming model rather than collecting them and writing afterward. A sink does external I/O but has no
+   downstream and keeps no nautilus keyed state, which is what makes awaiting safe here: the actor issues
+   each batch as one of up to `max_in_flight` in-flight `write` tasks so their I/O overlaps, yet stays the
+   sole reader and bookkeeper, so the concurrency is confined to the state-free `write` and mechanism 5 is
+   untouched. The in-flight bound is the backpressure to upstream; every in-flight write is awaited each
+   turn so a failure or a per-request timeout is fail-fast (siblings are cancelled *and* awaited, so their
+   cleanup runs promptly); and at end of stream the actor drains every write before `close`. Writes are
+   at-least-once — a failed job re-runs whole (`Barrier`/exactly-once is still reserved) — so a `write`
+   must be idempotent under replay, and a keyed sink co-partitions for per-key upsert. The compiler still
+   synthesizes the collecting `CollectSink` for every graph whose leaf is *not* an `AsyncSink`, so an
+   authored sink simply takes the leaf's place and a write-only run returns no batches (its data went to
+   the store). The fetch/integrate split that extends this to awaiting *intermediate* operators is the
+   planned next step (`ASYNC_IO_PLAN.md`).
 
 ## Deployment (`nautilus.cluster`)
 
