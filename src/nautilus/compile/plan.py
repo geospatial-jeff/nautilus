@@ -72,7 +72,7 @@ class PhysicalOperator:
 
     operator_id: str
     op_class: str
-    kind: str  # "source" | "one_input" | "two_input" | "async_sink" | "sink"
+    kind: str  # "source" | "one_input" | "two_input" | "async_one_input" | "async_sink" | "sink"
     parallelism: int
     factory: Callable[[], object] | None
 

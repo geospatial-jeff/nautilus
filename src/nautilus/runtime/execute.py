@@ -40,6 +40,7 @@ from nautilus.compile.plan import (
     RoundRobinSpec,
 )
 from nautilus.core.operator import (
+    AsyncOneInputOperator,
     AsyncSink,
     OneInputOperator,
     OperatorContext,
@@ -51,6 +52,7 @@ from nautilus.core.time import Clock, SystemClock
 from nautilus.runtime.actor import (
     Output,
     run_async_sink,
+    run_async_transform,
     run_source,
     run_transform,
     run_two_input,
@@ -223,7 +225,7 @@ async def execute(
                     continue  # the sink has no outbound edge; its mailbox is wired in phase B
                 instances[key] = _instantiate(op)
                 outputs[key] = await build_outputs(op.operator_id, subtask, op_recorders[key])
-                if op.kind in ("source", "one_input", "two_input", "async_sink"):
+                if op.kind in ("source", "one_input", "two_input", "async_one_input", "async_sink"):
                     # A SEPARATE recorder for author custom metrics (ctx.metrics) — e.g. a source's
                     # ctx.io_wait() — preserving the single-writer invariant; both carry the same
                     # (operator_id, subtask) and merge at build. owner=AUTHOR so it can only write
@@ -289,6 +291,24 @@ async def execute(
                         mailbox,
                         outputs[key],
                         left_input_count=left_input_count,
+                        recorder=op_recorders[key],
+                    )
+                )
+            elif op.kind == "async_one_input":
+                mailbox, _ = await build_mailbox(op.operator_id, subtask)
+                ctx = OperatorContext(
+                    op.operator_id,
+                    subtask_index=subtask,
+                    num_subtasks=op.parallelism,
+                    clock=clk,
+                    metrics=metrics_recorders[key],
+                )
+                coros.append(
+                    run_async_transform(
+                        cast(AsyncOneInputOperator, instances[key]),
+                        ctx,
+                        mailbox,
+                        outputs[key],
                         recorder=op_recorders[key],
                     )
                 )

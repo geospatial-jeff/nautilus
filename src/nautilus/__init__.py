@@ -25,6 +25,7 @@ Anything not re-exported here is still importable from its concrete module (e.g.
 
 from nautilus._version import __version__
 from nautilus.core.operator import (
+    AsyncOneInputOperator,
     AsyncSink,
     Collector,
     OneInputOperator,
@@ -36,6 +37,7 @@ from nautilus.driver.local import run, run_local_chain
 from nautilus.driver.result import RunResult
 from nautilus.dsl import SinkHandle, Stream, source
 from nautilus.operators import (
+    AsyncMapBatch,
     FilterRows,
     HashJoin,
     InMemorySource,
@@ -61,6 +63,7 @@ __all__ = [
     # authoring a source / operator / sink
     "SourceOperator",
     "OneInputOperator",
+    "AsyncOneInputOperator",
     "AsyncSink",
     "OperatorContext",
     "Collector",
@@ -68,6 +71,7 @@ __all__ = [
     "InMemorySource",
     "from_batches",
     "MapBatch",
+    "AsyncMapBatch",
     "FilterRows",
     "Tokenize",
     "KeyedCount",

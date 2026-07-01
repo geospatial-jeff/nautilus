@@ -1,16 +1,17 @@
 """The built-in operators — the implementations behind the fluent ``Stream`` combinators.
 
-Concrete operators that exercise the streaming semantics — each follows the synchronous
+Concrete operators that exercise the streaming semantics. Most follow the synchronous
 ``process``/``on_watermark`` contract (emit into the ``Collector``, never await; see
-:mod:`nautilus.core.operator`). :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`,
+:mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`,
 :class:`KeyedCount` and :class:`KeyedTumblingSum` back the DSL's ``.map`` / ``.filter`` / ``.tokenize``
-/ ``.count_by`` / ``.tumbling_sum``, and :class:`HashJoin` backs ``.join``. What each one does is on its
-own class.
+/ ``.count_by`` / ``.tumbling_sum``, and :class:`HashJoin` backs ``.join``. :class:`AsyncMapBatch` is the
+one awaiting built-in — it backs ``.map_async``, doing its I/O in ``fetch`` and emitting in
+``integrate``. What each one does is on its own class.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import cast
 
 import numpy as np
@@ -18,6 +19,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from nautilus.core.operator import (
+    AsyncOneInputOperator,
     Collector,
     OneInputOperator,
     OperatorContext,
@@ -84,6 +86,29 @@ class MapBatch(OneInputOperator):
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         out.emit(self._fn(batch))
+
+
+class AsyncMapBatch(AsyncOneInputOperator):
+    """Applies an async batch -> batch function: :meth:`fetch` awaits ``fn(batch)`` (the I/O) and
+    :meth:`integrate` emits its result. The stateless async enrich/lookup built-in — one batch out per
+    batch in, so its row count is order-invariant — behind the DSL's ``.map_async``."""
+
+    def __init__(
+        self, fn: Callable[[pa.RecordBatch], Awaitable[pa.RecordBatch]], *, max_in_flight: int = 8
+    ) -> None:
+        self._fn = fn
+        self._cap = max_in_flight
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        return await self._fn(batch)
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        out.emit(cast(pa.RecordBatch, result))
+
+    def max_in_flight(self) -> int:
+        return self._cap
 
 
 class FilterRows(OneInputOperator):

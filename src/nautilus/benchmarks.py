@@ -29,6 +29,7 @@ benchmark without code edits:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from time import perf_counter_ns
@@ -47,6 +48,27 @@ _SEED = 0x5EED
 def passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
     """Identity map — the linear benchmark's transform. A module-level function (not a lambda) so a
     ``--workers`` run can cloudpickle the operator to a spawned worker."""
+    return batch
+
+
+async def async_passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Identity ``fetch`` for the async-transform benchmark: one event-loop yield (so the overlap/reorder
+    machinery actually runs) then the batch unchanged — no real I/O, so what is measured is the async
+    loop's per-batch engine overhead, the async analog of :func:`passthrough`. Identity output keeps the
+    structural digest stable. Module-level (not a lambda) so a ``--workers`` run can cloudpickle it.
+    """
+    await asyncio.sleep(0)
+    return batch
+
+
+async def async_io_wait(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Latency ``fetch`` for the I/O-bound async-transform benchmark: sleeps ``NAUTILUS_BENCH_FETCH_US``
+    microseconds (default 1000) to stand in for a real external lookup, then returns the batch unchanged.
+    Where :func:`async_passthrough` isolates the engine's per-batch overhead, this exercises the thing an
+    async transform exists for — *overlapping* awaited I/O — so throughput should approach
+    ``max_in_flight`` batches per fetch-latency, far above the serial `1 / latency`. Identity output keeps
+    the structural digest stable; module-level so a ``--workers`` run can cloudpickle it."""
+    await asyncio.sleep(_env_int("NAUTILUS_BENCH_FETCH_US", 1000) / 1_000_000)
     return batch
 
 

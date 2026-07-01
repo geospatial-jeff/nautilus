@@ -75,11 +75,12 @@ real event times are kept strictly below that sentinel so they can never collide
 4. **Termination** — an operator forwards `EOS` only after receiving it on *all* inputs; reaching the
    final input advances the watermark to `WATERMARK_MAX`, which flushes every pending window. The job
    ends when all sinks see `EOS` — no central poller.
-5. **Synchronous critical section** — `process`/`on_watermark` never `await`; they emit into an
-   in-memory `Collector` and the actor performs all backpressured sends *between* steps. Each
-   per-batch step is therefore a race-free critical section under the GIL. (An `AsyncSink` is the
-   deliberate exception — mechanism 9 — and it is *because* its awaiting code touches no keyed state
-   and emits nothing that letting it `await` keeps this guarantee.)
+5. **Synchronous critical section** — `process`/`on_watermark`/`integrate` never `await`; they emit into
+   an in-memory `Collector` and the actor performs all backpressured sends *between* steps. Each
+   per-batch step is therefore a race-free critical section under the GIL. (The async stages — mechanism
+   9 — are the deliberate exception: only their awaiting half (`fetch`/`write`) runs concurrently, and it
+   is handed no keyed state and no `Collector`, so the synchronous `integrate` that *does* touch state
+   still runs one batch at a time on the actor task and this guarantee holds.)
 6. **Keyed state** (`nautilus.state`) — scoped by `(operator_id, name, key, namespace)` and accessed
    through a `KeyContext` captured by each handle (no shared mutable "current key" cursor).
    `snapshot`/`restore` are in the ABC from day one so a spilling/checkpointing backend is additive.
@@ -102,17 +103,25 @@ real event times are kept strictly below that sentinel so they can never collide
    result is independent of the order the two sides arrive; like the keyed aggregations it holds unbounded
    state until EOS — an accepted MVP tradeoff, since the inputs here are bounded. How it buffers and the
    `on_watermark` eviction seam for a future windowed variant are the operator's concern.
-9. **Async sink** (`core.operator.AsyncSink`, driven by `runtime.actor.run_async_sink`) — the one operator
-   besides a source that may `await`, so a pipeline writes its results to an external store inside the
-   streaming model instead of collecting them and writing afterward. Awaiting is safe here precisely
-   because a sink has no downstream and no nautilus keyed state: only the state-free `write` runs
-   concurrently, so the single-writer model that makes keyed state lock-free (mechanism 5) is untouched.
-   The bound on concurrent writes doubles as the backpressure to upstream, and writes are at-least-once —
-   a failed job re-runs whole (`Barrier`/exactly-once is still reserved), so a `write` must be idempotent
-   under replay. The compiler synthesizes the collecting `CollectSink` only for a graph whose leaf is *not*
-   an `AsyncSink`, so an authored sink takes the leaf's place and every existing graph lowers byte-for-byte
-   unchanged. How the loop bounds, drains, and fails fast is `run_async_sink`; the fetch/integrate split
-   that extends awaiting to *intermediate* operators is the planned next step (`ASYNC_IO_PLAN.md`).
+9. **Async I/O stages** (`core.operator.AsyncSink` / `AsyncOneInputOperator`, driven by
+   `runtime.actor.run_async_sink` / `run_async_transform`) — the operators besides a source that may
+   `await`, so a pipeline does its I/O inside the streaming model: a transform enriches a record from an
+   external lookup, a terminal writes results to an external store — instead of cramming I/O into the
+   source or running it after the whole result is collected. The design is the **fetch/integrate split**:
+   the awaiting half (a transform's `fetch`, a sink's `write`) is state-free and runs as a bounded set of
+   concurrent tasks, while the synchronous half (a transform's `integrate`) is the only code that touches
+   keyed state or emits. So real I/O overlaps while the single-writer state model (mechanism 5) holds even
+   for a keyed enrich: the half that runs concurrently is handed no state and no `Collector`, and reaching
+   keyed state or telemetry from it *raises* — enforced at the state backend itself, so even a handle
+   cached in `integrate` cannot slip a write past it. The engine — not the
+   operator — owns concurrency, ordering, and the watermark/EOS barriers; the in-flight bound doubles as
+   the backpressure to upstream; and emission defaults to input order so a run stays reproducible
+   (unordered throughput is a planned addition). An async `write` is at-least-once — a failed job re-runs
+   whole (`Barrier`/exactly-once stays reserved), so it must be idempotent under replay. The compiler
+   synthesizes the collecting `CollectSink` only when the leaf is *not* an `AsyncSink`, so an authored
+   sink takes the leaf's place and every existing graph lowers byte-for-byte unchanged. The exact
+   per-batch contract is on the `AsyncOneInputOperator` / `AsyncSink` ABCs; how each loop bounds,
+   reorders, drains, and fails fast is on `run_async_sink` / `run_async_transform`.
 
 ## Deployment (`nautilus.cluster`)
 

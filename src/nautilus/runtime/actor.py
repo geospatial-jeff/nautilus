@@ -3,15 +3,18 @@
 An :class:`Output` routes one upstream instance's frames to a downstream operator's instances: data
 batches go through a partitioner, control frames are broadcast to *all* downstream instances.
 
-There are four actor-loop entry points. ``run_source`` drives a source; ``run_transform`` (one input) and
+There are five actor-loop entry points. ``run_source`` drives a source; ``run_transform`` (one input) and
 ``run_two_input`` (a join's two inputs) are thin wrappers over the shared ``_run_operator_loop`` —
 differing only in how each data batch is dispatched to the operator (``process`` vs
-``process_left``/``process_right`` by the input's side). ``run_async_sink`` is the one loop that lets an
-operator ``await``: it drives an :class:`~nautilus.core.operator.AsyncSink`, issuing each batch as one of
-several in-flight ``write`` tasks (a :class:`~asyncio.Semaphore` bounds them, an
-:class:`~asyncio.TaskGroup` owns them) so their I/O overlaps while the actor goes on reading. It is a
-separate loop, not a branch in ``_run_operator_loop``, because that structured-concurrency shape shares
-nothing with the proven synchronous one. ``_run_operator_loop`` encodes the core streaming semantics:
+``process_left``/``process_right`` by the input's side). Two more let an operator ``await``, each its own
+loop (the structured-concurrency shape shares nothing with the proven synchronous one): ``run_async_sink``
+drives an :class:`~nautilus.core.operator.AsyncSink`, issuing each batch as one of several in-flight
+``write`` tasks (a :class:`~asyncio.Semaphore` bounds them, an :class:`~asyncio.TaskGroup` owns them) so
+their I/O overlaps while the actor reads on; ``run_async_transform`` drives an
+:class:`~nautilus.core.operator.AsyncOneInputOperator`, overlapping its awaiting ``fetch`` across batches
+while integrating and emitting each result synchronously and in input order — so it needs an ordered
+reorder buffer the sink does not, a ``deque`` whose fetches wake the loop through one ``asyncio.Event``.
+``_run_operator_loop`` encodes the core streaming semantics:
 
 * per-input watermark combination (min over non-idle inputs — a join's is therefore ``min(left, right)``),
 * fire windows/timers when the combined watermark advances, *then* forward the watermark,
@@ -29,13 +32,16 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from time import perf_counter_ns
+from typing import Any
 
 import pyarrow as pa
 
 from nautilus.core.operator import (
+    AsyncOneInputOperator,
     AsyncSink,
     Collector,
     ListCollector,
@@ -691,3 +697,368 @@ async def run_async_sink(
             rows_out=0,
             wall_micros=(perf_counter_ns() - started) // 1000,
         )
+
+
+class _Data:
+    """A data slot in the async transform's ordered reorder buffer: one batch and the in-flight ``fetch``
+    task computing its result. Input order is the deque position, so no sequence number is needed.
+    """
+
+    __slots__ = ("batch", "task")
+
+    def __init__(self, batch: pa.RecordBatch, task: asyncio.Future[tuple[object, int]]) -> None:
+        self.batch = batch
+        self.task = task
+
+
+class _Marker:
+    """A control slot in the reorder buffer: a combined-watermark advance, computed in mailbox read order,
+    to forward once every earlier data slot has been integrated and emitted (so it never overtakes
+    in-flight data)."""
+
+    __slots__ = ("advanced",)
+
+    def __init__(self, advanced: int) -> None:
+        self.advanced = advanced
+
+
+async def run_async_transform(
+    op: AsyncOneInputOperator,
+    ctx: OperatorContext,
+    mailbox: Mailbox,
+    outputs: list[Output],
+    *,
+    recorder: Recorder = NULL_RECORDER,
+) -> None:
+    """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 9) to
+    completion, then forward EOS.
+
+    Realizing that contract means reordering out-of-order fetch completions back into input order and
+    forwarding watermarks/EOS in band — which the sink's TaskGroup cannot, so this is a ``deque`` of slots
+    the driver reaps as fetches complete:
+
+    * The ``deque`` holds DATA slots (a batch + its in-flight fetch task, in input order) and MARKER slots
+      (a combined-watermark advance). The head is the reorder point: ``integrate``/emit drains a DATA head
+      once its fetch is done; a MARKER fires its watermark only when it reaches the head, after every
+      earlier batch is emitted — yet later fetches keep running behind it. A fetch's wall duration is read
+      off its task when the actor reaps it, feeding ``async.request_micros``.
+    * ``max_in_flight`` bounds the buffer: ``buffered`` counts DATA slots and is decremented on pop, not on
+      completion, so a slow head cannot let the buffer grow without limit; a full buffer stalls reads — the
+      backpressure to upstream. ``awaiting`` separately counts fetches still in flight (the
+      ``async.in_flight`` gauge), ``<= buffered`` once completed fetches queue behind a slow head.
+    * Each fetch and the armed read carry a done-callback that sets one ``asyncio.Event``, so the loop
+      blocks once per completion instead of re-registering the whole in-flight set every turn. The fetch
+      callback also records a failure the instant it happens — regardless of reorder position — so the loop
+      fails fast on any fetch (not only the head) without ever waiting on a blocked head. On failure or
+      teardown the ``finally`` cancels and awaits every pending task, running each ``fetch``'s own
+      ``try/finally`` cleanup promptly.
+    * Terminal: only once the mailbox is exhausted *and* nothing is buffered does it fire ``WATERMARK_MAX``
+      and forward EOS — strictly after the last batch is emitted, so EOS never overtakes in-flight data.
+
+    The driver installs the :class:`~nautilus.core.operator.OperatorContext` guard that keeps a concurrent
+    ``fetch`` out of keyed state, opening it only for the synchronous ``open``/``integrate``/
+    ``on_watermark``/``close`` calls; ``runtime.step_micros`` here is those calls' self-time only, never
+    the awaited I/O."""
+    op_id, opcls, loc = ctx.operator_id, type(op).__name__, _source_location(op)
+    sub, n = ctx.subtask_index, mailbox.num_inputs
+
+    rows_in = recorder.counter("operator.rows_in", operator_id=op_id, subtask_index=sub)
+    batches_in = recorder.counter("operator.batches_in", operator_id=op_id, subtask_index=sub)
+    rows_out = recorder.counter("operator.rows_out", operator_id=op_id, subtask_index=sub)
+    batches_out = recorder.counter("operator.batches_out", operator_id=op_id, subtask_index=sub)
+    bytes_in = recorder.counter("operator.bytes_in", operator_id=op_id, subtask_index=sub)
+    bytes_out = recorder.counter("operator.bytes_out", operator_id=op_id, subtask_index=sub)
+    bytes_on = bytes_in is not NOOP_COUNTER  # FULL tier only — skip the Arrow buffer-size walk
+    bytes_out_arg = bytes_out if bytes_on else None
+    proc_hist = recorder.histogram("operator.process_micros", operator_id=op_id, subtask_index=sub)
+    batch_rows_hist = recorder.histogram(
+        "operator.batch_rows", operator_id=op_id, subtask_index=sub
+    )
+    wm_hist = recorder.histogram(
+        "operator.on_watermark_micros", operator_id=op_id, subtask_index=sub
+    )
+    proc_calls = recorder.counter("operator.process_calls", operator_id=op_id, subtask_index=sub)
+    wm_calls = recorder.counter("operator.on_watermark_calls", operator_id=op_id, subtask_index=sub)
+    step = _MicrosAccumulator(
+        recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
+    )
+    awaits = recorder.counter("runtime.await_count", operator_id=op_id, subtask_index=sub)
+    input_wait = recorder.counter("edge.input_wait_micros", operator_id=op_id)
+    wm_gauge = recorder.gauge("watermark.combined_micros", operator_id=op_id, subtask_index=sub)
+    advances = recorder.counter("watermark.advances", operator_id=op_id)
+    wm_final = recorder.gauge("watermark.final_micros", operator_id=op_id)
+    requests = recorder.counter("async.requests", operator_id=op_id, subtask_index=sub)
+    req_micros = recorder.counter("async.request_micros", operator_id=op_id, subtask_index=sub)
+    timeouts = recorder.counter("async.timeouts", operator_id=op_id, subtask_index=sub)
+    in_flight_gauge = recorder.gauge("async.in_flight", operator_id=op_id, subtask_index=sub)
+    recorder.set_gauge("eos.expected", n, operator_id=op_id)
+
+    if not op.ordered():
+        raise NotImplementedError(
+            f"async transform {op_id!r} requested ordered()=False; only ordered (input-order) emission "
+            "is implemented — unordered is a planned addition"
+        )
+    cap = op.max_in_flight()
+    if cap < 1:
+        raise ValueError(
+            f"async transform {op_id!r} max_in_flight() returned {cap}; it must be >= 1"
+        )
+    recorder.set_gauge("async.capacity", cap, operator_id=op_id, subtask_index=sub)
+    timeout_us = op.timeout_micros()
+    timeout_s = None if timeout_us is None else timeout_us / 1_000_000
+
+    tracker = WatermarkTracker(n)
+    collector = ListCollector()
+    state_on = recorder is not NULL_RECORDER  # gate the state-size walk; OFF/no-op runs skip it
+    backend = (
+        ctx._install_async_guard()
+    )  # returns the raw backend for engine sampling (bypasses the guard)
+    started = perf_counter_ns()
+
+    pending: deque[_Data | _Marker] = deque()
+    buffered = (
+        0  # DATA slots awaiting drain, in input order; max_in_flight caps it — the backpressure
+    )
+    awaiting = (
+        0  # fetches launched but not yet completed — the true count for the async.in_flight gauge
+    )
+    failed: list[asyncio.Future[Any]] = []  # fetches that raised, appended by their done-callback
+    progress = (
+        asyncio.Event()
+    )  # a fetch/read completion sets it, so the loop blocks once per event, not per task
+    get_task: asyncio.Future[tuple[int, Frame]] | None = None
+    armed_ns = 0
+    read_done_ns = 0
+
+    def _sample_state() -> None:
+        for (sop_id, name), (entries, keys) in backend.sizes().items():
+            recorder.set_gauge("state.entries", entries, operator_id=sop_id, state_name=name)
+            recorder.set_gauge("state.keys", keys, operator_id=sop_id, state_name=name)
+
+    def _fire(t: int, frame_kind: str) -> None:
+        if state_on:
+            _sample_state()
+        w0 = perf_counter_ns()
+        with (
+            _capture(recorder, op_id, opcls, loc, "on_watermark", frame_kind=frame_kind),
+            ctx._state_section(),
+        ):
+            op.on_watermark(t, ctx, collector)
+        dt_ns = perf_counter_ns() - w0
+        wm_hist.observe(dt_ns // 1000)
+        wm_calls.add(1)
+        step.add_ns(dt_ns)  # on_watermark is a synchronous critical section too
+
+    async def _advance(advanced: int) -> None:
+        """Forward a combined-watermark advance: record it, fire due windows/timers, flush, broadcast."""
+        wm_gauge.set(advanced)
+        advances.add(1)
+        _fire(advanced, "watermark")
+        await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
+        await _broadcast(Watermark(advanced), outputs)
+
+    async def _timed(batch: pa.RecordBatch) -> tuple[object, int]:
+        """Run one ``fetch`` under its per-request timeout; return its result and the wall time it took."""
+        t0 = perf_counter_ns()
+        if timeout_s is None:
+            result = await op.fetch(batch)
+        else:
+            result = await asyncio.wait_for(op.fetch(batch), timeout_s)
+        return result, perf_counter_ns() - t0
+
+    def _on_fetch_done(task: asyncio.Future[tuple[object, int]]) -> None:
+        """Done-callback on every fetch task: keep the true in-flight count, and record a failure the
+        instant it happens. Because the callback fires regardless of the task's reorder-buffer position, a
+        failure behind a slow head — or on any sibling — is seen at once, so the loop below can fail fast
+        without ever waiting on the blocking head (and a timeout/error is recorded even if it is later
+        surfaced by a drain rather than the loop's abort)."""
+        nonlocal awaiting
+        awaiting -= 1
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            if isinstance(exc, TimeoutError):
+                timeouts.add(1)
+            _record_operator_error(recorder, op_id, opcls, loc, "fetch", exc)
+            failed.append(task)
+        progress.set()
+
+    def _on_read_done(_task: asyncio.Future[tuple[int, Frame]]) -> None:
+        """Done-callback on the armed read: stamp when it actually completed, so edge.input_wait_micros
+        counts suspension in ``mailbox.get`` and not the arm-to-processing span the loop interleaves with
+        fetch reaps and integrate."""
+        nonlocal read_done_ns
+        read_done_ns = perf_counter_ns()
+        progress.set()
+
+    def _classify(i: int, frame: Frame) -> None:
+        """Place one read frame into the reorder buffer: launch a fetch for data; turn a
+        watermark/idle/active/EOS into a combined-watermark advance carried in read order."""
+        nonlocal buffered, awaiting
+        if isinstance(frame, Batch):
+            rows = frame.num_rows
+            batches_in.add(1)
+            rows_in.add(rows)
+            batch_rows_hist.observe(rows)
+            if bytes_on:
+                bytes_in.add(int(frame.data.get_total_buffer_size()))
+            task = asyncio.ensure_future(_timed(frame.data))
+            task.add_done_callback(_on_fetch_done)
+            pending.append(_Data(frame.data, task))
+            buffered += 1
+            awaiting += 1
+            in_flight_gauge.set(
+                awaiting
+            )  # gauge keeps the max — the peak fetches awaiting I/O at once
+        elif isinstance(frame, Watermark):
+            advanced = tracker.update(i, frame.t)
+            if advanced is not None:
+                pending.append(_Marker(advanced))
+        elif isinstance(frame, StatusIdle):
+            recorder.incr("watermark.input_idle", 1, operator_id=op_id, input_index=i)
+            advanced = tracker.set_idle(i)
+            if advanced is not None:
+                pending.append(_Marker(advanced))
+        elif isinstance(frame, StatusActive):
+            recorder.incr("watermark.input_active", 1, operator_id=op_id, input_index=i)
+            tracker.set_active(i)
+        elif isinstance(frame, EOS):
+            recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
+            advanced = tracker.close_input(i)
+            mailbox.close_input(i)
+            # Forward a watermark advance only when a *non-terminal* input closed (min over the inputs
+            # still open). Closing the LAST input advances the tracker to WATERMARK_MAX, but that is the
+            # terminal _fire(WATERMARK_MAX) below — forwarding it here too would double-fire on_watermark
+            # and emit a spurious Watermark(MAX), unlike the sync loop.
+            if advanced is not None and not mailbox.exhausted:
+                pending.append(_Marker(advanced))
+        else:  # an unknown/unhandled frame must fail loudly, never silently vanish
+            raise TypeError(
+                f"async transform {op_id!r} received an unhandled frame on input {i}: "
+                f"{type(frame).__name__}"
+            )
+
+    async def _drain_head() -> None:
+        """Emit ready data in input order and forward exposed watermark markers, stopping at the first DATA
+        slot whose fetch is still running (it gates everything behind it). Bails on a failed fetch so the
+        loop's fail-fast abort — which also records it — surfaces the error, not a reap here."""
+        nonlocal buffered
+        while pending and not failed:
+            head = pending[0]
+            if isinstance(head, _Marker):
+                pending.popleft()
+                await _advance(head.advanced)
+            elif head.task.done():
+                pending.popleft()
+                buffered -= 1  # on pop, not completion — see the buffered note above; keeps the buffer bounded
+                result, dur_ns = head.task.result()
+                requests.add(1)
+                req_micros.add(dur_ns // 1000)
+                p0 = perf_counter_ns()
+                with (
+                    _capture(
+                        recorder,
+                        op_id,
+                        opcls,
+                        loc,
+                        "integrate",
+                        frame_kind="batch",
+                        batch_rows=head.batch.num_rows,
+                    ),
+                    ctx._state_section(),
+                ):
+                    op.integrate(head.batch, result, ctx, collector)
+                dt_ns = perf_counter_ns() - p0
+                proc_hist.observe(dt_ns // 1000)
+                proc_calls.add(1)
+                step.add_ns(dt_ns)
+                await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
+            else:
+                break
+
+    def _ready() -> bool:
+        """Whether the loop can make progress without blocking: a fetch failed, the armed read completed,
+        or the head slot is drainable (a marker, or a finished fetch)."""
+        if failed or (get_task is not None and get_task.done()):
+            return True
+        return bool(pending) and (isinstance(pending[0], _Marker) or pending[0].task.done())
+
+    with _capture(recorder, op_id, opcls, loc, "open"), ctx._state_section():
+        op.open(ctx)
+    recorder.event(
+        "operator.lifecycle.open",
+        operator_id=op_id,
+        op_class=opcls,
+        source_location=loc,
+        num_inputs=n,
+    )
+
+    try:
+        while True:
+            if (
+                failed
+            ):  # a fetch raised (recorded in its callback); abort — the finally cancels the rest
+                exc = failed[0].exception()
+                assert exc is not None
+                raise exc
+
+            if get_task is None and buffered < cap and not mailbox.exhausted:
+                get_task = asyncio.ensure_future(mailbox.get())
+                get_task.add_done_callback(_on_read_done)
+                armed_ns = perf_counter_ns()
+
+            # Terminal: the mailbox is exhausted (else a read would be armed above) and nothing is buffered
+            # — every fetch reaped and its trailing markers drained by the loop below. Fire WATERMARK_MAX to
+            # close every pending window, then break to forward EOS strictly after the last batch is emitted.
+            if get_task is None and buffered == 0:
+                _fire(WATERMARK_MAX, "eos")
+                await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
+                break
+
+            # Block until the next fetch or read completion — one wakeup per event via `progress`, set by
+            # their done-callbacks, instead of re-registering the whole in-flight set each turn. Clear then
+            # re-check so a completion racing the clear is never lost.
+            if not _ready():
+                progress.clear()
+                if not _ready():
+                    await progress.wait()
+            if failed:
+                continue  # surfaced by the abort at the loop top; don't launch more work
+
+            if get_task is not None and get_task.done():
+                i, frame = get_task.result()
+                input_wait.add((read_done_ns - armed_ns) // 1000)
+                awaits.add(1)
+                get_task = None
+                _classify(i, frame)
+
+            await _drain_head()
+    finally:
+        # Cancel every still-pending fetch (and the armed read) BEFORE awaiting them — gathering a
+        # blocked fetch without cancelling it would hang teardown forever.
+        leftover: list[asyncio.Future[Any]] = [s.task for s in pending if isinstance(s, _Data)]
+        if get_task is not None:
+            leftover.append(get_task)
+        for fut in leftover:
+            fut.cancel()
+        if leftover:
+            # Await — not a bare cancel — so each fetch's own try/finally (release the client, abort the
+            # in-flight request) runs promptly. CancelledError from the cancels is suppressed.
+            await asyncio.gather(*leftover, return_exceptions=True)
+        mailbox.close()
+        with _capture(recorder, op_id, opcls, loc, "close"), ctx._state_section():
+            await op.close()
+        wm_final.set(tracker.combined)
+        decoded = mailbox.decode_micros()
+        if decoded:
+            recorder.incr("transport.decode_micros", decoded, operator_id=op_id)
+        recorder.event(
+            "operator.lifecycle.close",
+            operator_id=op_id,
+            rows_in=rows_in.value,
+            rows_out=rows_out.value,
+            wall_micros=(perf_counter_ns() - started) // 1000,
+        )
+
+    recorder.event(
+        "eos.forwarded", operator_id=op_id, wall_micros=(perf_counter_ns() - started) // 1000
+    )
+    await _broadcast(EOS_FRAME, outputs)

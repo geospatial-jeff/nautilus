@@ -47,6 +47,27 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-01 — Async-transform reorder loop: O(1)-per-completion wakeups
+
+- **Commit:** `e3d8c91`
+- **Change:** `run_async_transform` (`src/nautilus/runtime/actor.py`) woke by rebuilding a set of every
+  in-flight fetch and passing it to `asyncio.wait(FIRST_COMPLETED)` each iteration, which re-registers a
+  callback on every future in the set per call — so one completion cost O(in-flight). Each fetch now carries
+  a single persistent done-callback that sets a shared `asyncio.Event` the loop blocks on, so a completion
+  costs O(1) however many fetches overlap.
+- **Impact (`nautilus bench bench-async-io`, batch 512, max_in_flight 512, median of 5 trials; Linux
+  x86_64 · Python 3.12.3):** the gain tracks how many fetches are actually in flight — the more overlap, the
+  more the old per-completion rebuild cost. With an awaited fetch of **100 µs: 35.5M → 38.0M rows/s (+7%)**,
+  **2 ms: 32.9M → 37.2M (+13%)**, **4 ms: 29.9M → 34.0M (+13%)**. It is small below that, since a fast fetch
+  drains before the next launches so little overlaps: at the default `max_in_flight=8`, `bench-async` moves
+  **39.0M → 40.8M (+4.6%)**, within the harness's 7% gate.
+- **Correctness:** structural digest **identical** before and after — `1bcf9d55d7ca` (1M rows),
+  `64940ffd50c9` (500k) — so emission order is unchanged. `bench-check` green with no sync-path regression:
+  the guard's per-access check is gone from synchronous operators, leaving `bench-keyed` within noise
+  (−0.8%).
+
+---
+
 ## 2026-06-29 — Vectorized HashJoin single-column key encoding
 
 - **Commit:** `9f2dcb3`
