@@ -39,7 +39,23 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   the right's non-key columns; both inputs are co-partitioned on the join key, so a key's rows meet on one
   instance. (How it buffers and matches the two sides is on `HashJoin`.)
 - **Sink** — The end of the graph: it consumes the final stream. Stage 0's sink collects the output
-  batches into a list (it appears as `CollectSink` in the topology and telemetry).
+  batches into a list (it appears as `CollectSink` in the topology and telemetry). An **async sink**
+  (`AsyncSink`) is an authored terminal that instead *writes* each batch to an external store.
+- **Async stage** — An operator that does its I/O by *awaiting* it, so the pipeline can enrich a record
+  from an external lookup (`AsyncOneInputOperator`) or write to an external store (`AsyncSink`) inside the
+  streaming model. It is split into an awaiting half — `fetch`/`write`, run as bounded concurrent tasks so
+  I/O overlaps, handed no keyed state — and a synchronous half — a transform's `integrate`, run on the
+  actor task, the only place that touches state or emits. This keeps keyed state single-writer while I/O
+  overlaps (`DESIGN.md` mechanism 9).
+- **In-flight bound (`max_in_flight`)** — How many `fetch`/`write` tasks an async stage may run at once.
+  It doubles as the stage's backpressure: once reached, the actor stops reading, so a slow external store
+  stalls upstream with bounded memory rather than buffering without limit.
+- **Ordered vs unordered emission** — How an async transform orders its output. **Ordered** (the default)
+  integrates and emits strictly in input order — reproducible emission, keyed-state fold order, and
+  structural digest — while later fetches still overlap behind the in-order frontier. **Unordered**
+  (`ordered=False`) emits each result the moment its fetch finishes (completion order, lower latency); it
+  is stateless-only, because a keyed stage's counts would then depend on fetch timing. A watermark/EOS is
+  a hard barrier either way — it never overtakes the data read before it.
 - **Edge** — A directed connection from one operator's output to a downstream operator's **input port**.
   Every edge carries both data and control frames and has a partitioner that decides how data is routed
   to the downstream instances.

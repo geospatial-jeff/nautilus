@@ -91,13 +91,22 @@ class MapBatch(OneInputOperator):
 class AsyncMapBatch(AsyncOneInputOperator):
     """Applies an async batch -> batch function: :meth:`fetch` awaits ``fn(batch)`` (the I/O) and
     :meth:`integrate` emits its result. The stateless async enrich/lookup built-in — one batch out per
-    batch in, so its row count is order-invariant — behind the DSL's ``.map_async``."""
+    batch in, so its row count is order-invariant — behind the DSL's ``.map_async``.
+
+    Being stateless is what lets it run ``ordered=False`` (completion-order emission, lower latency): with
+    no keyed state the output multiset and every structural-digest count are the same whichever order the
+    fetches finish in. ``ordered`` defaults ``True`` (input-order emission)."""
 
     def __init__(
-        self, fn: Callable[[pa.RecordBatch], Awaitable[pa.RecordBatch]], *, max_in_flight: int = 8
+        self,
+        fn: Callable[[pa.RecordBatch], Awaitable[pa.RecordBatch]],
+        *,
+        max_in_flight: int = 8,
+        ordered: bool = True,
     ) -> None:
         self._fn = fn
         self._cap = max_in_flight
+        self._ordered = ordered
 
     async def fetch(self, batch: pa.RecordBatch) -> object:
         return await self._fn(batch)
@@ -109,6 +118,9 @@ class AsyncMapBatch(AsyncOneInputOperator):
 
     def max_in_flight(self) -> int:
         return self._cap
+
+    def ordered(self) -> bool:
+        return self._ordered
 
 
 class FilterRows(OneInputOperator):

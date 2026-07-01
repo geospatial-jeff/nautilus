@@ -7,12 +7,14 @@ async I/O**, not only the source. This is a working plan; when the work lands it
 defects that verification found are folded into the loop contract here, not left open.
 
 > **Status.** The **async sink** (sink scope of 6.0–6.2) and the **async transform** (6.3 — the
-> fetch/integrate split: `AsyncOneInputOperator`, `AsyncMapBatch`, `run_async_transform`'s ordered reorder
+> fetch/integrate split: `AsyncOneInputOperator`, `AsyncMapBatch`, `run_async_transform`'s reorder
 > loop, the enforced `OperatorContext` state guard, the DSL `.map_async`/`.apply_async`, the
 > `async_one_input` IR kind, the cross-process path) have landed — stateless *and* keyed; `DESIGN.md`
-> mechanism 9 records them. Still planned (6.4): **unordered** mode (stateless-only, completion-order) and
-> the **NDVI example rework**. Ordered-only is shipped, so the unordered-rejected-for-keyed rule below is
-> moot until unordered lands; the loop rejects `ordered()=False` for now.
+> mechanism 9 records them. **6.4 — unordered mode** has landed: a stateless map may emit in
+> completion order (`ordered=False`) — `_drain_unordered` in `run_async_transform`, the DSL/actor
+> rejection for keyed stages, the `AsyncMapBatch(ordered=)` knob — with the watermark/EOS marker still a
+> hard barrier, so the unordered-rejected-for-keyed rule below is now live. Still planned (6.4): the
+> **NDVI example rework**.
 
 ## The problem
 
