@@ -276,16 +276,20 @@ def bench_async_io(parallelism: int = 1) -> LogicalGraph:
     default 1000). Where ``bench-async`` measures the loop's overhead with a free fetch, this measures the
     overlap the loop exists to deliver: with ``max_in_flight`` fetches in flight, throughput should reach
     ~``max_in_flight`` batches per fetch-latency, far above serial. ``NAUTILUS_BENCH_INFLIGHT`` (default
-    64) sets the concurrency; ``--parallelism N`` fans it out further."""
+    64) sets the concurrency; ``--parallelism N`` fans it out further. ``NAUTILUS_BENCH_ORDERED=0`` runs it
+    unordered (completion-order emission); paired with ``NAUTILUS_BENCH_SLOW_EVERY`` (skewed latency) that
+    measures the unordered throughput win under head-of-line blocking. The stateless map's digest is
+    identical either way, so the two runs stay comparable against one baseline."""
     p = bench_params()
     source = SyntheticKeyedSource(
         num_batches=p["num_batches"],
         batch_rows=p["batch_rows"],
         key_cardinality=p["key_cardinality"],
     )
+    ordered = os.environ.get("NAUTILUS_BENCH_ORDERED", "1") != "0"
     return (
         dsl_source(source)
-        .map_async(async_io_wait, max_in_flight=_bench_inflight(64))
+        .map_async(async_io_wait, max_in_flight=_bench_inflight(64), ordered=ordered)
         .to_graph(parallelism=parallelism)
     )
 
