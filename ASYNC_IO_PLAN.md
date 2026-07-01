@@ -94,12 +94,14 @@ the design must forbid. The barrier is made real two ways, together:
    `on_watermark(t, ctx, out)`), and the contract is that the operator must not stash it on `self`.
    `open(ctx)` keeps only author-owned I/O resources (a pooled client), not the state handle. This is
    the pit of success.
-2. **A runtime guard that turns a violation into a loud failure, not silent corruption.** The actor
-   marks the context "state-open" only for the synchronous duration of each `open`/`integrate`/
-   `on_watermark`/`close` call; `value_state`/`reducing_state`/`entries`/`clear_state`/`state_backend`
-   raise if accessed while it is closed. A `fetch` runs only while the actor is awaiting, when the flag
-   is closed, so any state touch from `fetch` raises immediately. (A synchronous `integrate` cannot
-   interleave with a `fetch`, since it never yields — so the flag is unambiguous.)
+2. **A runtime guard that turns a violation into a loud failure, not silent corruption.** The actor opens
+   the guard only for the synchronous duration of each `open`/`integrate`/`on_watermark`/`close` call and
+   closes it around every `fetch`. The guard wraps the *state backend and recorder themselves*, not just
+   the `ctx` accessors — so a keyed read/write or metric write from `fetch` raises `StateAccessError`
+   whether it arrives through `ctx` or through a handle the operator cached in `integrate` (the handle
+   holds the guarded backend). A `fetch` runs only while the actor is awaiting, when the guard is closed,
+   so any such touch raises immediately. (A synchronous `integrate` cannot interleave with a `fetch`,
+   since it never yields — so the flag is unambiguous.)
 
 The same reasoning forbids `fetch`/`write` from touching `ctx.metrics`/`ctx.io_wait()`: I/O time is
 attributed by the engine (below), so the awaiting half has no recorder and the guard covers
@@ -107,65 +109,21 @@ attributed by the engine (below), so the awaiting half has no recorder and the g
 
 ## The driver loop
 
-A new `_run_async_operator_loop(op, ctx, mailbox, outputs, *, emit_results, recorder)` in
-`runtime/actor.py`, a sibling of `_run_operator_loop` (not a branch inside it — the in-flight
-reorder/barrier logic is different enough that forking the proven, bench-checked sync loop inline would
-muddy it). Thin wrappers `run_async_transform` (`emit_results=True`) and `run_async_sink`
-(`emit_results=False`, `outputs=[]`). It reuses the proven pieces verbatim: `WatermarkTracker(n)`, the
-`_capture` fail-fast wrapper, `_flush`/`_broadcast`, the `eos.expected`/`eos.received` bookkeeping, and
-the `WATERMARK_MAX` terminal flush.
+Landed as separate loops `run_async_transform` and `run_async_sink` in `runtime/actor.py` — siblings of
+the proven `_run_operator_loop`, not branches inside it, because the in-flight reorder/barrier shape
+shares nothing with it. Each reuses the proven pieces verbatim: `WatermarkTracker(n)`, the `_capture`
+fail-fast wrapper, `_flush`/`_broadcast`, the `eos.*` bookkeeping, and the `WATERMARK_MAX` terminal
+flush. The reorder mechanism itself — an ordered `deque` of DATA and MARKER slots, fetches woken through
+one `asyncio.Event` (the loop blocks once per completion, not once per in-flight task), `max_in_flight`
+bounding the buffer, per-fetch fail-fast recorded in each fetch's completion callback, and the
+every-iteration terminal-drain invariant that keeps `WATERMARK_MAX`/EOS strictly after the last in-flight
+batch — is `run_async_transform`'s docstring to specify and own; this plan does not restate it.
 
-**State.** An ordered `collections.deque` whose entries are either a DATA slot
-`(seq, batch, task: asyncio.Task)` or a MARKER slot wrapping a control frame (`Watermark` /
-`StatusIdle` / `StatusActive` / EOS) tagged with the *advanced combined* watermark computed at read
-time. The deque is the only task registry. `inflight` is the count of DATA slots whose task is
-unreaped; `max_in_flight` bounds it. One `get_task = asyncio.ensure_future(mailbox.get())` at a time
-preserves the mailbox's one-outstanding-recv-per-channel contract.
-
-**Engine timing wrapper.** `_timed` runs the `fetch`/`write` task as
-`t0 = perf_counter_ns(); r = await op.fetch(batch); return (r, perf_counter_ns() - t0)`. It writes no
-recorder — it only returns the duration — so when the actor records `async.request_micros` on reap, the
-recorder stays single-writer.
-
-**Per iteration:**
-
-1. If `inflight < max_in_flight`, not all inputs are closed, and no `get_task` is armed, arm one
-   `get_task`. The capacity gate stalls reads so the upstream bounded queue / cross-process credit
-   window fills — the same backpressure the sync loop uses, gated on `inflight`.
-2. Build the wake set: `get_task`, **plus every in-flight DATA task** (not only the emittable head — so
-   a failure on any task is observed promptly; see fail-fast below). `await asyncio.wait(wakes,
-   FIRST_COMPLETED)`. Never call `asyncio.wait` on an empty set (see the terminal-drain invariant).
-3. Failure scan: if any completed task raised, cancel-and-**await** all siblings and `get_task` via
-   `gather(..., return_exceptions=True)`, then re-raise the original through `_capture`.
-4. Drain emittable completions. Ordered: the head DATA slot, then the next, while each is done —
-   reorder by `seq`. Unordered: any done DATA slot in the leading pre-barrier segment. For each: pop it
-   (decrement `inflight` **on pop**, not on task completion, so the reorder buffer stays bounded),
-   record `async.request_micros`, then on the actor task run `op.integrate(batch, result, ctx, out)`
-   timed into `runtime.step_micros`, then `await _flush(...)`. A sink skips integrate/emit and only
-   accounts `rows_in`.
-5. Forward any now-exposed MARKER at the emittable frontier: a watermark advance fires `_advance`-style
-   logic (`wm_gauge`, `advances`, `op.on_watermark(t, ctx, out)`, flush, `_broadcast(Watermark)`); a
-   sink awaits `op.on_watermark(t)`. Unordered treats a marker as a hard barrier: drain the leading
-   in-flight segment to zero before firing.
-6. If `get_task` completed, classify: `Batch` → assign `seq`, launch a `_timed` task, append a DATA
-   slot, `inflight += 1`; `Watermark`/`StatusIdle`/`StatusActive` → `tracker.update`/`set_idle`/
-   `set_active`, append a MARKER carrying the advanced value (or drop if no advance); `EOS` →
-   `tracker.close_input(i)`, `mailbox.close_input(i)`, append an EOS MARKER.
-
-**Terminal drain is a loop-level invariant, evaluated every iteration** (the fix for the EOS-ordering
-defect — the sync loop's "break when the last EOS is read" is unsafe here because fetches are still in
-flight at that instant): after draining completions and forwarding exposed markers, if `mailbox` is
-exhausted *and* the deque has no DATA slot *and* no `get_task` is armed, forward the trailing markers
-in `seq` order (firing each watermark advance), `_fire(WATERMARK_MAX)`, flush, then `_broadcast(EOS)`
-for a transform / `await op.close()` for a sink, and break. So `WATERMARK_MAX` and `EOS` are emitted
-strictly after the last in-flight batch is integrated and emitted. When the head is a marker with no
-in-flight DATA task, it is forwarded synchronously and the loop never awaits an empty wake set.
-
-**Teardown.** A `finally` cancels `get_task` and every pending DATA task and **awaits** them (gather,
-suppressing `CancelledError`), then `mailbox.close()`, then `op.close()` (`await` for the sink). The
-await — not a bare `.cancel()` — is what makes each task's own `try/finally` (release the pooled
-connection, abort the in-flight request) run promptly, the direct analogue of `run_source` awaiting
-`frames.aclose()` before `close()`.
+**Still planned (6.4): unordered mode.** For a stateless map, emit in *completion* order instead of input
+order — drain any done DATA slot in the leading pre-barrier segment, and treat a watermark/EOS marker as a
+hard barrier (drain the in-flight segment to zero before firing). Lower latency, but sound only with no
+keyed state and no digest-order guarantee, so it stays opt-in and stateless-only; until it lands the loop
+rejects `ordered()=False`.
 
 **Per-request timeout.** Each `_timed` task wraps its `fetch`/`write` in `asyncio.wait_for(...,
 timeout)` (the timeout is an operator knob, default off). On expiry the task raises, the failure scan

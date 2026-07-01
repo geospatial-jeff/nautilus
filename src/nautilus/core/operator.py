@@ -14,9 +14,9 @@ An actor drives each operator (see :mod:`nautilus.runtime.actor`). The synchrono
 ``process``/``on_watermark``/``integrate`` — must not ``await``; they emit into a :class:`Collector` and
 the actor performs the awaiting (backpressured) sends between calls, so each runs as one critical section
 the GIL makes safe without locks. Only a source's ``frames``, an async transform's ``fetch``, and a
-sink's ``write`` may ``await``; that awaiting half is handed no :class:`Collector` and no state — the
-:class:`OperatorContext` raises if it reaches keyed state or the recorder — so concurrency never touches
-the single-writer guarantee.
+sink's ``write`` may ``await``; that awaiting half is handed no :class:`Collector` and no state, and
+reaching keyed state or the recorder from it raises :class:`StateAccessError` (why: ``DESIGN.md``
+mechanism 9).
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from nautilus.state import (
     StateScope,
     ValueState,
 )
+from nautilus.telemetry.model import Counter, Gauge, Histogram, InstanceSnapshot
 from nautilus.telemetry.recorder import NULL_RECORDER, Recorder
 
 
@@ -67,24 +68,125 @@ class ListCollector(Collector):
 
 
 class StateAccessError(RuntimeError):
-    """Raised when an async transform's awaiting half (:meth:`AsyncOneInputOperator.fetch`) reaches
-    keyed state or the metric recorder. ``fetch`` runs concurrently with other fetches on the event loop,
-    so a state read-modify-write spanning its ``await`` would lose updates; the engine therefore hands it
-    only its batch and closes state access on the context for its duration, turning the contract
-    violation into a loud failure instead of silent corruption. A synchronous operator never arms the
-    guard, so it never sees this."""
+    """Raised when an async transform's awaiting half (:meth:`AsyncOneInputOperator.fetch`) reaches keyed
+    state or the metric recorder. ``fetch`` runs concurrently with sibling fetches on the event loop, so a
+    read-modify-write of keyed state spanning its ``await`` would lose updates. The engine therefore closes
+    the context's state and metrics for the duration of every fetch (see
+    :meth:`OperatorContext._install_async_guard`), turning the contract violation into a loud failure
+    instead of silent corruption. The guard wraps the *backend* and *recorder*, not merely the context
+    accessors, so a state handle cached during ``integrate`` and reused in ``fetch`` raises too. A
+    synchronous operator never installs the guard, so it never sees this."""
+
+
+_GUARD_MSG = (
+    "an async transform reached keyed state or ctx.metrics from its awaiting half (fetch); fetch is "
+    "handed only its batch — do all state access and emission in integrate(batch, result, ctx, out), "
+    "which the engine runs on the actor task"
+)
+
+
+class _StateGuard:
+    """The open/closed flag an async transform's guard shares between its wrapped ``state_backend`` and
+    ``metrics``. The driver installs it closed and opens it only inside the synchronous
+    open/integrate/on_watermark/close steps (:meth:`OperatorContext._state_section`), so any access from a
+    concurrent ``fetch`` finds it closed."""
+
+    __slots__ = ("open",)
+
+    def __init__(self) -> None:
+        self.open = False
+
+
+class _GuardedStateBackend(StateBackend):
+    """Wraps the real backend so every keyed read/write raises :class:`StateAccessError` while the guard is
+    closed. Because a :class:`~nautilus.state.ValueState` / :class:`~nautilus.state.ReducingState` handle
+    holds *this backend*, not the context, enforcing here — not on the context accessors — is what catches
+    a fetch that reaches state through a handle it cached in ``integrate``. ``sizes``/``snapshot``/
+    ``restore`` pass through: they are the engine's own sampling and lifecycle calls, never a fetch's.
+    """
+
+    __slots__ = ("_inner", "_guard")
+
+    def __init__(self, inner: StateBackend, guard: _StateGuard) -> None:
+        self._inner = inner
+        self._guard = guard
+
+    def _check(self) -> None:
+        if not self._guard.open:
+            raise StateAccessError(_GUARD_MSG)
+
+    def get(self, scope: StateScope) -> object | None:
+        self._check()
+        return self._inner.get(scope)
+
+    def put(self, scope: StateScope, value: object) -> None:
+        self._check()
+        self._inner.put(scope, value)
+
+    def clear(self, scope: StateScope) -> None:
+        self._check()
+        self._inner.clear(scope)
+
+    def entries(self, operator_id: str, name: str) -> Iterator[tuple[Any, Any, object]]:
+        self._check()
+        return self._inner.entries(operator_id, name)
+
+    def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
+        return self._inner.sizes()
+
+    def snapshot(self) -> bytes:
+        return self._inner.snapshot()
+
+    def restore(self, blob: bytes) -> None:
+        self._inner.restore(blob)
+
+
+class _GuardedRecorder(Recorder):
+    """The metrics counterpart to :class:`_GuardedStateBackend`: writing author telemetry while the guard
+    is closed (from ``fetch``) raises. A counter/gauge *handle* cached in ``integrate`` is not itself
+    guarded, but a stray fetch-time metric write is a telemetry inaccuracy, not the keyed-state corruption
+    the state guard exists to stop."""
+
+    __slots__ = ("_inner", "_guard")
+
+    def __init__(self, inner: Recorder, guard: _StateGuard) -> None:
+        self._inner = inner
+        self._guard = guard
+
+    def _check(self) -> None:
+        if not self._guard.open:
+            raise StateAccessError(_GUARD_MSG)
+
+    def counter(self, name: str, **labels: object) -> Counter:
+        self._check()
+        return self._inner.counter(name, **labels)
+
+    def gauge(self, name: str, **labels: object) -> Gauge:
+        self._check()
+        return self._inner.gauge(name, **labels)
+
+    def histogram(self, name: str, **labels: object) -> Histogram:
+        self._check()
+        return self._inner.histogram(name, **labels)
+
+    def event(self, name: str, **fields: object) -> None:
+        self._check()
+        self._inner.event(name, **fields)
+
+    def snapshot(self) -> InstanceSnapshot:
+        return (
+            self._inner.snapshot()
+        )  # a reporting call at teardown — never a fetch's, so not guarded
 
 
 class OperatorContext:
-    """What an operator is handed at ``open`` time: its ``operator_id``, this instance's
-    ``subtask_index`` of ``num_subtasks``, the state backend, the clock, and a custom-metric recorder.
+    """What an operator is handed at ``open`` time: its ``operator_id``, this instance's ``subtask_index``
+    of ``num_subtasks``, the ``state_backend``, the ``clock``, and the author ``metrics`` recorder.
 
-    State and the recorder are reached through the ``state_backend`` / ``metrics`` properties and the
-    ``value_state`` / ``reducing_state`` / ``entries`` / ``clear_state`` helpers. For an
-    :class:`AsyncOneInputOperator` the engine arms a guard so these raise (:class:`StateAccessError`)
-    from the awaiting ``fetch``, which runs while the actor is between synchronous steps; a synchronous
-    operator never arms it.
-    """
+    For an :class:`AsyncOneInputOperator` the engine installs an await-time guard
+    (:meth:`_install_async_guard`) so ``state_backend`` / ``metrics`` — and any handle cached from them —
+    raise :class:`StateAccessError` if touched from the concurrent ``fetch``. A synchronous operator never
+    installs it and pays nothing: the accessors below reach the backend directly."""
 
     def __init__(
         self,
@@ -99,36 +201,19 @@ class OperatorContext:
         self.subtask_index = subtask_index
         self.num_subtasks = num_subtasks
         self.clock = clock if clock is not None else SystemClock()
-        self._state_backend = (
-            state_backend if state_backend is not None else _InMemoryStateBackend()
-        )
+        self.state_backend = state_backend if state_backend is not None else _InMemoryStateBackend()
         #: Operator-author custom-metric recorder — a SEPARATE recorder from the actor's built-in one, so
         #: the single-writer invariant is never violated. Defaults to a zero-cost no-op. A custom metric
         #: must be declared in the catalog with ``owner=Owner.AUTHOR`` (every metric is catalog-declared,
         #: and this recorder may write only author-owned ones).
-        self._metrics = metrics if metrics is not None else NULL_RECORDER
-        # The await-time state guard (mechanism 5). Off for synchronous operators; an async transform's
-        # driver arms it and opens it only for the synchronous open/integrate/on_watermark/close calls.
-        self._guarded = False
-        self._state_open = True
-
-    @property
-    def metrics(self) -> Recorder:
-        self._require_state_open()
-        return self._metrics
-
-    @property
-    def state_backend(self) -> StateBackend:
-        self._require_state_open()
-        return self._state_backend
+        self.metrics = metrics if metrics is not None else NULL_RECORDER
+        self._guard: _StateGuard | None = None  # installed only for an async transform
 
     def value_state(self, name: str, kctx: KeyContext) -> ValueState[Any]:
-        self._require_state_open()
-        return ValueState(self._state_backend, self.operator_id, name, kctx)
+        return ValueState(self.state_backend, self.operator_id, name, kctx)
 
     def reducing_state(self, name: str, kctx: KeyContext, reducer: Any) -> ReducingState[Any]:
-        self._require_state_open()
-        return ReducingState(self._state_backend, self.operator_id, name, kctx, reducer)
+        return ReducingState(self.state_backend, self.operator_id, name, kctx, reducer)
 
     def entries(self, name: str) -> Iterator[tuple[KeyContext, object]]:
         """Iterate ``(KeyContext, value)`` for every entry of this operator's named state — the
@@ -136,44 +221,43 @@ class OperatorContext:
         to enumerate all keys/windows at a watermark without naming its own ``operator_id`` or building a
         ``StateScope`` by hand. The snapshot is stable to mutate during iteration (e.g. to clear).
         """
-        self._require_state_open()
-        for key, namespace, value in self._state_backend.entries(self.operator_id, name):
+        for key, namespace, value in self.state_backend.entries(self.operator_id, name):
             yield KeyContext(key, namespace), value
 
     def clear_state(self, name: str, kctx: KeyContext) -> None:
         """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key/window
         enumerated via :meth:`entries`)."""
-        self._require_state_open()
-        self._state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
+        self.state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
 
-    # --- the async-stage state guard (engine-only) ----------------------------------------------
+    # --- the async-stage await-time guard (engine-only) -----------------------------------------
 
-    def _arm_state_guard(self) -> None:
-        """Engine-only: turn the await-time guard on and closed. An async transform's driver calls this
-        once before the first ``fetch``; thereafter state/metric access raises except inside the
-        synchronous-step window a :meth:`_state_section` opens."""
-        self._guarded = True
-        self._state_open = False
+    def _install_async_guard(self) -> StateBackend:
+        """Engine-only: install the await-time guard for an async transform and return the *raw* state
+        backend, which the engine's own state-size sampling uses to bypass the guard. Wraps
+        ``state_backend`` and ``metrics`` so a ``fetch`` — which runs while the guard is closed — that
+        reaches keyed state or telemetry, directly or through a handle cached in ``integrate``, raises
+        :class:`StateAccessError`. The driver opens the guard only inside :meth:`_state_section`."""
+        raw = self.state_backend
+        self._guard = _StateGuard()
+        self.state_backend = _GuardedStateBackend(raw, self._guard)
+        self.metrics = _GuardedRecorder(self.metrics, self._guard)
+        return raw
 
     @contextmanager
     def _state_section(self) -> Iterator[None]:
         """Engine-only: open the guard for one synchronous ``open``/``integrate``/``on_watermark``/
-        ``close`` call, restoring the prior state on exit so the no-op (synchronous-operator) case and
-        nested calls both compose."""
-        prev = self._state_open
-        self._state_open = True
+        ``close`` call, restoring the prior state on exit so nested calls compose. A no-op when no guard is
+        installed (every synchronous operator)."""
+        guard = self._guard
+        if guard is None:
+            yield
+            return
+        prev = guard.open
+        guard.open = True
         try:
             yield
         finally:
-            self._state_open = prev
-
-    def _require_state_open(self) -> None:
-        if self._guarded and not self._state_open:
-            raise StateAccessError(
-                f"operator {self.operator_id!r} reached keyed state or ctx.metrics from its awaiting "
-                "half (fetch); fetch is handed only its batch — do state access and emission in "
-                "integrate(batch, result, ctx, out), which the engine runs on the actor task"
-            )
+            guard.open = prev
 
     @asynccontextmanager
     async def io_wait(self) -> AsyncIterator[None]:
@@ -289,9 +373,10 @@ class AsyncOneInputOperator(ABC):
     async def fetch(self, batch: pa.RecordBatch) -> object:
         """Do this batch's external I/O and return an opaque per-batch result for :meth:`integrate`. Runs
         as one of up to :meth:`max_in_flight` concurrent tasks; may ``await``. Handed only the batch — it
-        must not emit, must not touch nautilus keyed state, and must not write telemetry (``ctx`` is not
-        passed, and reaching it through ``self`` raises :class:`StateAccessError`). Raising fails the
-        whole job; exceeding :meth:`timeout_micros` cancels it and fails the job."""
+        must not emit, must not touch nautilus keyed state, and must not write telemetry: ``ctx`` is not
+        passed, and reaching keyed state or the recorder through ``self`` — even a handle cached in
+        :meth:`integrate` — raises :class:`StateAccessError`. Raising fails the whole job; exceeding
+        :meth:`timeout_micros` cancels it and fails the job."""
 
     @abstractmethod
     def integrate(
@@ -312,10 +397,9 @@ class AsyncOneInputOperator(ABC):
         return None
 
     def max_in_flight(self) -> int:
-        """How many :meth:`fetch` tasks may be in flight at once (>= 1). The bound is this stage's
-        backpressure: once it is reached the actor stops reading, so a slow external store stalls upstream
-        with bounded memory — it bounds both the in-flight set and the input-order reorder buffer.
-        """
+        """How many :meth:`fetch` tasks may run at once (>= 1). This is the stage's backpressure bound:
+        once it is reached the actor stops reading, so a slow external store stalls upstream with bounded
+        memory."""
         return 8
 
     def ordered(self) -> bool:
@@ -331,9 +415,10 @@ class AsyncOneInputOperator(ABC):
         concern."""
         return None
 
-    def close(self) -> None:
-        """Called once on the actor task after EOS has drained every in-flight fetch (or on teardown).
-        Release the client/resources."""
+    async def close(self) -> None:
+        """Called once on the actor task after EOS has drained every in-flight fetch (or on teardown). May
+        ``await`` — the awaited client acquired in :meth:`open` is released here (``await client.aclose()``),
+        mirroring :meth:`AsyncSink.close`."""
 
 
 class AsyncSink(ABC):

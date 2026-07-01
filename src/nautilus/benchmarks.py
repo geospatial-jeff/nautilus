@@ -61,6 +61,17 @@ async def async_passthrough(batch: pa.RecordBatch) -> pa.RecordBatch:
     return batch
 
 
+async def async_io_wait(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Latency ``fetch`` for the I/O-bound async-transform benchmark: sleeps ``NAUTILUS_BENCH_FETCH_US``
+    microseconds (default 1000) to stand in for a real external lookup, then returns the batch unchanged.
+    Where :func:`async_passthrough` isolates the engine's per-batch overhead, this exercises the thing an
+    async transform exists for — *overlapping* awaited I/O — so throughput should approach
+    ``max_in_flight`` batches per fetch-latency, far above the serial `1 / latency`. Identity output keeps
+    the structural digest stable; module-level so a ``--workers`` run can cloudpickle it."""
+    await asyncio.sleep(_env_int("NAUTILUS_BENCH_FETCH_US", 1000) / 1_000_000)
+    return batch
+
+
 class SlowMap(OneInputOperator):
     """Busy-spins ``delay_micros`` per batch, then emits it unchanged — a deterministic CPU-bound
     consumer. Behind a fast source it forces backpressure: the bounded channel fills, the producer stalls,

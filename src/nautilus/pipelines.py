@@ -23,6 +23,7 @@ from nautilus.benchmarks import (
     SyntheticJoinTableSource,
     SyntheticKeyedSource,
     SyntheticTextSource,
+    async_io_wait,
     async_passthrough,
     bench_params,
     passthrough,
@@ -234,21 +235,53 @@ def bench_join(parallelism: int = 1) -> LogicalGraph:
     return dsl_source(stream).join(dsl_source(table), on="key").to_graph(parallelism=parallelism)
 
 
+def _bench_inflight(default: int) -> int:
+    """The async benchmarks' ``max_in_flight`` (env ``NAUTILUS_BENCH_INFLIGHT``). Raising it is how the
+    async loop's wakeup mechanism is stressed: the cost of tracking N concurrent fetches per completion is
+    what separates an O(N)-per-wakeup loop from an O(1) one."""
+    raw = os.environ.get("NAUTILUS_BENCH_INFLIGHT")
+    return int(raw) if raw else default
+
+
 def bench_async(parallelism: int = 1) -> LogicalGraph:
     """Benchmark: a stateless async map (``.map_async``) over a large stream — the async-transform loop's
     per-batch engine overhead (a task per fetch, the reorder buffer, the wakeup), with a near-free fetch
     (:func:`~nautilus.benchmarks.async_passthrough`, no real I/O) so the loop, not the I/O, is what is
     measured. The async analog of ``bench-linear``; a *graph* pipeline because the async kind needs
-    explicit edges, so it is run via ``run_plan`` / ``deploy``. Scale via NAUTILUS_BENCH_*;
-    ``--parallelism N`` fans the I/O out N ways.
-    """
+    explicit edges, so it is run via ``run_plan`` / ``deploy``. Scale via NAUTILUS_BENCH_*
+    (``NAUTILUS_BENCH_INFLIGHT`` sets ``max_in_flight``, default 8); ``--parallelism N`` fans the I/O out
+    N ways."""
     p = bench_params()
     source = SyntheticKeyedSource(
         num_batches=p["num_batches"],
         batch_rows=p["batch_rows"],
         key_cardinality=p["key_cardinality"],
     )
-    return dsl_source(source).map_async(async_passthrough).to_graph(parallelism=parallelism)
+    return (
+        dsl_source(source)
+        .map_async(async_passthrough, max_in_flight=_bench_inflight(8))
+        .to_graph(parallelism=parallelism)
+    )
+
+
+def bench_async_io(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: a stateless async map whose fetch actually *awaits* — an I/O-bound enrich in the middle
+    of a pipeline (:func:`~nautilus.benchmarks.async_io_wait` sleeps ``NAUTILUS_BENCH_FETCH_US`` µs,
+    default 1000). Where ``bench-async`` measures the loop's overhead with a free fetch, this measures the
+    overlap the loop exists to deliver: with ``max_in_flight`` fetches in flight, throughput should reach
+    ~``max_in_flight`` batches per fetch-latency, far above serial. ``NAUTILUS_BENCH_INFLIGHT`` (default
+    64) sets the concurrency; ``--parallelism N`` fans it out further."""
+    p = bench_params()
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+    )
+    return (
+        dsl_source(source)
+        .map_async(async_io_wait, max_in_flight=_bench_inflight(64))
+        .to_graph(parallelism=parallelism)
+    )
 
 
 EXAMPLES: dict[str, Builder] = {
@@ -272,6 +305,7 @@ GraphBuilder = Callable[[int], LogicalGraph]
 GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
     "bench-join": bench_join,
     "bench-async": bench_async,
+    "bench-async-io": bench_async_io,
 }
 
 

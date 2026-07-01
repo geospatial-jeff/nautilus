@@ -12,6 +12,7 @@ from nautilus.api.graph import (
     LogicalEdge,
     LogicalGraph,
     LogicalVertex,
+    async_one_input,
     async_sink,
     linear_graph,
     one_input,
@@ -26,6 +27,7 @@ __all__ = [
     "linear_graph",
     "one_input",
     "two_input",
+    "async_one_input",
     "async_sink",
     "source",
 ]

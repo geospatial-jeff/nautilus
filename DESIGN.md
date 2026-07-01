@@ -111,8 +111,9 @@ real event times are kept strictly below that sentinel so they can never collide
    the awaiting half (a transform's `fetch`, a sink's `write`) is state-free and runs as a bounded set of
    concurrent tasks, while the synchronous half (a transform's `integrate`) is the only code that touches
    keyed state or emits. So real I/O overlaps while the single-writer state model (mechanism 5) holds even
-   for a keyed enrich: the half that runs concurrently is handed no state and no `Collector`, and the
-   context *raises* if it reaches them — the guard is enforced, not just documented. The engine — not the
+   for a keyed enrich: the half that runs concurrently is handed no state and no `Collector`, and reaching
+   keyed state or telemetry from it *raises* — enforced at the state backend itself, so even a handle
+   cached in `integrate` cannot slip a write past it. The engine — not the
    operator — owns concurrency, ordering, and the watermark/EOS barriers; the in-flight bound doubles as
    the backpressure to upstream; and emission defaults to input order so a run stays reproducible
    (unordered throughput is a planned addition). An async `write` is at-least-once — a failed job re-runs

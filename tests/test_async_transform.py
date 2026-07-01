@@ -450,6 +450,93 @@ def test_state_access_from_fetch_raises() -> None:
         asyncio.run(handle.run_async())
 
 
+class _CachedHandleFetch(AsyncOneInputOperator):
+    """Caches a live keyed-state handle in ``open`` (legal there) and mutates it from ``fetch`` — the trap
+    the guard closes at the handle, not just the context: ``fetch`` never touches ``ctx``, yet a
+    read-modify-write of keyed state across its ``await`` must still raise."""
+
+    def open(self, ctx: OperatorContext) -> None:
+        self._h = ctx.reducing_state(
+            "c", KeyContext(("x",)), _add
+        )  # a live handle, holding the backend
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        self._h.add(1)  # illegal from the awaiting half — the guarded backend must raise
+        return batch
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        out.emit(batch)
+
+
+def test_cached_state_handle_from_fetch_raises() -> None:
+    # The guard covers a handle cached in open/integrate and reused in fetch, not only direct ctx access —
+    # the fix for the silent-corruption hole where the handle held the backend directly.
+    handle = source(_batches([1, 2, 3])).apply_async(_CachedHandleFetch())
+    with pytest.raises((StateAccessError, ExceptionGroup)):
+        asyncio.run(handle.run_async())
+
+
+class _HeadHangsTailFails(AsyncOneInputOperator):
+    """The head fetch blocks forever; a later fetch raises after a beat while an in-between fetch also
+    blocks. Fail-fast must abort on the failed tail without ever waiting on the blocked head — so the loop
+    must observe a failure regardless of its reorder-buffer position (the fix for the shadowed-failure
+    hang)."""
+
+    def max_in_flight(self) -> int:
+        return 8
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        v = batch.column("v")[0].as_py()
+        if v == 0:
+            await asyncio.sleep(0)  # the head: completes first, so its integrate/flush runs
+            return batch
+        if v == 3:
+            await asyncio.sleep(0.02)
+            raise RuntimeError("tail boom")  # a later fetch fails, behind still-blocked siblings
+        await asyncio.Event().wait()  # every other tail blocks until cancelled
+        return batch
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        out.emit(batch)
+
+
+def test_shadowed_fetch_failure_fails_fast_without_hang() -> None:
+    # v=0 drains first (its flush suspends the loop); v=1,2 block; v=3 fails a beat later. The failed tail
+    # must fail the job — the wait_for proves it does not hang waiting on the blocked head/siblings.
+    handle = source(_batches([0, 1, 2, 3, 4])).apply_async(_HeadHangsTailFails())
+    with pytest.raises((RuntimeError, ExceptionGroup)):
+        asyncio.run(asyncio.wait_for(handle.run_async(), timeout=5))
+
+
+def test_async_close_is_awaited() -> None:
+    # AsyncOneInputOperator.close is async (mirroring AsyncSink), so a client acquired in open can be
+    # released with an await on teardown.
+    class _ClosingOp(AsyncMapBatch):
+        def __init__(self, fn: object) -> None:
+            super().__init__(fn)  # type: ignore[arg-type]
+            self.closed = False
+
+        async def close(self) -> None:
+            await asyncio.sleep(0)  # an await in close — impossible before close was made async
+            self.closed = True
+
+    op = _ClosingOp(_double)
+    source(_batches([1, 2, 3])).apply_async(op).collect()
+    assert op.closed
+
+
+def test_async_one_input_is_public_api() -> None:
+    # The async transform's vertex factory is reachable from the public IR package, like its siblings.
+    from nautilus.api import async_one_input as public
+    from nautilus.api.graph import async_one_input as internal
+
+    assert public is internal
+
+
 def test_ordered_false_is_rejected() -> None:
     class _Unordered(AsyncMapBatch):
         def ordered(self) -> bool:
