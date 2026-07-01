@@ -1,27 +1,32 @@
 """Average NDVI over a Sentinel-2 scene, read straight from cloud-optimized GeoTIFFs.
 
-A stream of sentinel-2-l2a STAC item ids in, each scene's mean NDVI out, in three stages:
+A stream of sentinel-2-l2a STAC item ids in, each scene's mean NDVI out, as a four-stage graph:
 
-    Sentinel2NdviSource  →  TileNdvi (parallelism N)  →  MeanNdviByItem
-    range-read + decode      NDVI per tile, reduced       average over a scene's
-    a row of tiles           to (sum, count)              tiles
-    ── I/O ──                ── CPU, fan-out ──            ── reduction ──
+    Sentinel2ItemSource → AsyncOpenAndDecode → TileNdvi (parallelism N) → MeanNdviByItem
+    resolve red/nir hrefs   open + range-read     NDVI per tile, reduced      average over a
+    per item                + decode a scene       to (sum, count)             scene's tiles
+    ── metadata I/O ──      ── awaited I/O ──      ── CPU, fan-out ──          ── keyed reduce ──
 
-Fetch and decode both run in the source rather than a separate decode operator: an operator's
-``process`` is synchronous and only sees an Arrow batch, but a range request must ``await`` and
-async-geotiff's decoder is bound to a tile object that is not an Arrow value, so it cannot cross an edge.
-The source emits the decoded red and near-infrared bands as Arrow tensor columns; decoding stays
-async-geotiff's job, not ours.
+The range-read + decode is an :class:`AsyncOneInputOperator`: its ``fetch`` opens both bands and reads a
+tile-row's ranges concurrently (intra-scene overlap), while ``max_in_flight`` scenes decode at once
+(inter-scene overlap), and its ``integrate`` emits each decoded tile-row as Arrow tensor columns. That is
+why the pipeline is a ``Stream`` graph, not a linear ``(source, transforms)`` chain — an awaiting transform
+needs the explicit-edge shape. The source is now a pure lister: it resolves each item's COG hrefs and emits
+them, nothing more.
+
+The default run collects each scene's mean NDVI and prints it. ``--write <uri>`` instead terminates in an
+:class:`AsyncSink` that writes the means to an external store (one JSON object per item), and reports a
+row-count + telemetry summary since the data left the pipeline.
 
 Needs the geo extra (``pip install 'nautilus[geo]'``); run with ``nautilus run sentinel2-ndvi
---parallelism 4`` or ``python examples/sentinel2_ndvi.py <item-id> …``.
+--parallelism 4`` or ``python examples/sentinel2_ndvi.py <item-id> … [--write <uri>]``.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
-import sys
 import urllib.request
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -29,13 +34,23 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 import numpy as np
+import obstore
 import pyarrow as pa
 from async_geotiff import GeoTIFF
-from obstore.store import S3Store
+from obstore.store import S3Store, from_url
 
-from nautilus.core.operator import Collector, OneInputOperator, OperatorContext, SourceOperator
+from nautilus.api import LogicalGraph
+from nautilus.core.operator import (
+    AsyncOneInputOperator,
+    AsyncSink,
+    Collector,
+    OneInputOperator,
+    OperatorContext,
+    SourceOperator,
+)
 from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
-from nautilus.driver.local import run
+from nautilus.driver.run import run_plan
+from nautilus.dsl import source as stream_source
 from nautilus.state import KeyContext
 from nautilus.tensors import tensor_array, to_numpy
 
@@ -52,15 +67,15 @@ DEFAULT_LEVEL = -1
 @dataclass(frozen=True)
 class Cog:
     """An opened COG at one resolution: the reader's opaque ``handle`` (passed back to ``fetch_tile``)
-    and ``tile_count`` — the (across, down) tile grid the source walks."""
+    and ``tile_count`` — the (across, down) tile grid the decode stage walks."""
 
     handle: Any
     tile_count: tuple[int, int]
 
 
 class TileReader(Protocol):
-    """The source's I/O seam: open a COG at a resolution level, then fetch one internal tile decoded to an
-    ``(H, W)`` array. Injecting it runs the pipeline without network in tests; the real one is
+    """The decode stage's I/O seam: open a COG at a resolution level, then fetch one internal tile decoded
+    to an ``(H, W)`` array. Injecting it runs the pipeline without network in tests; the real one is
     :class:`AsyncGeotiffReader`."""
 
     async def open(self, href: str, level: int) -> Cog: ...
@@ -73,27 +88,20 @@ class TileReader(Protocol):
 AssetResolver = Callable[[str], Awaitable[tuple[str, str]]]
 
 
-class Sentinel2NdviSource(SourceOperator):
-    """Streams a scene's tiles as decoded red/nir imagery — the I/O stage. For each item it resolves the
-    red (B04) and near-infrared (B08) urls, opens both COGs at ``level``, and walks the tile grid one row
-    at a time: a row's tiles are range-read and decoded concurrently, then emitted as one batch of
-    ``(row, H, W)`` tensor columns. The row is the fan-out unit, and batching a row into one tensor (rather
-    than a batch per tile) amortizes the Arrow construction the downstream stages pay per batch. The two
-    10 m bands share a tile grid, so red and nir align by ``(x, y)``. It brackets its range requests in
-    ``ctx.io_wait()`` so the report separates time spent waiting on I/O from the CPU of building tensors.
+class Sentinel2ItemSource(SourceOperator):
+    """Lists each scene's COG urls — the metadata stage. For every item id it resolves the red (B04) and
+    near-infrared (B08) hrefs and emits one row ``(item_id, red_href, nir_href)``; opening, range-reading,
+    and decoding those COGs is the downstream :class:`AsyncOpenAndDecode`'s job. A lister awaits only the
+    light STAC lookup, bracketed in ``ctx.io_wait()`` so the report separates that wait from compute.
     """
 
     def __init__(
         self,
         item_ids: tuple[str, ...] | list[str],
         *,
-        reader: TileReader | None = None,
         resolver: AssetResolver | None = None,
-        level: int = DEFAULT_LEVEL,
     ) -> None:
         self.item_ids = list(item_ids)
-        self.level = level
-        self._reader = reader
         self._resolver = resolver
         self._ctx = OperatorContext("source")  # replaced in open(); records io.wait_micros once on
 
@@ -101,25 +109,85 @@ class Sentinel2NdviSource(SourceOperator):
         self._ctx = ctx
 
     async def frames(self) -> AsyncIterator[Frame]:
-        reader = self._reader or AsyncGeotiffReader()
         resolve = self._resolver or resolve_sentinel2_assets
         for item_id in self.item_ids:
-            # per-item metadata I/O: the STAC item lookup + opening the two COG headers
-            async with self._ctx.io_wait():
+            async with self._ctx.io_wait():  # the per-item STAC item lookup (metadata, not pixels)
                 red_href, nir_href = await resolve(item_id)
-                red, nir = await asyncio.gather(
-                    reader.open(red_href, self.level), reader.open(nir_href, self.level)
+            yield Batch(
+                pa.record_batch(
+                    {
+                        "item_id": pa.array([item_id], pa.string()),
+                        "red_href": pa.array([red_href], pa.string()),
+                        "nir_href": pa.array([nir_href], pa.string()),
+                    }
                 )
+            )
+        yield EOS_FRAME  # bounded source: signal completion once every item is listed
+
+
+class AsyncOpenAndDecode(AsyncOneInputOperator):
+    """Opens each scene's COGs and range-reads + decodes its tiles — the awaited I/O stage, split out of
+    the source (the Stage 6.4 rework). ``fetch`` opens both bands and reads a tile-row's ranges together
+    (``asyncio.gather``, intra-scene overlap), while the engine keeps up to ``max_in_flight`` scenes
+    decoding at once (inter-scene overlap); ``integrate`` emits each decoded tile-row as ``(item_id, red,
+    nir)`` tensor columns — the fan-out unit :class:`TileNdvi` consumes. The row (not the whole scene) is
+    the batch, so a coarse overview stays a handful of small batches.
+
+    Stateless — no keyed state — so it could run ``ordered=False`` (completion order) to let a quick scene
+    emit ahead of a slow one; it stays ordered here for a reproducible run. The reader is acquired in
+    ``open`` (a fresh one per subtask when parallel), never ``__init__``, so the operator cloudpickles to a
+    worker without a live client riding along."""
+
+    def __init__(
+        self,
+        *,
+        reader: TileReader | None = None,
+        level: int = DEFAULT_LEVEL,
+        max_in_flight: int = 8,
+    ) -> None:
+        self._reader = reader
+        self._level = level
+        self._cap = max_in_flight
+
+    def open(self, ctx: OperatorContext) -> None:
+        if (
+            self._reader is None
+        ):  # acquire the client here, not in __init__ — see the class docstring
+            self._reader = AsyncGeotiffReader()
+
+    def max_in_flight(self) -> int:
+        return self._cap
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        reader = self._reader
+        assert reader is not None  # set in open(), which the engine calls before any fetch
+        scenes: list[tuple[str, list[tuple[list[np.ndarray], list[np.ndarray]]]]] = []
+        for item_id, red_href, nir_href in zip(
+            batch.column("item_id").to_pylist(),
+            batch.column("red_href").to_pylist(),
+            batch.column("nir_href").to_pylist(),
+            strict=True,
+        ):
+            red, nir = await asyncio.gather(
+                reader.open(red_href, self._level), reader.open(nir_href, self._level)
+            )
             nx, ny = red.tile_count
-            for y in range(ny):
-                # range-read + decode a row of tiles for both bands
-                async with self._ctx.io_wait():
-                    tiles = await asyncio.gather(
-                        *(reader.fetch_tile(red, x, y) for x in range(nx)),
-                        *(reader.fetch_tile(nir, x, y) for x in range(nx)),
-                    )
-                yield Batch(_row_batch(item_id, tiles[:nx], tiles[nx:]))
-        yield EOS_FRAME
+            grid_rows = []
+            for y in range(ny):  # a row of tiles for both bands, range-read + decoded concurrently
+                tiles = await asyncio.gather(
+                    *(reader.fetch_tile(red, x, y) for x in range(nx)),
+                    *(reader.fetch_tile(nir, x, y) for x in range(nx)),
+                )
+                grid_rows.append((tiles[:nx], tiles[nx:]))
+            scenes.append((item_id, grid_rows))
+        return scenes
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        for item_id, grid_rows in result:  # type: ignore[attr-defined]
+            for red_tiles, nir_tiles in grid_rows:
+                out.emit(_row_batch(item_id, red_tiles, nir_tiles))
 
 
 def _row_batch(item_id: str, red: list[np.ndarray], nir: list[np.ndarray]) -> pa.RecordBatch:
@@ -226,6 +294,46 @@ def _add_pair(a: tuple[float, int], b: tuple[float, int]) -> tuple[float, int]:
     return (a[0] + b[0], a[1] + b[1])
 
 
+#: The sink's write seam: persist one scene's mean-NDVI ``record`` under a key derived from ``item_id``.
+#: Injected in tests (an in-memory writer), so the sink path runs without S3.
+NdviResultWriter = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+class NdviSink(AsyncSink):
+    """Writes each scene's mean NDVI to an external store — the async-sink variant. One JSON object per
+    item, keyed by item id, so a whole-job replay overwrites the same object rather than appending a
+    duplicate: the at-least-once idempotency an :class:`AsyncSink` requires. ``key_columns`` co-partitions
+    each item to one writer instance. The writer is acquired in ``open`` (obstore over ``uri``, or an
+    injected one for tests), never ``__init__``, so the sink cloudpickles to a worker cleanly."""
+
+    def __init__(self, uri: str, *, writer: NdviResultWriter | None = None) -> None:
+        self._uri = uri
+        self._writer = writer
+
+    def open(self, ctx: OperatorContext) -> None:
+        if self._writer is None:  # build the real obstore-backed writer here, not in __init__
+            self._writer = _obstore_writer(self._uri)
+
+    def key_columns(self) -> tuple[str, ...]:
+        return ("item_id",)  # per-item upsert: a key's write lands on one instance
+
+    async def write(self, batch: pa.RecordBatch) -> None:
+        assert self._writer is not None  # set in open()
+        for row in batch.to_pylist():
+            await self._writer(row["item_id"], row)
+
+
+def _obstore_writer(uri: str) -> NdviResultWriter:
+    """The default :data:`NdviResultWriter`: PUT each record as ``<uri>/<item_id>.json`` via obstore, an
+    overwrite keyed by item id (idempotent under whole-job replay)."""
+    store = from_url(uri)
+
+    async def write(item_id: str, record: dict[str, Any]) -> None:
+        await obstore.put_async(store, f"{item_id}.json", json.dumps(record).encode())
+
+    return write
+
+
 async def resolve_sentinel2_assets(item_id: str) -> tuple[str, str]:
     """Resolve an item id to its ``(red, nir)`` COG urls via the earth-search STAC API. The blocking GET
     runs in a thread so it never stalls the source's event loop."""
@@ -266,21 +374,46 @@ def sentinel2_ndvi(
     level: int = DEFAULT_LEVEL,
     reader: TileReader | None = None,
     resolver: AssetResolver | None = None,
-) -> tuple[SourceOperator, list[OneInputOperator]]:
-    """The ``(source, transforms)`` the CLI and ``main`` run. Pass ``reader``/``resolver`` to run without
-    network (the tests do)."""
-    source = Sentinel2NdviSource(item_ids, reader=reader, resolver=resolver, level=level)
-    return source, [TileNdvi(), MeanNdviByItem()]
+    parallelism: int = 1,
+    write_uri: str | None = None,
+    sink: AsyncSink | None = None,
+) -> LogicalGraph:
+    """The NDVI graph the CLI and ``main`` run. The default collects each scene's mean NDVI; pass
+    ``write_uri`` (or an injected ``sink``) to terminate in an :class:`NdviSink` instead — a write-only run
+    whose result carries telemetry and no batches. ``reader``/``resolver`` inject the I/O seams so a test
+    runs without network; ``parallelism`` sets the decode/NDVI/reduce width (the source stays single).
+    """
+    stream = (
+        stream_source(Sentinel2ItemSource(item_ids, resolver=resolver))
+        .apply_async(AsyncOpenAndDecode(reader=reader, level=level), parallelism=parallelism)
+        .apply(TileNdvi(), parallelism=parallelism)
+        .apply(MeanNdviByItem(), parallelism=parallelism)
+    )
+    if write_uri is not None or sink is not None:
+        the_sink = sink if sink is not None else NdviSink(write_uri or "")
+        return stream.sink(the_sink, parallelism=parallelism).to_graph()
+    return stream.to_graph()
 
 
 def main() -> None:
-    item_ids = sys.argv[1:] or list(DEFAULT_ITEM_IDS)
-    source, transforms = sentinel2_ndvi(item_ids)
-    result = run(source, transforms, parallelism=4)  # NDVI fans out across 4 instances
-    for row in sorted(result.to_pylist(), key=lambda r: r["item_id"]):
-        print(
-            f"{row['item_id']}: mean NDVI {row['mean_ndvi']:.4f} over {row['valid_count']} pixels"
-        )
+    parser = argparse.ArgumentParser(description="Average NDVI over Sentinel-2 scenes")
+    parser.add_argument("item_ids", nargs="*", default=list(DEFAULT_ITEM_IDS))
+    parser.add_argument(
+        "--write", metavar="URI", help="write the means to an external store instead"
+    )
+    parser.add_argument("--parallelism", type=int, default=4)
+    args = parser.parse_args()
+    item_ids = args.item_ids or list(DEFAULT_ITEM_IDS)
+    graph = sentinel2_ndvi(item_ids, parallelism=args.parallelism, write_uri=args.write)
+    result = asyncio.run(run_plan(graph))  # NDVI fans out across --parallelism instances
+    if args.write:
+        # A write-only run's data went to the store, so there are no rows to print — report the shape.
+        print(f"wrote mean NDVI for {len(item_ids)} scene(s) to {args.write}")
+    else:
+        for row in sorted(result.to_pylist(), key=lambda r: r["item_id"]):
+            print(
+                f"{row['item_id']}: mean NDVI {row['mean_ndvi']:.4f} over {row['valid_count']} pixels"
+            )
     print(result.telemetry.summary)
 
 

@@ -10,11 +10,14 @@ defects that verification found are folded into the loop contract here, not left
 > fetch/integrate split: `AsyncOneInputOperator`, `AsyncMapBatch`, `run_async_transform`'s reorder
 > loop, the enforced `OperatorContext` state guard, the DSL `.map_async`/`.apply_async`, the
 > `async_one_input` IR kind, the cross-process path) have landed — stateless *and* keyed; `DESIGN.md`
-> mechanism 9 records them. **6.4 — unordered mode** has landed: a stateless map may emit in
-> completion order (`ordered=False`) — `_drain_unordered` in `run_async_transform`, the DSL/actor
-> rejection for keyed stages, the `AsyncMapBatch(ordered=)` knob — with the watermark/EOS marker still a
-> hard barrier, so the unordered-rejected-for-keyed rule below is now live. Still planned (6.4): the
-> **NDVI example rework**.
+> mechanism 9 records them. **6.4 has landed**: (a) **unordered mode** — a stateless map may emit in
+> completion order (`ordered=False`) via `_drain_unordered` in `run_async_transform`, with the DSL/actor
+> rejection for keyed stages, the `AsyncMapBatch(ordered=)` knob, and the watermark/EOS marker still a
+> hard barrier (so the unordered-rejected-for-keyed rule below is now live); and (b) the **NDVI example
+> rework** — `examples/sentinel2_ndvi.py` is now a `Stream` graph whose `AsyncOpenAndDecode` async
+> transform does the COG open + range-read + decode the source used to, with an opt-in `NdviSink`
+> (`--write`); it is registered as a graph example and dashboarded via the new `serve_graph`. Stage 6 is
+> complete.
 
 ## The problem
 

@@ -1,9 +1,13 @@
-"""The Sentinel-2 NDVI example is also a custom source + operator reference, so its pipeline is tested
-here. The async-geotiff / network I/O is injected (a fake reader + resolver), so these run hermetically;
-one opt-in test (``-m network``) exercises the real async-geotiff path against the public bucket.
+"""The Sentinel-2 NDVI example is also a custom source + async-transform + async-sink reference, so its
+graph is tested here. The async-geotiff / network I/O is injected (a fake reader, resolver, and sink
+writer), so these run hermetically; one opt-in test (``-m network``) exercises the real async-geotiff path
+against the public bucket.
 
-The example module is loaded by file path (examples/ is not an installed package), matching
-``test_examples_geospatial``; it needs the geo extra to import, so the whole module skips without it.
+The example is a ``Stream`` graph (an awaiting decode stage needs explicit edges), so the pipeline is
+built with ``sentinel2_ndvi(...) -> LogicalGraph`` and run with ``run_plan`` — not the linear
+``run(source, transforms)``. The example module is loaded by file path (examples/ is not an installed
+package), matching ``test_examples_geospatial``; it needs the geo extra to import, so the whole module
+skips without it.
 """
 
 from __future__ import annotations
@@ -15,9 +19,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pyarrow as pa
 import pytest
 
+from nautilus.core.operator import ListCollector, OperatorContext
+from nautilus.core.records import Batch
 from nautilus.driver.local import run
+from nautilus.driver.run import run_plan
 from nautilus.operators import from_batches
 from nautilus.telemetry import TelemetryConfig, Tier
 
@@ -35,7 +43,7 @@ Scene = dict[str, dict[tuple[int, int], np.ndarray]]
 
 
 class FakeReader:
-    """A :class:`TileReader` backed by in-memory tiles, so the pipeline runs without network. The fake
+    """A :class:`TileReader` backed by in-memory tiles, so the decode stage runs without network. The fake
     resolver hands out ``red://<item>`` / ``nir://<item>`` urls; ``open`` parses the band and item into the
     :class:`Cog` handle, and ``fetch_tile`` returns that band's tile for ``(x, y)``."""
 
@@ -76,11 +84,12 @@ def _uniform_scene(
     return scene
 
 
-def _run(scenes: dict[str, Scene], **run_kwargs: Any) -> dict[str, Any]:
-    source, transforms = s2.sentinel2_ndvi(
-        list(scenes), reader=FakeReader(scenes), resolver=_resolver
+def _run(scenes: dict[str, Scene], *, parallelism: int = 1, **run_kwargs: Any) -> dict[str, Any]:
+    graph = s2.sentinel2_ndvi(
+        list(scenes), reader=FakeReader(scenes), resolver=_resolver, parallelism=parallelism
     )
-    return {row["item_id"]: row for row in run(source, transforms, **run_kwargs).to_pylist()}
+    result = asyncio.run(run_plan(graph, **run_kwargs))
+    return {row["item_id"]: row for row in result.to_pylist()}
 
 
 def test_mean_ndvi_is_pixel_weighted_and_masks_fill() -> None:
@@ -92,7 +101,7 @@ def test_mean_ndvi_is_pixel_weighted_and_masks_fill() -> None:
 
 
 def test_fanout_parallel_matches_serial() -> None:
-    # NDVI fans out over tile rows and the mean shuffles by item; a parallel run must match a serial one.
+    # Decode and NDVI fan out and the mean shuffles by item; a parallel run must match a serial one.
     scenes = {"ITEM_A": _uniform_scene(4000, 2000, grid=3)}  # NDVI = 2000/6000 = 1/3
     serial = _run(scenes)
     parallel = _run(scenes, parallelism=3)
@@ -120,43 +129,87 @@ def test_tile_ndvi_all_fill_tile_contributes_nothing() -> None:
     assert row["ndvi_sum"] == 0.0
 
 
-async def test_source_emits_one_batch_per_tile_row() -> None:
-    # The fan-out granularity: one batch per tile-grid row (a 2x2 grid -> 2 batches of 2 tiles each).
-    from nautilus.core.records import Batch
-
-    source = s2.Sentinel2NdviSource(
-        ["ITEM_A"], reader=FakeReader({"ITEM_A": _uniform_scene(3000, 1000)}), resolver=_resolver
-    )
+async def test_source_lists_one_row_per_item() -> None:
+    # The reworked source is a pure lister: one row (item_id, red_href, nir_href) per item, no pixels.
+    source = s2.Sentinel2ItemSource(["ITEM_A", "ITEM_B"], resolver=_resolver)
+    source.open(OperatorContext("source"))
     batches = [f.data async for f in source.frames() if isinstance(f, Batch)]
-    assert len(batches) == 2  # two rows
+    assert len(batches) == 2 and all(b.num_rows == 1 for b in batches)
+    assert set(batches[0].schema.names) == {"item_id", "red_href", "nir_href"}
+    assert batches[0].column("red_href")[0].as_py() == "red://ITEM_A"
+
+
+async def test_decode_stage_emits_one_batch_per_tile_row() -> None:
+    # The fan-out granularity moved from the source to AsyncOpenAndDecode: fetch reads a scene, integrate
+    # emits one (item_id, red, nir) tensor batch per tile-grid row (a 2x2 grid -> 2 batches of 2 tiles).
+    op = s2.AsyncOpenAndDecode(reader=FakeReader({"ITEM_A": _uniform_scene(3000, 1000)}))
+    op.open(OperatorContext("op0"))
+    src = pa.record_batch(
+        {"item_id": ["ITEM_A"], "red_href": ["red://ITEM_A"], "nir_href": ["nir://ITEM_A"]}
+    )
+    result = await op.fetch(src)
+    collector = ListCollector()
+    op.integrate(src, result, OperatorContext("op0"), collector)
+    batches = collector.drain()
+    assert len(batches) == 2  # two tile-rows
     assert all(b.num_rows == 2 for b in batches)  # two tiles per row
+    assert s2.AsyncOpenAndDecode().key_columns() is None  # stateless — keyless, round-robin fan-out
 
 
-def test_source_io_wait_is_recorded_separately_from_compute() -> None:
-    # ctx.io_wait() must capture the source's awaited I/O as io.wait_micros — the metric that tells an
-    # I/O-bound source from a compute-bound one (its runtime.step_micros counts both).
+def test_source_io_wait_and_decode_request_micros_recorded() -> None:
+    # The source's awaited STAC resolve lands in io.wait_micros (part of its step); the decode stage's
+    # awaited range reads land in async.request_micros — the async engine's own I/O attribution.
+    async def slow_resolver(item_id: str) -> tuple[str, str]:
+        await asyncio.sleep(0.002)  # stands in for the STAC item lookup
+        return f"red://{item_id}", f"nir://{item_id}"
+
     class SlowReader(FakeReader):
         async def fetch_tile(self, cog: Any, x: int, y: int) -> np.ndarray:
             await asyncio.sleep(0.002)  # stands in for a range request
             return await super().fetch_tile(cog, x, y)
 
-    source, transforms = s2.sentinel2_ndvi(
+    graph = s2.sentinel2_ndvi(
         ["ITEM_A"],
         reader=SlowReader({"ITEM_A": _uniform_scene(3000, 1000, grid=3)}),
-        resolver=_resolver,
+        resolver=slow_resolver,
     )
-    report = run(source, transforms, telemetry=TelemetryConfig(tier=Tier.COUNTERS)).telemetry
-    counters = {
+    report = asyncio.run(run_plan(graph, telemetry=TelemetryConfig(tier=Tier.COUNTERS))).telemetry
+    src = {
         p.name: p.value for o in report.operators if o.operator_id == "source" for p in o.counters
     }
-    assert counters.get("io.wait_micros", 0) > 0  # the awaited sleeps were captured
-    assert counters["io.wait_micros"] <= counters["runtime.step_micros"]  # part of step, not on top
+    assert src.get("io.wait_micros", 0) > 0  # the awaited resolve was captured
+    assert src["io.wait_micros"] <= src["runtime.step_micros"]  # part of step, not on top
+    request_micros = sum(
+        p.value for o in report.operators for p in o.counters if p.name == "async.request_micros"
+    )
+    assert request_micros > 0  # the decode stage's awaited range reads were attributed
+
+
+async def test_write_only_sink_writes_each_scene_and_returns_no_batches() -> None:
+    # The --write variant terminates in an NdviSink: the means go to the (fake) store, so the run returns
+    # no batches, and every scene's record is written under its item id (the idempotent per-item key).
+    written: dict[str, dict[str, Any]] = {}
+
+    async def writer(item_id: str, record: dict[str, Any]) -> None:
+        written[item_id] = record
+
+    scenes = {"GREEN": _uniform_scene(8000, 2000), "WATER": _uniform_scene(1000, 1200)}
+    graph = s2.sentinel2_ndvi(
+        list(scenes),
+        reader=FakeReader(scenes),
+        resolver=_resolver,
+        sink=s2.NdviSink("mem://ignored", writer=writer),
+    )
+    result = await run_plan(graph)
+    assert result.to_pylist() == []  # write-only: the data went to the sink, not a collector
+    assert set(written) == {"GREEN", "WATER"}
+    assert written["GREEN"]["mean_ndvi"] == pytest.approx(0.6)
 
 
 @pytest.mark.network
 def test_real_sentinel2_scene_mean_is_in_range() -> None:
     # End-to-end against the public bucket via async-geotiff, at the coarsest overview (a few tiles).
-    rows = run(*s2.sentinel2_ndvi()).to_pylist()
+    rows = asyncio.run(run_plan(s2.sentinel2_ndvi())).to_pylist()
     assert len(rows) == 1
     assert rows[0]["valid_count"] > 0
     assert -1.0 <= rows[0]["mean_ndvi"] <= 1.0

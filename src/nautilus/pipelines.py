@@ -12,6 +12,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -96,7 +97,7 @@ def image_embed() -> Pipeline:
     return source, [MapBatch(_embed_tiles)]
 
 
-def _load_example_builder(filename: str, fn_name: str) -> Builder:
+def _load_example_builder(filename: str, fn_name: str) -> Callable[..., Any]:
     """Load a builder defined in an ``examples/`` file by path. Those files aren't an installed package
     (and ship only in a source checkout, not the wheel), so the CLI reaches a heavier example — one that
     pulls an optional extra — without that extra's imports landing at ``nautilus.pipelines`` import time.
@@ -111,16 +112,21 @@ def _load_example_builder(filename: str, fn_name: str) -> Builder:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # so the example's @dataclass can resolve its own annotations
     spec.loader.exec_module(module)
-    builder: Builder = getattr(module, fn_name)
+    builder: Callable[..., Any] = getattr(module, fn_name)
     return builder
 
 
-def sentinel2_ndvi() -> Pipeline:
-    """Average NDVI over a Sentinel-2 L2A scene read straight from cloud COGs: a stream of STAC item ids ->
-    async-geotiff range-reads and decodes each internal tile -> NDVI per tile (fan-out) -> average per
-    scene (reduce). Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see
+def sentinel2_ndvi(parallelism: int = 1) -> LogicalGraph:
+    """Average NDVI over a Sentinel-2 L2A scene read straight from cloud COGs, as a *graph* pipeline: STAC
+    item ids -> async open + range-read + decode (the awaiting transform) -> NDVI per tile (fan-out) ->
+    average per scene (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is
+    an awaiting transform. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see
     examples/sentinel2_ndvi.py."""
-    return _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")()
+    build = _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")
+    graph: LogicalGraph = build(
+        parallelism=parallelism
+    )  # the example's builder returns a LogicalGraph
+    return graph
 
 
 def bench_keyed() -> Pipeline:
@@ -289,7 +295,6 @@ EXAMPLES: dict[str, Builder] = {
     "windowed-sum": windowed_sum,
     "demo-stream": demo_stream,
     "image-embed": image_embed,
-    "sentinel2-ndvi": sentinel2_ndvi,
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
     "bench-fanout": bench_fanout,
@@ -303,6 +308,7 @@ EXAMPLES: dict[str, Builder] = {
 #: because they use a kind only explicit edges express (an async transform).
 GraphBuilder = Callable[[int], LogicalGraph]
 GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
+    "sentinel2-ndvi": sentinel2_ndvi,
     "bench-join": bench_join,
     "bench-async": bench_async,
     "bench-async-io": bench_async_io,
@@ -310,7 +316,9 @@ GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
 
 
 def is_graph_pipeline(spec: str) -> bool:
-    """Whether ``spec`` names a multi-source graph benchmark (run via run_plan/deploy)."""
+    """Whether ``spec`` names a graph pipeline — one run via run_plan/deploy from a :class:`LogicalGraph`
+    rather than a linear ``(source, transforms)`` — because it has more than one source (a join) or an
+    awaiting async stage (the Sentinel-2 example, the async benchmarks)."""
     return spec in GRAPH_EXAMPLES
 
 
