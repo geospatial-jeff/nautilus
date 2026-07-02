@@ -148,8 +148,8 @@ inside intermediate operators — while keeping keyed state single-writer. Desig
   `.apply_async`; the `async_one_input` IR kind; the cross-process path. Emission is ordered (the digest
   stays reproducible).
 - **6.4 — Unordered mode + the NDVI example rework · Done.** A stateless async map may emit in
-  **completion order** (`ordered=False`) — a slow batch no longer blocks a finished one — with a
-  watermark/EOS still a hard barrier; rejected for keyed stages so the digest stays reproducible. The
+  **completion order** (`ordered=False`) — a slow batch no longer blocks a finished one — with EOS still a
+  hard barrier; rejected for keyed stages so the digest stays reproducible. The
   Sentinel-2 example is reworked into a `Stream` graph that moves COG open + range-read + decode out of
   the source into an `AsyncOpenAndDecode` async transform, with an opt-in `--write` async sink. Detail in
   `ASYNC_IO_PLAN.md`.
