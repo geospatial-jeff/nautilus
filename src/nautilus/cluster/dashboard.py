@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import threading
 import time
-import webbrowser
 from collections.abc import Callable
 
 from nautilus.api import LogicalGraph
@@ -25,7 +24,12 @@ from nautilus.cluster.coordinator import deploy
 from nautilus.driver.result import RunResult
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.telemetry import TelemetryConfig
-from nautilus.telemetry.live import LiveAggregator, LiveServer, load_dashboard_html
+from nautilus.telemetry.live import (
+    LiveAggregator,
+    LiveServer,
+    load_dashboard_html,
+    open_in_browser,
+)
 
 
 def serve_cluster(
@@ -57,7 +61,7 @@ def serve_cluster(
     if on_ready is not None:
         on_ready(server.url)
     if open_browser:
-        webbrowser.open(server.url)
+        open_in_browser(server.url)
     try:
         result = deploy(
             graph,

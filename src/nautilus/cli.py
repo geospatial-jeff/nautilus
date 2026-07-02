@@ -613,7 +613,11 @@ def dashboard(
     max_seconds: float | None = typer.Option(
         None, help="Stop after N seconds (caps unbounded runs)."
     ),
-    open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser."),
+    open_browser: bool = typer.Option(
+        True,
+        "--open/--no-open",
+        help="Open the dashboard in a browser (best-effort; a no-op on a headless host).",
+    ),
 ) -> None:
     """Run a PIPELINE and serve a live telemetry dashboard in the browser. With --workers >1 (or
     --daemons) it runs distributed and serves the telemetry aggregated across every worker."""

@@ -72,7 +72,9 @@ def test_dashboard_single_process_serves_and_exits():
     # --no-linger + a bounded pipeline: serve, run to completion, exit on its own. COLUMNS keeps the Rich
     # panel from wrapping the phrases asserted below.
     result = runner.invoke(
-        app, ["dashboard", "wordcount", "--no-linger", "--port", "0"], env={"COLUMNS": "200"}
+        app,
+        ["dashboard", "wordcount", "--no-linger", "--no-open", "--port", "0"],
+        env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
     assert "live dashboard" in result.stdout
@@ -84,7 +86,7 @@ def test_dashboard_distributed_serves_across_workers():
     # exits on its own with --no-linger. The "across 2 workers" note proves it took the distributed path.
     result = runner.invoke(
         app,
-        ["dashboard", "wordcount", "--workers", "2", "--no-linger", "--port", "0"],
+        ["dashboard", "wordcount", "--workers", "2", "--no-linger", "--no-open", "--port", "0"],
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output

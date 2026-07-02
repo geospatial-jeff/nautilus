@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import threading
+import webbrowser
 from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,13 @@ The full dashboard HTML is not packaged in this build.</p></body></html>"""
 def load_dashboard_html() -> bytes:
     path = Path(__file__).parent / "dashboard.html"
     return path.read_bytes() if path.exists() else _FALLBACK_HTML
+
+
+def open_in_browser(url: str) -> None:
+    """Best-effort: open ``url`` in a browser, but never fail the run for it — a headless host (SSH, CI,
+    no display) has no browser to launch, and the URL is printed regardless."""
+    with contextlib.suppress(Exception):
+        webbrowser.open(url)
 
 
 class Snapshotter(Protocol):
@@ -251,9 +259,7 @@ async def serve_graph(
     if on_ready is not None:
         on_ready(server.url)
     if open_browser:
-        import webbrowser
-
-        webbrowser.open(server.url)
+        open_in_browser(server.url)
 
     run_task = asyncio.create_task(
         run_compiled(plan, capacity=capacity, clock=clk, telemetry=config, registry=registry)

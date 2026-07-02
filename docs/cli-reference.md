@@ -150,7 +150,7 @@ nautilus dashboard PIPELINE [options]
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); serves multi-node instead of spawning locally |
 | `--linger` / `--no-linger` | `--linger` | keep serving after a bounded run completes |
 | `--max-seconds` | none | stop after N seconds (caps unbounded runs) |
-| `--open` | `false` | open the dashboard in a browser |
+| `--open` / `--no-open` | `--open` | open the dashboard in a browser (best-effort; a no-op on a headless host) |
 
 Example (single process): `uv run nautilus dashboard image-embed --open`
 Example (distributed): `uv run nautilus dashboard wordcount --workers 2 --parallelism 2`
