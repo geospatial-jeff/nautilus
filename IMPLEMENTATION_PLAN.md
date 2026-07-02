@@ -133,11 +133,12 @@ not yet designed in depth:
 - **DoS hardening.** Rate-limit and cap connections on the control and data listeners; the frame-length
   guards bound only a single allocation, and the liveness timeouts are not a security boundary.
 
-### Stage 6 — Async I/O in operators and sinks · In progress
+### Stage 6 — Async I/O in operators and sinks · **Done**
 
 Opens the awaiting seam beyond the source — to write results to an external store and to enrich a record
-inside intermediate operators — while keeping keyed state single-writer. Design and staged plan in
-`ASYNC_IO_PLAN.md`; the async-stage decisions and invariants are `DESIGN.md` mechanism 8.
+inside intermediate operators — while keeping keyed state single-writer. The async-stage design and
+invariants are `DESIGN.md` mechanism 8; the loop mechanics are the `run_async_transform` /
+`run_async_sink` docstrings.
 
 - **6.0–6.2 — Async sink · Done.** `AsyncSink` (an authored, awaiting terminal) and `run_async_sink`;
   the conditional `CollectSink` synthesis that leaves every existing graph byte-for-byte unchanged; the
@@ -151,8 +152,7 @@ inside intermediate operators — while keeping keyed state single-writer. Desig
   **completion order** (`ordered=False`) — a slow batch no longer blocks a finished one — with EOS still a
   hard barrier; rejected for keyed stages so the digest stays reproducible. The
   Sentinel-2 example is reworked into a `Stream` graph that moves COG open + range-read + decode out of
-  the source into an `AsyncOpenAndDecode` async transform, with an opt-in `--write` async sink. Detail in
-  `ASYNC_IO_PLAN.md`.
+  the source into an `AsyncOpenAndDecode` async transform, with an opt-in `--write` async sink.
 
 ## Telemetry · **Done**
 
