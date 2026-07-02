@@ -403,13 +403,11 @@ class AsyncOneInputOperator(ABC):
         return 8
 
     def ordered(self) -> bool:
-        """Whether to integrate and emit strictly in input order. Ordered (the default) makes emission,
-        the keyed-state fold order, and the structural digest reproducible while still overlapping I/O
-        (later fetches run behind the in-order frontier). Return ``False`` for completion-order emission —
-        each result the moment its fetch finishes, so a slow batch never blocks a finished one (lower
-        latency) — which is **stateless-only**: it is rejected when :meth:`key_columns` is non-``None``,
-        because a keyed integrate's conditional emit would make the digest depend on fetch timing. A
-        watermark/EOS still forwards only after all data read before it, ordered or not."""
+        """Whether to integrate and emit in input order. Ordered (the default) keeps emission, the
+        keyed-state fold order, and the structural digest reproducible, while still overlapping I/O behind
+        the in-order frontier. ``False`` emits in completion order (lower latency) and is **stateless-only**
+        — rejected when :meth:`key_columns` is non-``None`` (why: ``DESIGN.md`` mechanism 9). A watermark/EOS
+        is forwarded only after the data read before it, either way."""
         return True
 
     def timeout_micros(self) -> int | None:

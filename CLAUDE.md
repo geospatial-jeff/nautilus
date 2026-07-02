@@ -39,6 +39,11 @@ the *what-not-to-do*. A sentence that restates the code or the file tree is dele
 | Module docstring (top of file) | about to edit this file | What is this file's job, and what invariants must I not break? |
 | Function / class docstring | calling it | What's the contract — arguments, result, gotchas? |
 | Inline comment | reading this exact line | Why this, instead of the obvious thing? |
+| PR description / commit message | reviewing the change, or reading the history | What changed, why, and how was it verified? |
+
+The funnel and the rules below govern the last row too: a PR description or commit message is prose with a
+reader, not a repo file exempt from the standard. State each fact once (don't repeat "digest unchanged" in
+three sections), plain English, no decoration.
 
 ### The funnel — one fact, one altitude
 

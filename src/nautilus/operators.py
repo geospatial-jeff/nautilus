@@ -91,11 +91,8 @@ class MapBatch(OneInputOperator):
 class AsyncMapBatch(AsyncOneInputOperator):
     """Applies an async batch -> batch function: :meth:`fetch` awaits ``fn(batch)`` (the I/O) and
     :meth:`integrate` emits its result. The stateless async enrich/lookup built-in — one batch out per
-    batch in, so its row count is order-invariant — behind the DSL's ``.map_async``.
-
-    Being stateless is what lets it run ``ordered=False`` (completion-order emission, lower latency): with
-    no keyed state the output multiset and every structural-digest count are the same whichever order the
-    fetches finish in. ``ordered`` defaults ``True`` (input-order emission)."""
+    batch in — behind the DSL's ``.map_async``. Being stateless, it may run ``ordered=False``
+    (completion-order emission, lower latency); ``ordered`` defaults ``True``."""
 
     def __init__(
         self,

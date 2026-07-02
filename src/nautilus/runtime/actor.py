@@ -743,10 +743,10 @@ async def run_async_transform(
       ``integrate``/emit a DATA head once its fetch is done, and fire a MARKER only when it reaches the head,
       after every earlier batch is emitted — so emission and the keyed-state fold order are input-order and
       reproducible, yet later fetches keep running behind the head. **Unordered** (``ordered()=False``,
-      rejected for keyed stages) instead emits any finished fetch in the leading pre-barrier segment the
-      instant it completes — a slow batch never blocks a finished sibling, lower latency — while a MARKER
-      stays a hard barrier that fires only once every batch read before it has drained. A fetch's wall
-      duration is read off its task when the actor reaps it, feeding ``async.request_micros``.
+      rejected for keyed stages) instead emits any finished fetch in the leading pre-barrier segment as it
+      completes, so a slow fetch does not block a finished one, while a MARKER stays a hard barrier that
+      fires only once every batch read before it has drained. A fetch's wall duration is read off its task
+      when the actor reaps it, feeding ``async.request_micros``.
     * ``max_in_flight`` bounds the buffer: ``buffered`` counts DATA slots and is decremented on pop, not on
       completion, so a slow head cannot let the buffer grow without limit; a full buffer stalls reads — the
       backpressure to upstream. ``awaiting`` separately counts fetches still in flight (the
@@ -800,11 +800,8 @@ async def run_async_transform(
 
     ordered = op.ordered()
     if not ordered and op.key_columns() is not None:
-        # Unordered emits in completion order, so a keyed integrate that emits conditionally on running
-        # state would make rows_out/batches_out — structural-digest inputs — depend on fetch-completion
-        # timing, and the digest would flake across runs. Completion order is sound only for a stateless
-        # map (one row out per row in, counts order-invariant). The DSL rejects this at build time; this
-        # is the backstop for a hand-built IR that pairs an unordered operator with keyed state.
+        # Unordered is stateless-only (why: DESIGN mechanism 9). The DSL rejects this at build, so this is
+        # the backstop for a hand-built IR that pairs an unordered operator with keyed state.
         raise ValueError(
             f"async transform {op_id!r} requested ordered()=False with key_columns()="
             f"{op.key_columns()!r}; unordered (completion-order) emission is stateless-only — a keyed "
@@ -1010,12 +1007,10 @@ async def run_async_transform(
         return None
 
     async def _drain_unordered() -> None:
-        """Unordered drain (``ordered()=False``, stateless only): emit any finished fetch in the leading
-        pre-barrier segment the instant it completes — a slow batch never blocks a finished sibling, the
-        latency win over ordered — while a watermark/EOS marker stays a hard barrier: it reaches the head,
-        and fires, only once every batch read before it has drained, so a watermark never overtakes its
-        data. Rejected for keyed stages up front, so integrate here is a stateless per-batch map and the
-        completion-order emission leaves rows_out/batches_out (and thus the digest) unchanged."""
+        """Unordered drain (``ordered()=False``): emit any finished fetch in the leading pre-barrier segment
+        — the DATA ahead of the first pending marker — so a slow fetch does not block a finished one. A
+        watermark/EOS marker still fires only once every DATA ahead of it has drained (the hard barrier), so
+        it never overtakes its data. Stateless-only; the rejection is enforced before the loop."""
         nonlocal buffered
         while pending and not failed:
             head = pending[0]

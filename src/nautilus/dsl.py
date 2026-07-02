@@ -182,11 +182,9 @@ class Stream:
         stateless async map — enrich a batch from an awaited lookup without crowding the I/O into the
         source. Keyless, so a parallel run round-robins batches across instances (the I/O fan-out).
 
-        ``ordered`` (default) emits in input order, keeping the structural digest reproducible. Set
-        ``ordered=False`` to emit each result the moment its fetch finishes (completion order, lower
-        latency): sound here because the map is stateless, so the output multiset and the digest are the
-        same either way. A watermark/EOS still forwards only after all data read before it — a marker is a
-        hard barrier even unordered."""
+        ``ordered=False`` emits in completion order instead of input order (lower latency), sound here
+        because the map is stateless (see
+        :meth:`~nautilus.core.operator.AsyncOneInputOperator.ordered`)."""
         return self._extend(
             lambda: AsyncMapBatch(fn, max_in_flight=max_in_flight, ordered=ordered),
             key_columns=None,
@@ -209,10 +207,9 @@ class Stream:
         deep-copied per subtask (acquire its client in ``open()``, not ``__init__``); a parallelism-1
         ``apply_async`` shares the one instance, so scale it by passing ``parallelism`` here.
 
-        An operator that keeps keyed state (declares ``key_columns``) must emit in order: unordered
-        completion-order emission would make a conditional-on-state ``integrate``'s row counts depend on
-        fetch timing and its structural digest non-reproducible, so ``ordered()=False`` is rejected here
-        for a keyed operator (the stateless :meth:`map_async` is the unordered path)."""
+        A keyed operator (one that declares ``key_columns``) must stay ordered: ``ordered()=False`` is
+        stateless-only, so it is rejected here for a keyed operator (:meth:`map_async` is the unordered
+        path; why: :meth:`~nautilus.core.operator.AsyncOneInputOperator.ordered`)."""
         if not operator.ordered() and operator.key_columns() is not None:
             raise ValueError(
                 f"apply_async: {type(operator).__name__} declares key_columns()="

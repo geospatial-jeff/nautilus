@@ -53,9 +53,9 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Ordered vs unordered emission** — How an async transform orders its output. **Ordered** (the default)
   integrates and emits strictly in input order — reproducible emission, keyed-state fold order, and
   structural digest — while later fetches still overlap behind the in-order frontier. **Unordered**
-  (`ordered=False`) emits each result the moment its fetch finishes (completion order, lower latency); it
-  is stateless-only, because a keyed stage's counts would then depend on fetch timing. A watermark/EOS is
-  a hard barrier either way — it never overtakes the data read before it.
+  (`ordered=False`) emits each result as its fetch finishes (completion order, lower latency); it is
+  stateless-only, because a keyed stage's counts would then depend on fetch timing. A watermark/EOS is a
+  hard barrier either way — it never overtakes the data read before it.
 - **Edge** — A directed connection from one operator's output to a downstream operator's **input port**.
   Every edge carries both data and control frames and has a partitioner that decides how data is routed
   to the downstream instances.
