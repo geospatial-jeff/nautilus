@@ -34,14 +34,12 @@ from nautilus.demos import DemoStreamSource
 from nautilus.dsl import source as dsl_source
 from nautilus.operators import (
     KeyedCount,
-    KeyedTumblingSum,
     MapBatch,
     Tokenize,
     from_batches,
 )
 from nautilus.tensors import embedding_array, tensor_array, to_numpy
-from nautilus.testing import data, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.testing import data
 
 Pipeline = tuple[SourceOperator, list[OneInputOperator]]
 Builder = Callable[[], Pipeline]
@@ -56,21 +54,10 @@ def wordcount() -> Pipeline:
     return source, [Tokenize("line", "word"), KeyedCount("word")]
 
 
-def windowed_sum() -> Pipeline:
-    """Keyed tumbling-window sum over an event-time stream (windows fire on watermarks)."""
-    source = from_batches(
-        data(key=["a", "a", "b"], val=[1, 2, 5], ts=[1, 5, 7]),
-        wm(10),
-        data(key=["a", "b"], val=[10, 3], ts=[12, 14]),
-        wm(20),
-    )
-    return source, [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))]
-
-
 def demo_stream() -> Pipeline:
-    """A long-running event-time stream for the live dashboard (emits for a while, then ends)."""
-    window = TumblingEventTimeWindows(1_000_000)
-    return DemoStreamSource(), [KeyedTumblingSum("key", "val", "ts", window)]
+    """A long-running stream for the live dashboard (emits for a while, then ends): a keyed count over a
+    paced :class:`~nautilus.demos.DemoStreamSource`."""
+    return DemoStreamSource(), [KeyedCount("key")]
 
 
 _TILE_H, _TILE_W, _TILE_C = 8, 8, 3
@@ -130,18 +117,16 @@ def sentinel2_ndvi(parallelism: int = 1) -> LogicalGraph:
 
 
 def bench_keyed() -> Pipeline:
-    """Benchmark: a large keyed tumbling-window sum — the keyed-shuffle + per-key-state + window-fire hot
-    path. Scale via NAUTILUS_BENCH_* (default 1M rows, 1000 keys). Run parallel to exercise the shuffle:
+    """Benchmark: a large keyed count — the keyed-shuffle + per-key-state + end-of-stream-flush hot path.
+    Scale via NAUTILUS_BENCH_* (default 1M rows, 1000 keys). Run parallel to exercise the shuffle:
     ``nautilus run bench-keyed --parallelism 4``."""
     p = bench_params()
     source = SyntheticKeyedSource(
         num_batches=p["num_batches"],
         batch_rows=p["batch_rows"],
         key_cardinality=p["key_cardinality"],
-        wm_every=p["wm_every"],
     )
-    window = TumblingEventTimeWindows(p["batch_rows"])  # one window per batch of event time
-    return source, [KeyedTumblingSum("key", "value", "ts", window)]
+    return source, [KeyedCount("key")]
 
 
 def bench_linear() -> Pipeline:
@@ -174,40 +159,18 @@ def bench_fanout() -> Pipeline:
 
 
 def bench_skew() -> Pipeline:
-    """Benchmark: hot-key (zipfian) keyed window sum — partition skew, the classic distributed killer.
-    Run parallel to watch one instance take most of the rows: `nautilus run bench-skew --parallelism 4`.
-    Tune the skew with NAUTILUS_BENCH_SKEW (exponent; higher = hotter, default 1.2)."""
+    """Benchmark: hot-key (zipfian) keyed count — partition skew, the classic distributed killer. Run
+    parallel to watch one instance take most of the rows: `nautilus run bench-skew --parallelism 4`. Tune
+    the skew with NAUTILUS_BENCH_SKEW (exponent; higher = hotter, default 1.2)."""
     p = bench_params()
     skew = float(os.environ.get("NAUTILUS_BENCH_SKEW", "1.2"))
     source = SyntheticKeyedSource(
         num_batches=p["num_batches"],
         batch_rows=p["batch_rows"],
         key_cardinality=p["key_cardinality"],
-        wm_every=p["wm_every"],
         skew=skew,
     )
-    return source, [
-        KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))
-    ]
-
-
-def bench_late() -> Pipeline:
-    """Benchmark: out-of-order events with watermark lag (allowed lateness) and varied values — the
-    event-time path a perfectly-ordered stream never exercises (late data, windows held open, state
-    growth before they fire)."""
-    p = bench_params()
-    source = SyntheticKeyedSource(
-        num_batches=p["num_batches"],
-        batch_rows=p["batch_rows"],
-        key_cardinality=p["key_cardinality"],
-        wm_every=p["wm_every"],
-        jitter=p["batch_rows"] * 2,
-        watermark_lag=p["batch_rows"],
-        value_spread=1000,
-    )
-    return source, [
-        KeyedTumblingSum("key", "value", "ts", TumblingEventTimeWindows(p["batch_rows"]))
-    ]
+    return source, [KeyedCount("key")]
 
 
 def bench_backpressure() -> Pipeline:
@@ -296,14 +259,12 @@ def bench_async_io(parallelism: int = 1) -> LogicalGraph:
 
 EXAMPLES: dict[str, Builder] = {
     "wordcount": wordcount,
-    "windowed-sum": windowed_sum,
     "demo-stream": demo_stream,
     "image-embed": image_embed,
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
     "bench-fanout": bench_fanout,
     "bench-skew": bench_skew,
-    "bench-late": bench_late,
     "bench-backpressure": bench_backpressure,
 }
 

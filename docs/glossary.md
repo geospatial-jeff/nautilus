@@ -23,14 +23,13 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Operator** — A unit of computation in the graph. It reads records from its inputs, may keep
   state, and emits records to its output. Nautilus has three operator shapes (below).
 - **Source (source operator)** — An operator with no inputs that produces a stream. It generates the
-  data records, the watermarks, and the end-of-stream marker (`SourceOperator`; e.g.
-  `InMemorySource`). A source may `await` between batches, which is how unbounded inputs work.
+  data records and the end-of-stream marker (`SourceOperator`; e.g. `InMemorySource`). A source may
+  `await` between batches, which is how unbounded inputs work.
 - **Transform (one-input operator)** — An operator with exactly one input stream and one output
-  stream (`OneInputOperator`; e.g. `MapBatch`, `FilterRows`, `Tokenize`, `KeyedCount`,
-  `KeyedTumblingSum`).
+  stream (`OneInputOperator`; e.g. `MapBatch`, `FilterRows`, `Tokenize`, `KeyedCount`).
 - **Two-input operator** — An operator that combines two input streams, such as a join, with one stream
-  on each **input port** (port 0 = left, port 1 = right). Its watermark is the minimum of the two inputs
-  and it ends only after *both* inputs reach EOS (`TwoInputOperator`).
+  on each **input port** (port 0 = left, port 1 = right). It ends only after *both* inputs reach EOS
+  (`TwoInputOperator`).
 - **Input port** — Which input of an operator an edge feeds: port 0 for a one-input transform (and a
   join's left side), port 1 for a join's right side. The port is what lets a two-input operator tell its
   two inbound edges apart.
@@ -149,68 +148,43 @@ the set of frame types is fixed.
   `.storage` is `fixed_size_list<float32, dim>` — the layout vector-search indexes operate on.
 - **Control frame** — A frame that carries a coordination signal rather than data. Control frames are
   broadcast to every downstream instance.
-- **Watermark** — A control frame carrying an event-time value `t`, meaning "no later record on this
-  channel will have an event time below `t`" (`Watermark`). Watermarks only move forward. They are
-  how the system knows event time has advanced enough to close windows.
 - **EOS (end of stream)** — The terminal control frame (`EOS`). An operator forwards EOS downstream
-  only after it has received EOS on *every* input. The job is done once all sinks have seen EOS.
-- **StatusIdle / StatusActive** — Control frames marking an input as temporarily silent (`StatusIdle`)
-  or speaking again (`StatusActive`). An idle input is left out of the watermark minimum so a quiet
-  partition does not stall event-time progress.
+  only after it has received EOS on *every* input; reaching the last input runs the operator's
+  end-of-stream flush (`on_eos`) first, so a keyed aggregation emits its totals. The job is done once
+  all sinks have seen EOS.
 - **Barrier** — A control frame for checkpoint-based exactly-once processing. **(reserved — the type
   exists so adding it later is not a breaking change to the wire format.)**
 
-## Event time and watermarks
+## Time
 
 *Source: `nautilus.core.time`.*
 
-- **Event time** — The time an event actually occurred, read from the data itself (a timestamp
-  column). Represented as an integer number of microseconds since the Unix epoch. Windows and
-  watermarks are defined over event time.
 - **Processing time** — Wall-clock time on the machine running the operator, read from a `Clock`.
-  Used for timing and telemetry, not for windowing. Injectable so tests are deterministic
-  (`TestClock`).
-- **Timestamp assigner** — The source-side component that reads each row's event time from a batch
-  (`TimestampAssigner`; e.g. `ColumnTimestampAssigner` reads a named column).
-- **Watermark strategy** — The source-side rule that turns the largest event time seen so far into
-  the watermark to emit (`WatermarkStrategy`): `MonotonicTimestamps` for in-order data, or
-  `BoundedOutOfOrder` which subtracts an allowed lateness.
-- **Watermark combination** — On an operator with several inputs, the operator's watermark is the
-  **minimum of its inputs' watermarks** (excluding idle inputs), and it never moves backward
-  (`WatermarkTracker`).
-- **Idle input** — An input currently marked silent (see `StatusIdle`); it is excluded from the
-  watermark minimum until it becomes active again.
+  Used for timing and telemetry. Injectable so tests are deterministic (`TestClock`).
 
-## State and windows
+## State
 
-*Source: `nautilus.state`, `nautilus.windows`.*
+*Source: `nautilus.state`.*
 
 - **Keyed state** — Per-key memory an operator keeps across records (for example, a running count per
   word). Addressed by `(operator_id, state name, key, namespace)`.
 - **Key** — The value, or tuple of values, that partitions the stream (for example, the word in
   word-count). Rows with the same key are handled by the same instance and share state.
-- **Namespace** — A sub-division of one key's state, used mainly to hold a separate entry per window
-  (for example, the running sum for key `sensor-7` in the 10:00–10:05 window).
+- **Namespace** — A sub-division of one key's state. It remains a `StateBackend` capability but no
+  built-in operator sets one today.
 - **State backend** — The pluggable store behind keyed state (`StateBackend`). The default is an
   in-memory dictionary (`InMemoryStateBackend`); the interface includes `snapshot`/`restore` so a
   persistent or checkpointing backend can be added without changing operators.
 - **State handles** — Typed accessors for one piece of keyed state: `ValueState` (a single value) and
   `ReducingState` (a value folded by a reducer as items are added). To enumerate or clear all of an
-  operator's keyed state at a watermark, use `OperatorContext.entries` / `clear_state`.
-- **Window** — A finite slice of the stream, defined over event time, that a result is computed over.
-  A `TimeWindow` is a half-open interval `[start, end)`.
-- **Tumbling window** — Fixed-size, non-overlapping, back-to-back windows, e.g. every 5 minutes
-  (`TumblingEventTimeWindows`).
-- **Window assigner** — Maps a record's event time to the window(s) it belongs to (`WindowAssigner`).
-- **Trigger** — The rule for when a window's result is emitted. In Stage 0 this is implicit: a window
-  fires when the operator watermark passes its end.
+  operator's keyed state at end of stream, use `OperatorContext.entries` / `clear_state`.
 
 ## Execution and flow control
 
 *Source: `nautilus.runtime` (the data path), `nautilus.driver` (the boundary that runs it).*
 
 - **Actor** — The loop that drives one operator instance: it pulls frames from the inputs, calls the
-  operator's `process` / `on_watermark`, and pushes results to the outputs. One actor per instance,
+  operator's `process` / `on_eos`, and pushes results to the outputs. One actor per instance,
   single-threaded (one asyncio task).
 - **Mailbox** — The fan-in on an instance that merges its several input channels into one ordered
   sequence of `(input_index, frame)`, preserving each channel's order (`Mailbox`).
@@ -221,10 +195,10 @@ the set of frame types is fixed.
   shared queue. The consumer grants the producer a fixed number of **credits** — the **window**, equal
   to the channel capacity. The producer may send a data frame only while it holds a credit, and the
   consumer returns one credit for each data frame it receives, so the number of data frames in flight
-  never exceeds the window. Control frames (watermark, EOS) are sent without credit, so a full data
+  never exceeds the window. Control frames (EOS) are sent without credit, so a full data
   window never delays them (`SocketChannel` in `nautilus.transport`).
 - **Collector** — The in-memory buffer an operator emits into during a single `process` /
-  `on_watermark` call (`Collector`). The actor drains it and performs the (awaiting) sends
+  `on_eos` call (`Collector`). The actor drains it and performs the (awaiting) sends
   afterward, so operator code stays synchronous and each step is a self-contained critical section.
 - **Operator context** — The object handed to an operator at `open` time holding its dependencies: its
   id, subtask index and count, state backend, clock, and a metrics recorder (`OperatorContext`).

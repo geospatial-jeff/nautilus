@@ -13,14 +13,7 @@ import pyarrow as pa
 
 from nautilus.api import LogicalGraph
 from nautilus.core.operator import OneInputOperator, SourceOperator
-from nautilus.core.records import (
-    ACTIVE_FRAME,
-    EOS_FRAME,
-    IDLE_FRAME,
-    Batch,
-    Frame,
-    Watermark,
-)
+from nautilus.core.records import EOS_FRAME, Batch, Frame
 from nautilus.core.time import TestClock
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.result import RunResult
@@ -30,12 +23,9 @@ from nautilus.tensors import tensor_array
 
 __all__ = [
     "TestClock",
-    "ACTIVE_FRAME",
     "EOS_FRAME",
-    "IDLE_FRAME",
     "batch",
     "data",
-    "wm",
     "from_batches",
     "run_ops",
     "staged_graph",
@@ -58,10 +48,6 @@ def batch(**columns: Any) -> pa.RecordBatch:
 def data(**columns: Any) -> Batch:
     """Build a data :class:`Batch` frame from keyword columns."""
     return Batch(batch(**columns))
-
-
-def wm(t: int) -> Watermark:
-    return Watermark(t)
 
 
 async def run_ops(frames: list[Frame], *transforms: OneInputOperator) -> RunResult:

@@ -44,7 +44,7 @@ def _two_op_snapshots(wall_in_step=999):
     )
     snk.incr("operator.rows_in", 25, operator_id="op1", subtask_index=0)
     snk.incr("operator.rows_out", 5, operator_id="op1", subtask_index=0)
-    snk.set_gauge("watermark.final_micros", 2**62, operator_id="op1")
+    snk.set_gauge("eos.expected", 2**62, operator_id="op1")
     return [src.snapshot(), snk.snapshot()]
 
 

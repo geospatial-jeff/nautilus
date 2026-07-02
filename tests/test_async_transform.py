@@ -1,11 +1,10 @@
-"""The async transform (Stage 6.3–6.4): an intermediate :class:`AsyncOneInputOperator` whose I/O is
-awaited in ``fetch`` (run as bounded, overlapping concurrent tasks) and whose result is folded into state
-and emitted in a synchronous ``integrate``.
+"""The async transform (Stage 6.3): an intermediate :class:`AsyncOneInputOperator` whose I/O is awaited
+in ``fetch`` (run as bounded, overlapping concurrent tasks) and whose result is folded into state and
+emitted in a synchronous ``integrate``, in input order.
 
-The "external I/O" here is an ``asyncio.sleep``/gated event plus an in-process transform, so these run
-hermetically: what is exercised is the engine's driver — ordered emission under out-of-order completion
-(6.3) and unordered completion-order emission with the marker still a hard barrier (6.4), the watermark/
-EOS barriers, the in-flight bound, fail-fast, the per-request timeout, the state guard, and keyed
+The "external I/O" here is an ``asyncio.sleep`` plus an in-process transform, so these run hermetically:
+what is exercised is the engine's driver — ordered emission under out-of-order completion, the EOS
+barrier, the in-flight bound, fail-fast, the per-request timeout, the state guard, and keyed
 co-partitioning — not any real network.
 """
 
@@ -26,7 +25,7 @@ from nautilus.api.graph import source as source_vertex
 from nautilus.compile import compile_graph
 from nautilus.compile.lower import SINK_ID
 from nautilus.core.operator import Collector, StateAccessError
-from nautilus.core.records import EOS, EOS_FRAME, WATERMARK_MAX, Batch, Watermark
+from nautilus.core.records import EOS, EOS_FRAME, Batch
 from nautilus.driver.run import run_compiled
 from nautilus.operators import MapBatch, _add, from_batches
 from nautilus.runtime.actor import Output, run_async_transform
@@ -105,9 +104,7 @@ class AsyncKeyedCount(AsyncOneInputOperator):
         for k in result:  # type: ignore[attr-defined]
             ctx.reducing_state(self._STATE, KeyContext((k,)), _add).add(1)
 
-    def on_watermark(self, t: int, ctx: OperatorContext, out: Collector) -> None:
-        if t < WATERMARK_MAX:
-            return
+    def on_eos(self, ctx: OperatorContext, out: Collector) -> None:
         keys: list[object] = []
         totals: list[int] = []
         fired: list[KeyContext] = []
@@ -168,9 +165,9 @@ def test_digest_is_stable_across_latency_trials() -> None:
         )
 
     # Latency-driven nondeterminism (out-of-order fetch completion) must not reach the structural digest:
-    # ordered emission keeps rows/batches/watermark counts reproducible across trials. (The digest differs
-    # from the sync map's by design — it includes op_class/kind — so output equality is asserted
-    # separately in test_ordered_map_async_equals_sync_map.)
+    # ordered emission keeps row and batch counts reproducible across trials. (The digest differs from the
+    # sync map's by design — it includes op_class/kind — so output equality is asserted separately in
+    # test_ordered_map_async_equals_sync_map.)
     assert digest_async() == digest_async()
 
 
@@ -223,12 +220,12 @@ def test_keyed_async_co_partitions_across_instances() -> None:
     assert len(set(owner.values())) > 1  # both instances were actually used
 
 
-# --- EOS / watermark ordering (direct drive, asserting order not just counts) -------------------
+# --- EOS ordering (direct drive, asserting order not just counts) -------------------------------
 
 
 async def _drive_and_capture(op: AsyncOneInputOperator, frames: list[object]) -> list[object]:
     """Drive a transform over one input and return the exact output FRAME sequence (data + control), so a
-    test can assert a watermark never overtakes the data before it and EOS comes last."""
+    test can assert the output frames stay in input order and EOS comes last."""
     in_chan = InProcChannel(256)
     out_chan = InProcChannel(256)
     captured: list[object] = []
@@ -255,55 +252,24 @@ async def _drive_and_capture(op: AsyncOneInputOperator, frames: list[object]) ->
     return captured
 
 
-async def test_eos_and_watermarks_drain_in_order() -> None:
-    # data1's fetch is slower than data2's, so data2 completes first — yet ordered emission + the marker
-    # barrier must yield Batch(1*2), Watermark(5), Batch(2*2), Watermark(10), then EOS. A watermark never
-    # overtakes the data before it, and the terminal close emits no spurious Watermark(WATERMARK_MAX): it
-    # fires on_watermark locally and signals completion with EOS, exactly like the synchronous loop.
-    frames = [
-        Batch(pa.record_batch({"v": [1]})),
-        Watermark(5),
-        Batch(pa.record_batch({"v": [2]})),
-        Watermark(10),
-        EOS_FRAME,
-    ]
-    out = await _drive_and_capture(AsyncMapBatch(_double), frames)
-    kinds = [
-        (
-            ("B", o.data.column("v")[0].as_py())
-            if isinstance(o, Batch)
-            else ("W", o.t) if isinstance(o, Watermark) else ("EOS", None)
-        )
-        for o in out
-    ]
-    assert kinds == [("B", 2), ("W", 5), ("B", 4), ("W", 10), ("EOS", None)]
-    assert WATERMARK_MAX not in [o.t for o in out if isinstance(o, Watermark)]
-
-
 def _frame_seq(out: list[object]) -> list[object]:
     return [
-        (
-            ("B", tuple(o.data.column("v").to_pylist()))
-            if isinstance(o, Batch)
-            else ("W", o.t) if isinstance(o, Watermark) else ("EOS", None)
-        )
+        ("B", tuple(o.data.column("v").to_pylist())) if isinstance(o, Batch) else ("EOS", None)
         for o in out
     ]
 
 
 async def test_async_loop_matches_sync_loop_frame_for_frame() -> None:
-    # The strong oracle: the async transform's full OUTPUT frame sequence (data + watermarks + EOS) is
-    # identical to the synchronous MapBatch loop's over the same watermark-rich input — so the async loop
-    # forwards watermarks/EOS exactly as the proven loop, not merely the same row count.
+    # The strong oracle: the async transform's full OUTPUT frame sequence (data + EOS) is identical to the
+    # synchronous MapBatch loop's over the same input — so the async loop forwards batches and EOS exactly
+    # as the proven loop, and in input order, not merely the same row count.
     from nautilus.operators import MapBatch
     from nautilus.runtime.actor import run_transform
 
     frames = [
         Batch(pa.record_batch({"v": [3]})),
         Batch(pa.record_batch({"v": [1]})),
-        Watermark(7),
         Batch(pa.record_batch({"v": [2]})),
-        Watermark(9),
         Batch(pa.record_batch({"v": [5]})),
         EOS_FRAME,
     ]
@@ -538,183 +504,6 @@ def test_async_one_input_is_public_api() -> None:
     assert public is internal
 
 
-# --- unordered mode (stateless only): completion-order emission, marker still a hard barrier ---------
-
-
-class _GatedMap(AsyncOneInputOperator):
-    """A stateless async map whose every fetch blocks on a per-value :class:`asyncio.Event`, so a test can
-    open the gates in a chosen order and force a deterministic *completion* order — proving unordered
-    emission follows completion, not input, order without relying on sleep timing."""
-
-    def __init__(
-        self, gates: dict[int, asyncio.Event], *, ordered: bool = False, max_in_flight: int = 8
-    ) -> None:
-        self._gates = gates
-        self._ordered = ordered
-        self._cap = max_in_flight
-
-    def max_in_flight(self) -> int:
-        return self._cap
-
-    def ordered(self) -> bool:
-        return self._ordered
-
-    async def fetch(self, batch: pa.RecordBatch) -> object:
-        await self._gates[batch.column("v")[0].as_py()].wait()
-        return batch
-
-    def integrate(
-        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
-    ) -> None:
-        out.emit(batch)
-
-
-class _UnorderedKeyedCount(AsyncKeyedCount):
-    """A keyed async enrich that (illegally) asks for completion-order emission — the case the digest-
-    reproducibility rule forbids, so the DSL and the actor must both reject it."""
-
-    def ordered(self) -> bool:
-        return False
-
-
-def test_unordered_stateless_matches_sync_map() -> None:
-    vals = list(range(24))
-    got = source(_batches(vals, per_batch=2)).map_async(_double, ordered=False).collect()
-    # Order is not asserted (that is the point of unordered); every doubled value is still present exactly
-    # once — a stateless map conserves rows whichever order the fetches finish in.
-    assert sorted(r["v"] for r in got) == [v * 2 for v in vals]
-
-
-def test_unordered_digest_is_stable_and_equals_ordered() -> None:
-    vals = list(range(30))
-
-    def digest(ordered: bool) -> str:
-        return (
-            source(_batches(vals, per_batch=3))
-            .map_async(_double, max_in_flight=8, ordered=ordered)
-            .run()
-            .telemetry.structural_digest()
-        )
-
-    # The structural digest hashes per-operator totals (rows/batches/watermark counts), which a stateless
-    # map leaves order-invariant — so unordered is reproducible across latency trials AND byte-for-byte
-    # equal to ordered. This is why unordered is safe to bench and sound only for a stateless stage.
-    assert digest(False) == digest(False)
-    assert digest(False) == digest(True)
-
-
-def test_unordered_in_flight_overlaps_and_is_bounded() -> None:
-    cap = 4
-    result = (
-        source(_batches(list(range(20)))).map_async(_double, max_in_flight=cap, ordered=False).run()
-    )
-    peak = _gauge_max(result.telemetry, "async.in_flight")
-    assert (
-        2 <= peak <= cap
-    )  # genuinely overlapping, never above the bound — the plan's peak assertion
-    assert _counter_total(result.telemetry, "async.requests") == 20
-    assert sorted(r["v"] for r in result.to_pylist()) == [v * 2 for v in range(20)]
-
-
-async def test_unordered_emits_in_completion_order() -> None:
-    # The head (v=0) is gated shut while later fetches finish, so unordered emits them first — the latency
-    # win a slow head would forfeit under ordered. Gates opened in a deliberately non-input order; each
-    # value must appear in exactly that order, proving completion-order (not input-order) emission.
-    vals = [0, 1, 2, 3]
-    gates = {v: asyncio.Event() for v in vals}
-    op = _GatedMap(gates, ordered=False)
-    in_chan, out_chan = InProcChannel(64), InProcChannel(64)
-    emitted: list[int] = []
-    progress = (
-        asyncio.Event()
-    )  # set on every emission, so the controller waits without busy-polling
-    release_order = [2, 0, 3, 1]
-
-    async def feed() -> None:
-        for v in vals:
-            await in_chan.send(Batch(pa.record_batch({"v": [v]})))
-        await in_chan.send(EOS_FRAME)
-
-    async def collect() -> None:
-        while True:
-            fr = await out_chan.recv()
-            if isinstance(fr, Batch):
-                emitted.append(fr.data.column("v")[0].as_py())
-                progress.set()
-            elif isinstance(fr, EOS):
-                return
-
-    async def controller() -> None:
-        for v in release_order:
-            gates[v].set()
-            while v not in emitted:  # wait for this release to drain before opening the next gate
-                progress.clear()
-                if v not in emitted:
-                    await progress.wait()
-
-    async def drive() -> None:
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(
-                run_async_transform(
-                    op, OperatorContext("op0"), Mailbox([in_chan]), [Output([out_chan], Forward())]
-                )
-            )
-            tg.create_task(feed())
-            tg.create_task(collect())
-            tg.create_task(controller())
-
-    await asyncio.wait_for(drive(), timeout=5)
-    assert emitted == release_order  # completion order, not the input order [0, 1, 2, 3]
-
-
-async def test_unordered_marker_is_a_hard_barrier() -> None:
-    # Even unordered, a watermark forwards only after every batch read before it (a marker is a hard
-    # barrier). The two pre-watermark batches may emit in either order, but W(5) never overtakes them and
-    # the post-watermark batch never precedes it.
-    frames = [
-        Batch(pa.record_batch({"v": [1]})),
-        Batch(pa.record_batch({"v": [2]})),
-        Watermark(5),
-        Batch(pa.record_batch({"v": [3]})),
-        EOS_FRAME,
-    ]
-    out = await _drive_and_capture(AsyncMapBatch(_double, ordered=False), frames)
-    kinds = [
-        (
-            ("B", o.data.column("v")[0].as_py())
-            if isinstance(o, Batch)
-            else ("W", o.t) if isinstance(o, Watermark) else ("EOS", None)
-        )
-        for o in out
-    ]
-    w_idx = kinds.index(("W", 5))
-    before = {k[1] for k in kinds[:w_idx] if k[0] == "B"}
-    assert before == {2, 4}  # both pre-watermark batches (1*2, 2*2) drained before the watermark
-    assert ("B", 6) in kinds[w_idx + 1 :]  # the post-watermark batch (3*2) after it
-    assert kinds[-1] == ("EOS", None)
-
-
-def test_unordered_keyed_is_rejected_at_build() -> None:
-    # A keyed async operator asking for completion order is rejected when the Stream is built — the
-    # friendly, early failure before anything runs.
-    with pytest.raises(ValueError, match="stateless-only"):
-        source(_batches([1, 2])).apply_async(_UnorderedKeyedCount(), key_columns="k")
-
-
-def test_unordered_keyed_hand_built_ir_is_rejected() -> None:
-    # The actor backstops a hand-built IR that pairs an unordered operator with keyed state, bypassing the
-    # DSL's build-time check: run_async_transform raises rather than emit a non-reproducible digest.
-    g = LogicalGraph(
-        (
-            source_vertex("s", lambda: from_batches(pa.record_batch({"k": ["a", "b"]}))),
-            async_one_input("a", lambda: _UnorderedKeyedCount()),
-        ),
-        (LogicalEdge("s", "a", 0, ("k",)),),
-    )
-    with pytest.raises((ValueError, ExceptionGroup)):
-        asyncio.run(run_compiled(compile_graph(g)))
-
-
 def test_max_in_flight_must_be_positive() -> None:
     handle = source(_batches([1])).map_async(_double, max_in_flight=0)
     with pytest.raises((ValueError, ExceptionGroup)):
@@ -792,3 +581,153 @@ def test_async_one_input_builder_in_explicit_edge_graph() -> None:
     )
     out = asyncio.run(run_compiled(compile_graph(g)))
     assert sorted(r["v"] for r in out.to_pylist()) == [4, 8]  # *2 (async) then *2 (sync)
+
+
+# --- unordered mode (stateless only): completion-order emission ----------------------------------
+
+
+class _GatedMap(AsyncOneInputOperator):
+    """A stateless async map whose every fetch blocks on a per-value :class:`asyncio.Event`, so a test can
+    open the gates in a chosen order and force a deterministic *completion* order — proving unordered
+    emission follows completion, not input, order without relying on sleep timing."""
+
+    def __init__(
+        self, gates: dict[int, asyncio.Event], *, ordered: bool = False, max_in_flight: int = 8
+    ) -> None:
+        self._gates = gates
+        self._ordered = ordered
+        self._cap = max_in_flight
+
+    def max_in_flight(self) -> int:
+        return self._cap
+
+    def ordered(self) -> bool:
+        return self._ordered
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        await self._gates[batch.column("v")[0].as_py()].wait()
+        return batch
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        out.emit(batch)
+
+
+class _UnorderedKeyedCount(AsyncKeyedCount):
+    """A keyed async enrich that (illegally) asks for completion-order emission — the case the digest-
+    reproducibility rule forbids, so the DSL and the actor must both reject it."""
+
+    def ordered(self) -> bool:
+        return False
+
+
+def test_unordered_stateless_matches_sync_map() -> None:
+    vals = list(range(24))
+    got = source(_batches(vals, per_batch=2)).map_async(_double, ordered=False).collect()
+    # Order is not asserted (that is the point of unordered); every doubled value is still present exactly
+    # once — a stateless map conserves rows whichever order the fetches finish in.
+    assert sorted(r["v"] for r in got) == [v * 2 for v in vals]
+
+
+def test_unordered_digest_is_stable_and_equals_ordered() -> None:
+    vals = list(range(30))
+
+    def digest(ordered: bool) -> str:
+        return (
+            source(_batches(vals, per_batch=3))
+            .map_async(_double, max_in_flight=8, ordered=ordered)
+            .run()
+            .telemetry.structural_digest()
+        )
+
+    # The structural digest hashes per-operator totals (rows/batches/EOS counts), which a stateless map
+    # leaves order-invariant — so unordered is reproducible across latency trials AND byte-for-byte equal
+    # to ordered. This is why unordered is safe to bench and sound only for a stateless stage.
+    assert digest(False) == digest(False)
+    assert digest(False) == digest(True)
+
+
+def test_unordered_in_flight_overlaps_and_is_bounded() -> None:
+    cap = 4
+    result = (
+        source(_batches(list(range(20)))).map_async(_double, max_in_flight=cap, ordered=False).run()
+    )
+    peak = _gauge_max(result.telemetry, "async.in_flight")
+    assert (
+        2 <= peak <= cap
+    )  # genuinely overlapping, never above the bound — the plan's peak assertion
+    assert _counter_total(result.telemetry, "async.requests") == 20
+    assert sorted(r["v"] for r in result.to_pylist()) == [v * 2 for v in range(20)]
+
+
+async def test_unordered_emits_in_completion_order() -> None:
+    # The head (v=0) is gated shut while later fetches finish, so unordered emits them first — the latency
+    # win a slow head would forfeit under ordered. Gates opened in a deliberately non-input order; each
+    # value must appear in exactly that order, proving completion-order (not input-order) emission.
+    vals = [0, 1, 2, 3]
+    gates = {v: asyncio.Event() for v in vals}
+    op = _GatedMap(gates, ordered=False)
+    in_chan, out_chan = InProcChannel(64), InProcChannel(64)
+    emitted: list[int] = []
+    progress = (
+        asyncio.Event()
+    )  # set on every emission, so the controller waits without busy-polling
+    release_order = [2, 0, 3, 1]
+
+    async def feed() -> None:
+        for v in vals:
+            await in_chan.send(Batch(pa.record_batch({"v": [v]})))
+        await in_chan.send(EOS_FRAME)
+
+    async def collect() -> None:
+        while True:
+            fr = await out_chan.recv()
+            if isinstance(fr, Batch):
+                emitted.append(fr.data.column("v")[0].as_py())
+                progress.set()
+            elif isinstance(fr, EOS):
+                return
+
+    async def controller() -> None:
+        for v in release_order:
+            gates[v].set()
+            while v not in emitted:  # wait for this release to drain before opening the next gate
+                progress.clear()
+                if v not in emitted:
+                    await progress.wait()
+
+    async def drive() -> None:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(
+                run_async_transform(
+                    op, OperatorContext("op0"), Mailbox([in_chan]), [Output([out_chan], Forward())]
+                )
+            )
+            tg.create_task(feed())
+            tg.create_task(collect())
+            tg.create_task(controller())
+
+    await asyncio.wait_for(drive(), timeout=5)
+    assert emitted == release_order  # completion order, not the input order [0, 1, 2, 3]
+
+
+def test_unordered_keyed_is_rejected_at_build() -> None:
+    # A keyed async operator asking for completion order is rejected when the Stream is built — the
+    # friendly, early failure before anything runs.
+    with pytest.raises(ValueError, match="stateless-only"):
+        source(_batches([1, 2])).apply_async(_UnorderedKeyedCount(), key_columns="k")
+
+
+def test_unordered_keyed_hand_built_ir_is_rejected() -> None:
+    # The actor backstops a hand-built IR that pairs an unordered operator with keyed state, bypassing the
+    # DSL's build-time check: run_async_transform raises rather than emit a non-reproducible digest.
+    g = LogicalGraph(
+        (
+            source_vertex("s", lambda: from_batches(pa.record_batch({"k": ["a", "b"]}))),
+            async_one_input("a", lambda: _UnorderedKeyedCount()),
+        ),
+        (LogicalEdge("s", "a", 0, ("k",)),),
+    )
+    with pytest.raises((ValueError, ExceptionGroup)):
+        asyncio.run(run_compiled(compile_graph(g)))

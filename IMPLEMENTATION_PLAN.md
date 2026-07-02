@@ -8,8 +8,7 @@ for the architecture and rationale.
 ### Stage 0 — Semantics core, single process · **Done**
 
 The frame model and operator contracts run in one process over in-memory channels, with deterministic
-bounded and unbounded behavior: word-count, keyed tumbling windows that fire on watermark advance and
-flush at EOS, and idle inputs that don't stall event time.
+behavior demonstrated by word-count and keyed aggregation that flushes at end of stream.
 
 ### Stage 0.5 — Tensor columns · **Done**
 
@@ -56,7 +55,7 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   group table). A linear graph carries no edges and compiles byte-for-byte as before.
 - **3.2 — Two-input actor + executor wiring · Done.** `run_transform` and a new `run_two_input` share one
   loop core; the two-input one dispatches each batch to `process_left`/`process_right` by its input's
-  side, combines watermarks as `min(left, right)`, and forwards EOS after both ports close. The executor
+  side and forwards EOS after both ports close. The executor
   wires a port-ordered mailbox and one Output per outbound edge (list-valued edge maps — also the latent
   fan-out edge-loss fix).
 - **3.3 — `HashJoin` operator · Done.** The concrete inner symmetric-hash equi-join: buffers both sides
@@ -64,7 +63,7 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
   and rejects an output column-name collision, clears at EOS. Verified in-process, parallel (co-partition),
   and across worker processes (distributed result + digest match single-process).
 - **3.4 — Fluent `Stream` DSL · Done.** `nautilus.dsl.Stream` (`source(...)` → `map`/`filter`/`tokenize`/
-  `count_by`/`tumbling_sum`/`apply`/`join` → `.run(workers=, parallelism=)`/`.collect()`) is the public
+  `count_by`/`apply`/`join` → `.run(workers=, parallelism=)`/`.collect()`) is the public
   surface for building a pipeline — immutable, join-capable, the same graph in-process and across workers.
   The boundary runners moved into a new `nautilus.driver` package (making the report-layer firewall a
   package-level import-linter contract, plus a fifth contract enforcing IR purity), and the redundant
@@ -138,7 +137,7 @@ not yet designed in depth:
 
 Opens the awaiting seam beyond the source — to write results to an external store and to enrich a record
 inside intermediate operators — while keeping keyed state single-writer. Design and staged plan in
-`ASYNC_IO_PLAN.md`; the async-stage decisions and invariants are `DESIGN.md` mechanism 9.
+`ASYNC_IO_PLAN.md`; the async-stage decisions and invariants are `DESIGN.md` mechanism 8.
 
 - **6.0–6.2 — Async sink · Done.** `AsyncSink` (an authored, awaiting terminal) and `run_async_sink`;
   the conditional `CollectSink` synthesis that leaves every existing graph byte-for-byte unchanged; the

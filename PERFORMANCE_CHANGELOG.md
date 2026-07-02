@@ -32,9 +32,8 @@ starts from evidence, not a cold read.
   symmetric hash join buffers both sides until EOS and re-probes the *growing* state, so the buffered
   side's grouped index (an `argsort` + `unique` over the whole buffer) rebuilds on every probe — O(n) per
   probe, O(n²) over the run. The stream-table benchmarks (`bench-join`) don't show it: the bounded table is
-  indexed once and reused. The real fix is the windowed join `HashJoin`'s docstring already names — bound
-  and evict buffered state on the watermark — or a delta index (a large, rarely-rebuilt main index plus a
-  small recently-added delta probed directly and merged amortized). Both are feature-sized, not tweaks. A
+  indexed once and reused. The real fix is a delta index: a large, rarely-rebuilt main index plus a small
+  recently-added delta probed directly and merged amortized. That is feature-sized, not a tweak. A
   constant-factor attempt (store the sort `order` + a zero-copy `Table` instead of reordering every
   buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
   common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.

@@ -1,21 +1,20 @@
 """The non-reordering fan-in that merges an operator instance's several input channels.
 
-Correctness of event-time handling depends on **per-channel FIFO**: a record must never be
-observed after a watermark that bounds it. The mailbox guarantees this by keeping *at most one*
-outstanding ``recv`` per input channel and re-arming only the channel it just yielded from. It never
-reorders within a channel and never drops a ready frame. A single-input mailbox (a linear pipeline
-stage) has nothing to merge, so it awaits its one channel directly and skips the per-``get`` Task and
-``asyncio.wait`` the fan-in path needs.
+Per-channel ordering depends on **per-channel FIFO**: a channel's frames must be observed in send
+order — data before that channel's EOS, never reordered within the channel. The mailbox guarantees
+this by keeping *at most one* outstanding ``recv`` per input channel and re-arming only the channel it
+just yielded from. It never reorders within a channel and never drops a ready frame. A single-input
+mailbox (a linear pipeline stage) has nothing to merge, so it awaits its one channel directly and skips
+the per-``get`` Task and ``asyncio.wait`` the fan-in path needs.
 
 When several inputs are ready at once, the choice between them is a fairness tie-break, *not* a
 correctness requirement (any per-channel-FIFO-preserving pick is correct). The fan-in rotates the
 starting input each ``get`` so a continuously-ready input cannot starve the others — which would
-otherwise let one input's watermark grow stale (stalling the combined min watermark) and defer a
-sibling's fail-fast exception.
+otherwise defer a slow sibling's EOS (and so the all-inputs-EOS termination) or its fail-fast exception.
 
-Each ``get`` returns ``(input_index, frame)`` so the actor can attribute watermarks/EOS to the
-right input. Inputs close individually (on EOS); the mailbox is :attr:`exhausted` once all close.
-:meth:`close` cancels any outstanding recvs on teardown.
+Each ``get`` returns ``(input_index, frame)`` so the actor can attribute EOS to the right input. Inputs
+close individually (on EOS); the mailbox is :attr:`exhausted` once all close. :meth:`close` cancels any
+outstanding recvs on teardown.
 """
 
 from __future__ import annotations

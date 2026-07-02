@@ -15,10 +15,9 @@ from nautilus.cluster import deploy
 from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
+from nautilus.operators import InMemorySource, KeyedCount, Tokenize
 from nautilus.telemetry import TelemetryConfig, Tier
-from nautilus.testing import data, multiset, staged_graph, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.testing import data, multiset, staged_graph
 
 _Spec = tuple[OneInputOperator, int, "tuple[str, ...] | None"]
 
@@ -33,26 +32,17 @@ def _wordcount_frames(rng: random.Random) -> list:
     return [data(line=[ln]) for ln in lines] + [EOS_FRAME]
 
 
-def _windowed_frames(rng: random.Random) -> list:
+def _keyed_frames(rng: random.Random) -> list:
     frames: list = []
-    clock_t = 0
     for _ in range(rng.randint(2, 4)):
         m = rng.randint(1, 6)
-        frames.append(
-            data(
-                key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)],
-                val=[rng.randint(1, 5) for _ in range(m)],
-                ts=[clock_t + rng.randint(0, 8) for _ in range(m)],
-            )
-        )
-        clock_t += 10
-        frames.append(wm(clock_t))
+        frames.append(data(key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)]))
     frames.append(EOS_FRAME)
     return frames
 
 
-def _windowed_spec(p: int) -> _Spec:
-    return (KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)), p, ("key",))
+def _keyed_spec(p: int) -> _Spec:
+    return (KeyedCount("key"), p, ("key",))
 
 
 # --- correctness across random W x parallelism --------------------------------------------------
@@ -75,33 +65,22 @@ def test_distributed_matches_serial_over_random_workers_and_parallelism() -> Non
                 [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), parallelism, ("word",))],
             )
         else:
-            frames = _windowed_frames(rng)
-            serial = asyncio.run(
-                run_local_chain(
-                    InMemorySource(frames),
-                    [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
-                )
-            )
-            graph = staged_graph(InMemorySource(frames), [_windowed_spec(parallelism)])
+            frames = _keyed_frames(rng)
+            serial = asyncio.run(run_local_chain(InMemorySource(frames), [KeyedCount("key")]))
+            graph = staged_graph(InMemorySource(frames), [_keyed_spec(parallelism)])
         result = deploy(graph, num_workers=workers)
         assert multiset(result) == multiset(serial), (trial, workers, parallelism)
 
 
 def test_single_key_skew_terminates_across_workers() -> None:
     # Every row shares one key: the shuffle sends all data to one instance; the others receive only the
-    # broadcast EOS over their sockets, advance event time, and forward EOS. It must still terminate.
+    # broadcast EOS over their sockets and forward it. It must still terminate.
     frames = [
-        data(key=["a"] * 8, val=list(range(8)), ts=list(range(8))),
-        wm(10),
+        data(key=["a"] * 8),
         EOS_FRAME,
     ]
-    serial = asyncio.run(
-        run_local_chain(
-            InMemorySource(frames),
-            [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
-        )
-    )
-    result = deploy(staged_graph(InMemorySource(frames), [_windowed_spec(4)]), num_workers=4)
+    serial = asyncio.run(run_local_chain(InMemorySource(frames), [KeyedCount("key")]))
+    result = deploy(staged_graph(InMemorySource(frames), [_keyed_spec(4)]), num_workers=4)
     assert multiset(result) == multiset(serial)
 
 

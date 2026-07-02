@@ -1,12 +1,12 @@
 """The built-in operators — the implementations behind the fluent ``Stream`` combinators.
 
 Concrete operators that exercise the streaming semantics. Most follow the synchronous
-``process``/``on_watermark`` contract (emit into the ``Collector``, never await; see
-:mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`,
-:class:`KeyedCount` and :class:`KeyedTumblingSum` back the DSL's ``.map`` / ``.filter`` / ``.tokenize``
-/ ``.count_by`` / ``.tumbling_sum``, and :class:`HashJoin` backs ``.join``. :class:`AsyncMapBatch` is the
-one awaiting built-in — it backs ``.map_async``, doing its I/O in ``fetch`` and emitting in
-``integrate``. What each one does is on its own class.
+``process``/``on_eos`` contract (emit into the ``Collector``, never await; see
+:mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`, and
+:class:`KeyedCount` back the DSL's ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by``, and
+:class:`HashJoin` backs ``.join``. :class:`AsyncMapBatch` is the one awaiting built-in — it backs
+``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``. What each one does is on its
+own class.
 """
 
 from __future__ import annotations
@@ -26,10 +26,8 @@ from nautilus.core.operator import (
     SourceOperator,
     TwoInputOperator,
 )
-from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
-from nautilus.core.time import to_epoch_micros
+from nautilus.core.records import EOS_FRAME, Batch, Frame
 from nautilus.state import KeyContext
-from nautilus.windows import TimeWindow, TumblingEventTimeWindows
 
 
 def _add(a: int, b: int) -> int:
@@ -44,7 +42,7 @@ class InMemorySource(SourceOperator):
         for frame in frames:  # fail loudly at construction, not by silently vanishing in the actor
             if not isinstance(frame, Frame):
                 raise TypeError(
-                    f"InMemorySource frames must be Frame objects (Batch/Watermark/EOS/...), got "
+                    f"InMemorySource frames must be Frame objects (Batch/EOS/...), got "
                     f"{type(frame).__name__}"
                 )
         self._frames = frames
@@ -155,8 +153,8 @@ class Tokenize(OneInputOperator):
 
 
 class KeyedCount(OneInputOperator):
-    """Counts occurrences per key. A keyed *global* aggregation: results are emitted at EOS, when
-    the watermark reaches ``WATERMARK_MAX``."""
+    """Counts occurrences per key. A keyed *global* aggregation: results are emitted at end of stream
+    (:meth:`on_eos`)."""
 
     _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
 
@@ -182,9 +180,7 @@ class KeyedCount(OneInputOperator):
         ):
             self._ctx.reducing_state(self._STATE, KeyContext((value,)), _add).add(int(count))
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        if t < WATERMARK_MAX:
-            return  # global aggregation: only the terminal watermark fires it
+    def on_eos(self, out: Collector) -> None:
         keys: list[object] = []
         totals: list[int] = []
         fired: list[KeyContext] = []
@@ -201,106 +197,6 @@ class KeyedCount(OneInputOperator):
                     names=[self.key_col, self.count_col],
                 )
             )
-            # operator-author custom metric (separate recorder; no-op unless telemetry is on)
-            self._ctx.metrics.incr("window.fires", 1, operator_id=self._ctx.operator_id)
-
-
-class KeyedTumblingSum(OneInputOperator):
-    """Sums a value column per key per tumbling event-time window. Each window fires when the
-    operator watermark passes its end (and any still-open windows fire at EOS)."""
-
-    _STATE = "acc"  # state-backend name; the window is the namespace, the key the key
-
-    def __init__(
-        self,
-        key_col: str,
-        value_col: str,
-        ts_col: str,
-        window: TumblingEventTimeWindows,
-        *,
-        start_col: str = "window_start",
-        end_col: str = "window_end",
-        sum_col: str = "sum",
-    ) -> None:
-        self.key_col = key_col
-        self.value_col = value_col
-        self.ts_col = ts_col
-        self.window = window
-        self.start_col = start_col
-        self.end_col = end_col
-        self.sum_col = sum_col
-
-    def open(self, ctx: OperatorContext) -> None:
-        self._ctx = ctx
-        # Captured from the input so the output keeps the key's type and the sum's natural type (an int
-        # column sums to int64, a float column to double — never silently truncated to int).
-        self._key_type: pa.DataType | None = None
-        self._sum_type: pa.DataType | None = None
-
-    def key_columns(self) -> tuple[str, ...]:
-        return (self.key_col,)
-
-    def process(self, batch: pa.RecordBatch, out: Collector) -> None:
-        # A tumbling window assigns each row to exactly one window [start, start+size); the assigner owns
-        # that boundary formula (computed columnar here). Partial-summing this batch per (key, window) in
-        # Arrow first turns the old per-row state write into one write per distinct (key, window) — far
-        # fewer Python-level state ops — and each per-batch partial folds into the running sum because
-        # addition is associative.
-        size = self.window.size
-        ts = to_epoch_micros(batch.column(self.ts_col)).to_numpy(zero_copy_only=False)
-        window_start = self.window.assign_starts(ts)
-        grouped = (
-            pa.table(
-                {
-                    "key": batch.column(self.key_col),
-                    "ws": pa.array(window_start),
-                    "val": batch.column(self.value_col),
-                }
-            )
-            .group_by(["key", "ws"])
-            .aggregate([("val", "sum")])
-        )
-        if self._key_type is None:
-            self._key_type = batch.column(self.key_col).type
-            self._sum_type = grouped.column("val_sum").type  # Arrow's chosen sum type, not int64
-        keys = grouped.column("key").to_pylist()
-        starts = grouped.column("ws").to_pylist()
-        partials = grouped.column("val_sum").to_pylist()
-        for key, start, partial in zip(keys, starts, partials, strict=True):
-            window = TimeWindow(start, start + size)
-            self._ctx.reducing_state(self._STATE, KeyContext((key,), window), _add).add(partial)
-
-    def on_watermark(self, t: int, out: Collector) -> None:
-        keys: list[object] = []
-        starts: list[int] = []
-        ends: list[int] = []
-        sums: list[object] = []
-        fired: list[KeyContext] = []
-        for kctx, value in self._ctx.entries(self._STATE):
-            window = cast(TimeWindow, kctx.namespace)
-            if window.end <= t:
-                keys.append(kctx.key[0])
-                starts.append(window.start)
-                ends.append(window.end)
-                sums.append(value)
-                fired.append(kctx)
-        for kctx in fired:
-            self._ctx.clear_state(self._STATE, kctx)
-        if keys:
-            out.emit(
-                pa.RecordBatch.from_arrays(
-                    [
-                        pa.array(keys, self._key_type),
-                        pa.array(starts, pa.int64()),
-                        pa.array(ends, pa.int64()),
-                        pa.array(sums, self._sum_type),
-                    ],
-                    names=[self.key_col, self.start_col, self.end_col, self.sum_col],
-                )
-            )
-        if fired:
-            # operator-author custom metric (separate recorder; no-op unless telemetry is on)
-            self._ctx.metrics.incr("window.fires", len(fired), operator_id=self._ctx.operator_id)
 
 
 class _SideBuffer:
@@ -371,10 +267,8 @@ class HashJoin(TwoInputOperator):
     nulls co-partition like any other key.
 
     State is both sides' buffered rows, held until end of stream and then cleared — the same
-    unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. ``on_watermark``
-    is a no-op: matches are emitted as they form, so nothing waits on event time. A windowed variant that
-    bounds and evicts this state on the watermark is the additive next step, and this operator leaves that
-    seam (``on_watermark``) open for it.
+    unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. Matches are
+    emitted as they form, so there is no end-of-stream flush.
     """
 
     def __init__(

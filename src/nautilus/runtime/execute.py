@@ -95,8 +95,8 @@ def partitioner_from_spec(spec: PartitionerSpec) -> Partitioner:
 
 
 async def _collect_sink(mailbox: Mailbox, out: list[pa.RecordBatch], recorder: Recorder) -> None:
-    """The collecting sink: drain every input to EOS, appending data batches. Watermarks / idle /
-    active are ignored — the sink has no downstream."""
+    """The collecting sink: drain every input to EOS, appending data batches. Non-data control frames
+    are ignored — the sink has no downstream."""
     rows_in = recorder.counter("operator.rows_in", operator_id="sink", subtask_index=0)
     batches_in = recorder.counter("operator.batches_in", operator_id="sink", subtask_index=0)
     input_wait = recorder.counter("edge.input_wait_micros", operator_id="sink")
@@ -236,8 +236,8 @@ async def execute(
 
         # --- Phase B: wire every INBOUND mailbox and assemble the actor coroutines ---------------
         # Each inbound accept resolves as its producer dials in its own phase A. A mailbox is built with
-        # its FULL local+remote input set before its actor starts, so WatermarkTracker(n) and the
-        # all-inputs-EOS termination check see every input.
+        # its FULL local+remote input set before its actor starts, so the all-inputs-EOS termination
+        # check sees every input.
         coros = []
         for op, subtask in hosted:
             key = (op.operator_id, subtask)

@@ -232,13 +232,12 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             boundaries=DURATION_US_BUCKETS,
         ),
         MetricSpec(
-            "operator.on_watermark_micros",
+            "operator.on_eos_micros",
             MetricKind.HISTOGRAM,
             "microseconds",
             _OP,
             Reduction.SUM,
-            "Wall time of one op.on_watermark(t) call.",
-            relates_to=("window.fires",),
+            "Wall time of the op.on_eos(out) end-of-stream flush.",
             boundaries=DURATION_US_BUCKETS,
         ),
         MetricSpec(
@@ -262,12 +261,12 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             deterministic=True,
         ),
         MetricSpec(
-            "operator.on_watermark_calls",
+            "operator.on_eos_calls",
             MetricKind.COUNTER,
             "calls",
             _OP,
             Reduction.SUM,
-            "Number of op.on_watermark invocations.",
+            "Number of op.on_eos invocations.",
             deterministic=True,
         ),
         # --- edges (producer-owned) ----------------------------------------------------------
@@ -364,53 +363,6 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("edge.rows_sent", "edge.send_wait_micros"),
             boundaries=DURATION_US_BUCKETS,
         ),
-        # --- watermarks ----------------------------------------------------------------------
-        MetricSpec(
-            "watermark.combined_micros",
-            MetricKind.GAUGE,
-            "event_time_micros",
-            _OP,
-            Reduction.MIN,
-            "Latest WatermarkTracker.combined for this instance.",
-            relates_to=("watermark.advances", "watermark.input_idle"),
-        ),
-        MetricSpec(
-            "watermark.advances",
-            MetricKind.COUNTER,
-            "count",
-            ("operator_id",),
-            Reduction.SUM,
-            "Number of times the combined watermark strictly increased.",
-            relates_to=("watermark.combined_micros",),
-            deterministic=True,
-        ),
-        MetricSpec(
-            "watermark.final_micros",
-            MetricKind.GAUGE,
-            "event_time_micros",
-            ("operator_id",),
-            Reduction.MIN,
-            "Combined watermark at close (WATERMARK_MAX for a finished bounded run).",
-            deterministic=True,
-        ),
-        MetricSpec(
-            "watermark.input_idle",
-            MetricKind.COUNTER,
-            "count",
-            ("operator_id", "input_index"),
-            Reduction.SUM,
-            "Number of StatusIdle frames received on an input.",
-            relates_to=("watermark.combined_micros",),
-        ),
-        MetricSpec(
-            "watermark.input_active",
-            MetricKind.COUNTER,
-            "count",
-            ("operator_id", "input_index"),
-            Reduction.SUM,
-            "Number of StatusActive frames received on an input.",
-            relates_to=("watermark.combined_micros",),
-        ),
         # --- end of stream -------------------------------------------------------------------
         MetricSpec(
             "eos.expected",
@@ -432,19 +384,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("eos.expected",),
             deterministic=True,
         ),
-        # --- windows / state ------------------------------------------------------------------
-        MetricSpec(
-            "window.fires",
-            MetricKind.COUNTER,
-            "count",
-            ("operator_id",),
-            Reduction.SUM,
-            "Number of result emissions an operator made from on_watermark: one per tumbling window "
-            "fired, or the single terminal flush of a keyed global aggregation at EOS.",
-            relates_to=("operator.on_watermark_micros",),
-            deterministic=True,
-            owner=Owner.AUTHOR,  # written by operators via ctx.metrics, not by the engine
-        ),
+        # --- state ---------------------------------------------------------------------------
         MetricSpec(
             "state.entries",
             MetricKind.GAUGE,
@@ -473,7 +413,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "microseconds",
             _OP,
             Reduction.SUM,
-            "Summed wall time the actor spent producing output: a transform's process and on_watermark "
+            "Summed wall time the actor spent producing output: a transform's process and on_eos "
             "critical sections, or a source's frame generation (which includes any await a self-pacing "
             "source performs between frames). Accumulated in nanoseconds and reduced to microseconds "
             "once, so a step shorter than a microsecond still counts.",
@@ -527,7 +467,7 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "Summed wall time an async stage's I/O tasks spent awaiting external I/O (each write's or "
             "fetch's perf_counter span). Several tasks run at once, so this sum can exceed the run's wall "
             "time; the gap to wall is the overlap. Distinct from runtime.step_micros, which for an async "
-            "stage counts only the actor's own coordination (a transform's integrate/on_watermark "
+            "stage counts only the actor's own coordination (a transform's integrate/on_eos "
             "self-time), never the awaited I/O.",
             relates_to=("async.requests", "async.in_flight", "runtime.step_micros"),
             since_stage=6,
@@ -766,9 +706,7 @@ STRUCTURAL_METRICS: frozenset[str] = frozenset(
         "operator.rows_out",
         "operator.batches_in",
         "operator.batches_out",
-        "watermark.advances",
         "eos.received",
-        "watermark.final_micros",
     }
 )
 

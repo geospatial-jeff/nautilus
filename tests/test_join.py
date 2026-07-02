@@ -18,7 +18,6 @@ import pytest
 from nautilus.api import LogicalEdge, LogicalGraph, source, two_input
 from nautilus.cluster import deploy
 from nautilus.core.operator import ListCollector, OperatorContext
-from nautilus.core.records import WATERMARK_MAX
 from nautilus.driver.run import run_plan
 from nautilus.operators import HashJoin, InMemorySource
 from nautilus.testing import EOS_FRAME, batch, data, multiset
@@ -30,9 +29,7 @@ def _drive(join: HashJoin, steps: list[tuple[str, pa.RecordBatch]]) -> list[pa.R
     join.open(OperatorContext("j"))
     for side, b in steps:
         (join.process_left if side == "L" else join.process_right)(b, coll)
-    join.on_watermark(
-        WATERMARK_MAX, coll
-    )  # a no-op for the inner join; here to assert it stays one
+    join.on_eos(coll)  # a no-op for the inner join; here to assert it stays one
     join.close()
     return coll.drain()
 

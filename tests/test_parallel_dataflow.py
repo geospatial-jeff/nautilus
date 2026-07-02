@@ -17,9 +17,8 @@ from collections import Counter
 from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
 from nautilus.dsl import source
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch
-from nautilus.testing import TestClock, data, op_counter, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.operators import InMemorySource, KeyedCount, MapBatch
+from nautilus.testing import TestClock, data, op_counter
 
 # --- helpers -----------------------------------------------------------------------------------
 
@@ -28,14 +27,10 @@ def _wc_frames(batches: list[list[str]]) -> list:
     return [data(word=w) for w in batches] + [EOS_FRAME]
 
 
-def _wc_counts(result) -> Counter:
-    return Counter((r["word"], r["count"]) for r in result.to_pylist())
-
-
-def _ts_counts(result) -> Counter:
-    return Counter(
-        (r["key"], r["window_start"], r["window_end"], r["sum"]) for r in result.to_pylist()
-    )
+def _counts(result, key_col: str = "word") -> Counter:
+    """The (key, count) multiset of a KeyedCount result — the co-partitioning check compares it between
+    the parallel and serial runs, which must agree regardless of cross-instance emit order."""
+    return Counter((r[key_col], r["count"]) for r in result.to_pylist())
 
 
 # --- golden multiset equality (the co-partitioning check) --------------------------------------
@@ -58,77 +53,59 @@ async def test_keyed_count_matches_serial_multiset() -> None:
                 parallelism=q,
                 clock=TestClock(),
             )
-            assert _wc_counts(par) == _wc_counts(serial), (trial, q)
+            assert _counts(par) == _counts(serial), (trial, q)
 
 
-async def test_keyed_tumbling_sum_matches_serial_multiset() -> None:
+async def test_keyed_count_across_batches_matches_serial_multiset() -> None:
+    # Per-key counts accumulate across several data batches in one stream; a co-partitioning bug would
+    # split a key's running count across instances, so the parallel multiset must still equal serial.
     rng = random.Random(13)
     for trial in range(10):
         frames: list = []
-        clock_t = 0
         for _ in range(rng.randint(2, 4)):
             m = rng.randint(1, 6)
-            frames.append(
-                data(
-                    key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)],
-                    val=[rng.randint(1, 5) for _ in range(m)],
-                    ts=[clock_t + rng.randint(0, 8) for _ in range(m)],
-                )
-            )
-            clock_t += 10
-            frames.append(wm(clock_t))
+            frames.append(data(key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)]))
         frames.append(EOS_FRAME)
 
-        op = KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))
-        serial = await run_local_chain(InMemorySource(list(frames)), [op], clock=TestClock())
+        serial = await run_local_chain(
+            InMemorySource(list(frames)), [KeyedCount("key")], clock=TestClock()
+        )
         for q in (1, 2, 3, 5):
             par = await run_local_chain(
                 InMemorySource(list(frames)),
-                [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
+                [KeyedCount("key")],
                 parallelism=q,
                 clock=TestClock(),
             )
-            assert _ts_counts(par) == _ts_counts(serial), (trial, q)
+            assert _counts(par, "key") == _counts(serial, "key"), (trial, q)
 
 
 async def test_deep_mesh_multi_input_matches_serial() -> None:
-    # A two-stage mesh: map(P=2) -> keyedSum(P=3). Each keyed-sum instance fans in BOTH map instances,
-    # so its mailbox has two inputs and its watermark is the min over two upstreams — the multi-input
-    # WatermarkTracker path a single-stage mesh never exercises. Results must still match serial.
+    # A two-stage mesh: map(P=2) -> count_by(P=3). Each keyed-count instance fans in BOTH map instances,
+    # so its mailbox has two inputs — the multi-input fan-in a single-stage mesh never exercises. A key's
+    # rows must still co-partition to one instance, so the parallel multiset matches serial.
     rng = random.Random(21)
     for trial in range(6):
         frames: list = []
-        clock_t = 0
         for _ in range(rng.randint(3, 5)):
             m = rng.randint(1, 6)
-            frames.append(
-                data(
-                    key=[rng.choice(["a", "b", "c", "d", "e"]) for _ in range(m)],
-                    val=[rng.randint(1, 9) for _ in range(m)],
-                    ts=[clock_t + rng.randint(0, 8) for _ in range(m)],
-                )
-            )
-            clock_t += 10
-            frames.append(wm(clock_t))
+            frames.append(data(key=[rng.choice(["a", "b", "c", "d", "e"]) for _ in range(m)]))
         frames.append(EOS_FRAME)
 
         serial = await run_local_chain(
             InMemorySource(list(frames)),
-            [
-                MapBatch(lambda b: b),
-                KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
-            ],
+            [MapBatch(lambda b: b), KeyedCount("key")],
             clock=TestClock(),
         )
-        # Per-stage parallelism (map at 2, keyed sum at 3) — the DSL's job, not uniform run_local_chain.
+        # Per-stage parallelism (map at 2, keyed count at 3) — the DSL's job, not uniform run_local_chain.
         par = await asyncio.wait_for(
             source(InMemorySource(list(frames)))
             .map(lambda b: b, parallelism=2)
-            .tumbling_sum("key", "val", "ts", TumblingEventTimeWindows(10), parallelism=3)
+            .count_by("key", parallelism=3)
             .run_async(clock=TestClock()),
             timeout=20,
         )
-        assert _ts_counts(par) == _ts_counts(serial), trial
+        assert _counts(par, "key") == _counts(serial, "key"), trial
 
 
 async def test_null_keys_co_partition_like_serial() -> None:
@@ -146,7 +123,7 @@ async def test_null_keys_co_partition_like_serial() -> None:
         par = await run_local_chain(
             InMemorySource(list(frames)), [KeyedCount("word")], parallelism=q, clock=TestClock()
         )
-        assert _wc_counts(par) == _wc_counts(serial), q
+        assert _counts(par) == _counts(serial), q
 
 
 async def test_roundrobin_out_of_parallel_stage_conserves_rows() -> None:
@@ -175,29 +152,25 @@ async def test_roundrobin_out_of_parallel_stage_conserves_rows() -> None:
 
 async def test_single_key_skew_terminates_and_conserves() -> None:
     # Every row shares one key, so the shuffle routes all data to one of the 4 instances; the other
-    # three receive only the broadcast watermarks + EOS, advance event time, and forward EOS.
+    # three receive only the broadcast EOS and forward it. The run must still terminate and conserve.
     frames = [
-        data(key=["a"] * 6, val=[1, 2, 3, 4, 5, 6], ts=[1, 2, 3, 4, 5, 6]),
-        wm(10),
-        data(key=["a", "a"], val=[10, 20], ts=[12, 13]),
-        wm(20),
+        data(key=["a"] * 6),
+        data(key=["a", "a"]),
         EOS_FRAME,
     ]
     serial = await run_local_chain(
-        InMemorySource(list(frames)),
-        [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
-        clock=TestClock(),
+        InMemorySource(list(frames)), [KeyedCount("key")], clock=TestClock()
     )
     par = await asyncio.wait_for(
         run_local_chain(
             InMemorySource(list(frames)),
-            [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
+            [KeyedCount("key")],
             parallelism=4,
             clock=TestClock(),
         ),
         timeout=10,
     )
-    assert _ts_counts(par) == _ts_counts(serial)
+    assert _counts(par, "key") == _counts(serial, "key")
     rep = par.telemetry
     assert op_counter(rep, "op0", "operator.rows_in") == 8  # summed over 4 subtasks
     assert op_counter(rep, "op0", "eos.received") == 4  # every instance got its EOS via broadcast
@@ -241,7 +214,7 @@ async def test_all_serial_degenerates_to_linear() -> None:
     par = await run_local_chain(
         InMemorySource(_wc_frames(batches)), [KeyedCount("word")], parallelism=1, clock=TestClock()
     )
-    assert _wc_counts(par) == _wc_counts(serial)
+    assert _counts(par) == _counts(serial)
 
 
 async def test_zero_stage_source_to_sink() -> None:

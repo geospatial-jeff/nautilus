@@ -16,10 +16,10 @@ from contextlib import suppress
 
 import pytest
 
-from nautilus.core.records import ACTIVE_FRAME, EOS_FRAME, IDLE_FRAME, Batch, Frame
+from nautilus.core.records import EOS_FRAME, Barrier, Batch, Frame
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.runtime.connector import ChannelId
-from nautilus.testing import data, wm
+from nautilus.testing import data
 from nautilus.transport.connector import SocketConnector
 from nautilus.transport.handshake import encode_handshake, write_handshake
 from nautilus.transport.listener import EdgeListener
@@ -81,7 +81,7 @@ async def test_connect_handshake_delivers_frames() -> None:
     try:
         send = await producer.outbound(cid)
         recv = await consumer.inbound(cid)
-        frames: list[Frame] = [data(x=[1, 2, 3]), wm(10), data(x=[4, 5]), EOS_FRAME]
+        frames: list[Frame] = [data(x=[1, 2, 3]), Barrier(10), data(x=[4, 5]), EOS_FRAME]
         _, got = await asyncio.gather(_send_all(send, frames), _recv_n(recv, len(frames)))
         assert all(_frame_eq(a, b) for a, b in zip(frames, got, strict=True))
     finally:
@@ -91,10 +91,10 @@ async def test_connect_handshake_delivers_frames() -> None:
 async def test_frames_are_identical_to_the_socketpair_path() -> None:
     frames: list[Frame] = [
         data(x=[1, 2, 3]),
-        wm(7),
+        Barrier(7),
         data(y=["a", "b"]),
-        IDLE_FRAME,
-        ACTIVE_FRAME,
+        Barrier(8),
+        Barrier(9),
         EOS_FRAME,
     ]
 

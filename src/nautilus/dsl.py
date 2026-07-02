@@ -2,7 +2,7 @@
 
 A :class:`Stream` is an immutable handle on a dataflow under construction: every combinator returns a
 *new* Stream that adds one operator, so a Stream value is reusable and side-effect-free. :func:`source`
-starts one; ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by`` / ``.tumbling_sum`` / ``.apply`` extend
+starts one; ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by`` / ``.apply`` extend
 it; ``.join`` combines two; and ``.run`` / ``.collect`` execute it. The same graph runs in one process or
 across workers — ``.run(workers=N)`` is the only thing that changes.
 
@@ -33,12 +33,10 @@ from nautilus.operators import (
     FilterRows,
     HashJoin,
     KeyedCount,
-    KeyedTumblingSum,
     MapBatch,
     Tokenize,
     from_batches,
 )
-from nautilus.windows import TumblingEventTimeWindows
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -125,23 +123,6 @@ class Stream:
         The input is shuffled on ``key_col``, so a key's rows meet on one instance when parallel."""
         return self._extend(
             lambda: KeyedCount(key_col, count_col), key_columns=(key_col,), parallelism=parallelism
-        )
-
-    def tumbling_sum(
-        self,
-        key_col: str,
-        value_col: str,
-        ts_col: str,
-        window: TumblingEventTimeWindows,
-        *,
-        parallelism: int = 1,
-    ) -> Stream:
-        """Sum a value column per key per tumbling event-time window
-        (:class:`~nautilus.operators.KeyedTumblingSum`), shuffled on ``key_col``."""
-        return self._extend(
-            lambda: KeyedTumblingSum(key_col, value_col, ts_col, window),
-            key_columns=(key_col,),
-            parallelism=parallelism,
         )
 
     def apply(

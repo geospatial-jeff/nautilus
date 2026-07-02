@@ -30,7 +30,6 @@ combinator shuffles its input on the key so each key's rows meet on one instance
 | `.filter(mask_fn)` | Keep rows where `mask_fn(batch)` (a boolean Arrow array) is true (`FilterRows`). |
 | `.tokenize(in_col, out_col="word", lowercase=True)` | Split a string column into one row per whitespace token (`Tokenize`). |
 | `.count_by(key_col, count_col="count")` | Count occurrences per key, emitted at end of stream; shuffled on `key_col` (`KeyedCount`). |
-| `.tumbling_sum(key_col, value_col, ts_col, window)` | Sum a value column per key per tumbling event-time window; shuffled on `key_col` (`KeyedTumblingSum`). |
 | `.apply(operator, key_columns=None)` | The escape hatch: append any `OneInputOperator` instance. Keyed by `key_columns` if given, else the operator's own `key_columns()`. At parallelism > 1 the instance is deep-copied per subtask. |
 | `.join(other, on=…)` | Inner equi-join with another stream — see below. |
 
