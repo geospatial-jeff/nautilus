@@ -18,7 +18,7 @@
 - **Arrow-first.** Records move as Arrow `RecordBatch`es — columnar and micro-batched, passed by
 reference in-process and serialized once to Arrow across processes. Supports both geospatial and tensor types.
 
-For the vocabulary and data model (operators, frames, watermarks, …) see [`docs/glossary.md`](docs/glossary.md); for the
+For the vocabulary and data model (operators, frames, channels, …) see [`docs/glossary.md`](docs/glossary.md); for the
 architecture and the reasons behind it, [`DESIGN.md`](DESIGN.md); for what's built and what's next,
 [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 
@@ -68,8 +68,8 @@ nautilus catalog                  # every metric nautilus records, with its mean
 nautilus task "make Tokenize faster" --on wordcount
 
 # Performance work: the bench-* pipelines generate millions of rows (the examples above are tiny) and
-# model real-stream stressors — bench-skew (hot keys), bench-late (out-of-order events), bench-backpressure
-# (a slow stage). Set the scale with environment variables; vary --parallelism / --workers to exercise shuffle and transport.
+# model real-stream stressors — bench-skew (hot keys) and bench-backpressure (a slow stage). Set the
+# scale with environment variables; vary --parallelism / --workers to exercise shuffle and transport.
 NAUTILUS_BENCH_ROWS=2000000 nautilus run bench-skew --parallelism 4 --save report.json
 nautilus bench bench-keyed        # measure throughput over many trials: median ± IQR, vs the baseline
 nautilus bench-check              # re-run benchmarks/baseline.json (incl. a 2-worker TCP run); CI gate
@@ -103,7 +103,7 @@ Rough order-of-magnitude throughput on a single modern x86 core — not guarante
 
 - **Stateless streaming** (map / filter / tokenize, in-process): tens of millions of rows/s.
 - **Streaming join** (inner equi-join, in-process): millions of rows/s.
-- **Keyed aggregation / shuffle** (count, windowed sum, in-process): hundreds of thousands to ~1M rows/s.
+- **Keyed aggregation / shuffle** (count, in-process): hundreds of thousands to ~1M rows/s.
 - **Across worker processes** (a keyed shuffle or join over TCP): hundreds of thousands of rows/s.
 
 `nautilus bench` reports median-of-trials rows/s on your hardware; [`PERFORMANCE_CHANGELOG.md`](PERFORMANCE_CHANGELOG.md) records what

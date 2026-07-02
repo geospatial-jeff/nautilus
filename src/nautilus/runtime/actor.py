@@ -676,7 +676,7 @@ async def run_async_transform(
     *,
     recorder: Recorder = NULL_RECORDER,
 ) -> None:
-    """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 9) to
+    """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 8) to
     completion, then forward EOS.
 
     Realizing that contract means reordering out-of-order fetch completions back into input order — which

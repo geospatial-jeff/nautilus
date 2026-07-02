@@ -1,10 +1,10 @@
 """Keyed state: per-key, per-namespace storage with a pluggable backend.
 
 State is scoped by ``(operator_id, name, key, namespace)``. The *key* is the partitioning key (a
-tuple of Python values); the *namespace* distinguishes sub-states of the same key, e.g. one window
-instance. Access goes through a :class:`KeyContext` captured by each typed handle, so there is no
-shared mutable "current key" cursor that could race under async — a handle always refers to exactly
-the key/namespace it was created for.
+tuple of Python values); the *namespace* separates sub-states of one key — a backend capability no
+built-in operator sets today. Access goes through a :class:`KeyContext` captured by each typed handle,
+so there is no shared mutable "current key" cursor that could race under async — a handle always refers
+to exactly the key/namespace it was created for.
 
 The MVP backend is a plain in-memory dict. The :class:`StateBackend` ABC declares
 ``snapshot``/``restore`` from day one so a spilling/checkpointing backend can be added later without
@@ -60,10 +60,10 @@ class StateBackend(ABC):
 
     @abstractmethod
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
-        """Iterate ``(key, namespace, value)`` for one operator/state-name. Used to enumerate, e.g.,
-        all open windows when flushing. The caller must NOT mutate this state during iteration — collect
-        the keys to change, then clear/put them afterward (as the keyed operators do), so a backend may
-        stream entries lazily rather than copy the whole store."""
+        """Iterate ``(key, namespace, value)`` for one operator/state-name — how a keyed operator
+        enumerates its state to flush it at end of stream. The caller must NOT mutate this state during
+        iteration — collect the keys to change, then clear/put them afterward (as the keyed operators
+        do), so a backend may stream entries lazily rather than copy the whole store."""
 
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         """Per ``(operator_id, name)``: ``(entries, distinct_keys)`` currently held. ``entries`` counts

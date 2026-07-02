@@ -16,7 +16,7 @@ the actor performs the awaiting (backpressured) sends between calls, so each run
 the GIL makes safe without locks. Only a source's ``frames``, an async transform's ``fetch``, and a
 sink's ``write`` may ``await``; that awaiting half is handed no :class:`Collector` and no state, and
 reaching keyed state or the recorder from it raises :class:`StateAccessError` (why: ``DESIGN.md``
-mechanism 9).
+mechanism 8).
 """
 
 from __future__ import annotations
@@ -359,7 +359,7 @@ class AsyncOneInputOperator(ABC):
       keyed-state read-modify-write never spans a yield.
 
     Splitting this way lets a *keyed* async enrich keep many lookups in flight — strictly more than a
-    stateless-only async map. ``DESIGN.md`` mechanism 9 is why awaiting here is safe;
+    stateless-only async map. ``DESIGN.md`` mechanism 8 is why awaiting here is safe;
     :func:`~nautilus.runtime.actor.run_async_transform` is how the engine drives it.
     """
 
@@ -429,7 +429,7 @@ class AsyncSink(ABC):
     concurrency, deadline, and partitioning. Writes are **at-least-once** — a failed run re-runs the whole
     job — so a write must be idempotent under replay (deterministic keys / upsert). Why a sink may
     ``await`` where a transform may not, and how it replaces the synthesized collecting sink, is
-    ``DESIGN.md`` mechanism 9; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
+    ``DESIGN.md`` mechanism 8; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
     """
 
     def open(self, ctx: OperatorContext) -> None:
