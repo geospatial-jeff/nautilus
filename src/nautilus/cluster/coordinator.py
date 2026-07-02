@@ -14,6 +14,7 @@ every worker immediately, so a failure never hangs or orphans a process.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from time import perf_counter_ns
 
@@ -24,7 +25,7 @@ from nautilus.api import LogicalGraph
 from nautilus.cluster.cohort import LocalCohort, RemoteCohort, WorkerCohort
 from nautilus.cluster.launcher import spawn_workers
 from nautilus.cluster.placement import max_parallelism, place
-from nautilus.cluster.protocol import Done, Failed, decode_batches
+from nautilus.cluster.protocol import Done, Failed, Heartbeat, decode_batches
 from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier
 from nautilus.compile import compile_graph
 from nautilus.core.time import Clock, SystemClock
@@ -34,7 +35,7 @@ from nautilus.driver.run import plan_to_topology
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.model import InstanceSnapshot
-from nautilus.telemetry.report import NullSink, Sink, build_report
+from nautilus.telemetry.report import NullSink, RunReport, Sink, build_report
 from nautilus.transport.connector import DEFAULT_CONNECT_TIMEOUT
 
 _log = logging.getLogger(__name__)
@@ -54,6 +55,8 @@ def deploy(
     clock: Clock | None = None,
     telemetry: TelemetryConfig | None = None,
     sink: Sink | None = None,
+    on_report: Callable[[RunReport], None] | None = None,
+    heartbeat_interval_micros: int = 500_000,
     bootstrap_timeout: float = _DEFAULT_BOOTSTRAP_TIMEOUT,
 ) -> RunResult:
     """Compile ``graph`` and run it across workers, returning the sink's batches plus one aggregated
@@ -73,6 +76,13 @@ def deploy(
     the job is running the wait is unbounded, because a healthy job runs as long as its data does. The
     full ``telemetry`` config reaches every worker; a custom ``clock``, however, cannot cross to a worker,
     so it affects only the coordinator's run-meta timestamps — worker operators always use a ``SystemClock``.
+
+    ``on_report``, when given, turns on the live path: each worker pushes a snapshot every
+    ``heartbeat_interval_micros`` over the same control plane as ``Done``, and the coordinator rebuilds the
+    aggregated report and calls ``on_report`` with it as those snapshots arrive — still moving only control
+    messages, so the data path stays scheduler-free. The returned final report is identical with or without
+    it.
+
     Always reaps every worker. Raises :class:`WorkerError` (with the failing worker's traceback) on a
     caught operator error, :class:`WorkerCrashed` on a hard crash (or a daemon's control connection
     closing before it reports), or ``TimeoutError`` if a worker never registers."""
@@ -102,10 +112,15 @@ def deploy(
     # plane times itself with a SystemClock regardless. A custom clock therefore affects only the
     # coordinator's run-meta timestamps, not worker operators.
     worker_config = replace(config, clock=SystemClock())
+    if on_report is not None:
+        # A dashboard is attached: have every worker push a snapshot on this cadence (the live path). Left
+        # off otherwise, so a plain deploy ships nothing extra and its final report is byte-for-byte the same.
+        worker_config = replace(worker_config, heartbeat_interval_micros=heartbeat_interval_micros)
     # Stamp the start time BEFORE spawning, so a custom clock that raises cannot do so between spawn and
     # the reap try-block — which would orphan the live workers and break the "always reaps" guarantee.
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
+    run_id = config.run_id or f"run-{started_at}"  # shared by the live reports and the final one
     if daemons is not None:
         cohort: WorkerCohort = RemoteCohort.launch(
             daemons, plan_bytes, placement, capacity, worker_config, effective, connect_timeout
@@ -124,6 +139,35 @@ def deploy(
         # silent until it finishes, so the wait is bounded only by the job's own length (crash detection
         # still fires). The sink's batches come from whichever worker hosts it; every worker's snapshots
         # are aggregated into the one report.
+        #
+        # For the live dashboard (on_report set): keep each worker's latest snapshot and rebuild the
+        # aggregated report as heartbeats and Dones arrive. Seeded with the roster so an early report
+        # already lists every worker, the pending ones empty. build_report merges by (operator, subtask,
+        # node) however many workers contributed, so one builder serves both the live reports and the final
+        # one — which is still built from the authoritative Done snapshots below, unchanged.
+        latest: dict[int, list[InstanceSnapshot]] = {w: [] for w in worker_ids}
+
+        def publish() -> None:
+            if on_report is None:
+                return
+            live_meta = make_run_meta(
+                run_id=run_id,
+                started_at=started_at,
+                ended_at=clk.now_micros(),
+                wall_micros=(perf_counter_ns() - wall0) // 1000,
+                clk=clk,
+                topology=topology,
+                config=config,
+                capacity=capacity,
+            )
+            on_report(
+                build_report(
+                    [s for snaps in latest.values() for s in snaps],
+                    meta=live_meta,
+                    topology=topology,
+                )
+            )
+
         snapshots: list[InstanceSnapshot] = []
         batches: list[pa.RecordBatch] = []
         remaining = set(worker_ids)
@@ -134,16 +178,24 @@ def deploy(
             message = cohort.next_event(None, remaining)
             if isinstance(message, Failed):
                 raise WorkerError(message.worker_id, message.traceback)
+            if isinstance(message, Heartbeat):
+                latest[message.worker_id] = (
+                    message.snapshots
+                )  # a mid-run reading, for the dashboard only
+                publish()
+                continue
             if not isinstance(message, Done):
                 raise RuntimeError(f"unexpected control message awaiting completion: {message!r}")
             snapshots.extend(message.snapshots)
             batches.extend(decode_batches(message.sink_batches))
+            latest[message.worker_id] = message.snapshots  # final reading supersedes any heartbeat
+            publish()
             remaining.discard(message.worker_id)
 
         wall_micros = (perf_counter_ns() - wall0) // 1000
         ended_at = clk.now_micros()
         meta = make_run_meta(
-            run_id=config.run_id or f"run-{started_at}",
+            run_id=run_id,
             started_at=started_at,
             ended_at=ended_at,
             wall_micros=wall_micros,
