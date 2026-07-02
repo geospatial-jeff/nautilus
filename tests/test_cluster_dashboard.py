@@ -23,7 +23,7 @@ from nautilus.core.time import TestClock
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.result import RunResult
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
-from nautilus.telemetry.live import LiveAggregator
+from nautilus.telemetry.live import LiveAggregator, load_dashboard_html
 from nautilus.telemetry.report import RunReport
 from nautilus.testing import data, staged_graph
 
@@ -156,3 +156,14 @@ def test_serve_cluster_serves_aggregated_dashboard() -> None:
     assert (
         "completed" in statuses_seen
     )  # and flipped to completed while lingering on the final report
+
+
+# --- Stage 4: the dashboard page renders every worker, not just the first -----------------------
+
+
+def test_dashboard_html_renders_per_worker_hardware() -> None:
+    html = load_dashboard_html().decode()
+    assert "worker-label" in html  # one hardware group per worker node
+    # It reads every process row, not just the first — the single-process assumption this stage removes.
+    assert '.find(o=>o.kind==="process")' not in html
+    assert 'filter(o=>o.kind==="process")' in html
