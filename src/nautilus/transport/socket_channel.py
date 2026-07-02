@@ -3,7 +3,7 @@
 The two ends share one full-duplex connection. Data frames are limited by a credit window — the
 producer sends only while it holds a credit, the consumer returns one per data frame in :meth:`recv` —
 so a fast producer cannot outrun a slow consumer. Control frames are sent without a credit, so a full
-data window never delays a watermark or end-of-stream. A background task reads the socket: credit
+data window never delays end-of-stream. A background task reads the socket: credit
 returns on the producer end, data and control frames (queued for :meth:`recv`) on the consumer end.
 
 Termination is explicit. When the reader stops — clean end-of-stream, an early disconnect, or a
@@ -62,7 +62,7 @@ class SocketChannel(Channel):
         self._credits = capacity  # producer end: remaining data-send permits
         self._cond = asyncio.Condition()  # guards _credits and the terminal state
         # Consumer end. Data frames here are bounded by the credit window; control frames are credit-
-        # exempt (so a watermark/EOS never stalls behind a full data window) and therefore unbounded —
+        # exempt (so EOS never stalls behind a full data window) and therefore unbounded —
         # a deliberate tradeoff, safe because control frames are sparse relative to data.
         self._incoming: asyncio.Queue[Frame | _Terminal] = asyncio.Queue()
         self._terminated = False

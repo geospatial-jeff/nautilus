@@ -27,7 +27,6 @@ def _result(median, *, spread=0.02, digest="A", platform="linux", pipeline="p"):
         "rows": 1,
         "batch": 1,
         "keys": 1,
-        "wm_every": 1,
         "parallelism": 1,
         "workers": 1,
         "tier": 1,

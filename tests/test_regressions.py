@@ -13,7 +13,7 @@ from nautilus import from_batches, run
 from nautilus.api import LogicalVertex
 from nautilus.compile import compile_graph
 from nautilus.compile.plan import KeyGroupSpec, RoundRobinSpec
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
+from nautilus.operators import InMemorySource, KeyedCount, Tokenize
 from nautilus.testing import staged_graph
 
 # --- C91: from_batches accepts a raw RecordBatch; unknown frames fail loudly --------------------
@@ -33,6 +33,25 @@ def test_from_batches_rejects_non_frame_non_batch():
 def test_in_memory_source_rejects_non_frame():
     with pytest.raises(TypeError):
         InMemorySource(["not a frame"])  # type: ignore[list-item]
+
+
+# --- C56: a recorder may only write metrics of its own owner -----------------------------------
+
+
+def test_recorder_owner_gate():
+    from nautilus.telemetry import Owner, TelemetryConfig, Tier, make_recorder
+
+    cfg = TelemetryConfig(tier=Tier.COUNTERS)
+    engine = make_recorder(operator_id="op0", op_class="X", kind="one_input", config=cfg)
+    author = make_recorder(
+        operator_id="op0", op_class="X", kind="one_input", config=cfg, owner=Owner.AUTHOR
+    )
+    engine.counter("operator.rows_out", operator_id="op0", subtask_index=0)  # engine metric: ok
+    author.counter("io.wait_micros", operator_id="op0")  # author metric: ok
+    with pytest.raises(KeyError):  # author recorder may not write an engine key
+        author.counter("operator.rows_out", operator_id="op0", subtask_index=0)
+    with pytest.raises(KeyError):  # engine recorder may not write an author key
+        engine.counter("io.wait_micros", operator_id="op0")
 
 
 # --- C32: an empty key_columns tuple is rejected, not silently downgraded to keyless ------------
@@ -71,25 +90,6 @@ def test_keyless_operator_round_robins():
     graph = staged_graph(from_batches(), [(MapBatch(lambda b: b), 2, None)])
     plan = compile_graph(graph)
     assert isinstance(_edge(plan, "source", "op0").spec, RoundRobinSpec)
-
-
-# --- C56: a recorder may only write metrics of its own owner -----------------------------------
-
-
-def test_recorder_owner_gate():
-    from nautilus.telemetry import Owner, TelemetryConfig, Tier, make_recorder
-
-    cfg = TelemetryConfig(tier=Tier.COUNTERS)
-    engine = make_recorder(operator_id="op0", op_class="X", kind="one_input", config=cfg)
-    author = make_recorder(
-        operator_id="op0", op_class="X", kind="one_input", config=cfg, owner=Owner.AUTHOR
-    )
-    engine.counter("operator.rows_out", operator_id="op0", subtask_index=0)  # engine metric: ok
-    author.counter("window.fires", operator_id="op0")  # author metric: ok
-    with pytest.raises(KeyError):  # author recorder may not write an engine key
-        author.counter("operator.rows_out", operator_id="op0", subtask_index=0)
-    with pytest.raises(KeyError):  # engine recorder may not write an author key
-        engine.counter("window.fires", operator_id="op0")
 
 
 # --- C94: run() takes in-process parallelism ---------------------------------------------------
@@ -192,18 +192,7 @@ async def test_in_process_parallel_fail_fast():
 # ============================================================================================
 
 
-# --- R38/R39: keyed operators preserve the input key/value column types ------------------------
-
-
-def test_keyed_tumbling_sum_preserves_float_values():
-    from nautilus.testing import data, wm
-    from nautilus.windows import TumblingEventTimeWindows
-
-    src = from_batches(data(key=["a", "a"], val=[1.5, 2.0], ts=[1, 2]), wm(10))
-    res = run(src, [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))])
-    rows = res.to_pylist()
-    assert rows[0]["sum"] == 3.5  # not truncated to int 3
-    assert pa.types.is_floating(res.to_table().schema.field("sum").type)
+# --- R38/R39: a keyed operator preserves the input key column type -----------------------------
 
 
 def test_keyed_count_preserves_key_type():
@@ -212,16 +201,6 @@ def test_keyed_count_preserves_key_type():
     src = from_batches(data(k=pa.array([1, 1, 2], pa.int32())))
     res = run(src, [KeyedCount("k")])
     assert res.to_table().schema.field("k").type == pa.int32()  # not widened to int64
-
-
-# --- R1: the windowing operator reads timestamp columns as microseconds ------------------------
-
-
-def test_to_epoch_micros_normalizes_units():
-    from nautilus.core.time import to_epoch_micros
-
-    assert to_epoch_micros(pa.array([1000], pa.timestamp("ms"))).to_pylist() == [1_000_000]
-    assert to_epoch_micros(pa.array([5], pa.int64())).to_pylist() == [5]
 
 
 # --- R14 / R17: IR + compiler validation -------------------------------------------------------

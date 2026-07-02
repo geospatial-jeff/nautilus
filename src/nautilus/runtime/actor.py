@@ -16,12 +16,12 @@ while integrating and emitting each result synchronously and in input order — 
 reorder buffer the sink does not, a ``deque`` whose fetches wake the loop through one ``asyncio.Event``.
 ``_run_operator_loop`` encodes the core streaming semantics:
 
-* per-input watermark combination (min over non-idle inputs — a join's is therefore ``min(left, right)``),
-* fire windows/timers when the combined watermark advances, *then* forward the watermark,
-* once *every* input has sent EOS, advance to ``WATERMARK_MAX`` to flush every pending window, then send EOS.
+* dispatch each data batch to the operator (``process`` for one input, or ``process_left`` /
+  ``process_right`` by the input's side for a join),
+* once *every* input has sent EOS, call ``on_eos`` to flush pending per-key state, then send EOS.
 
-The operator's ``process``/``on_watermark`` are synchronous; the loop performs every ``await``
-(backpressured send) *between* those calls, so each operator step is a race-free critical section.
+The operator's ``process``/``on_eos`` are synchronous; the loop performs every ``await`` (backpressured
+send) *between* those calls, so each operator step is a race-free critical section.
 
 Telemetry: each actor holds one :class:`~nautilus.telemetry.recorder.Recorder`, the sole writer of its
 built-in metrics, with backpressure timed inside :class:`Output`. A no-op recorder skips timing
@@ -50,17 +50,7 @@ from nautilus.core.operator import (
     SourceOperator,
     TwoInputOperator,
 )
-from nautilus.core.records import (
-    EOS,
-    EOS_FRAME,
-    WATERMARK_MAX,
-    Batch,
-    Frame,
-    StatusActive,
-    StatusIdle,
-    Watermark,
-)
-from nautilus.core.time import WatermarkTracker
+from nautilus.core.records import EOS, EOS_FRAME, Batch, Frame
 from nautilus.runtime.channel import Channel
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.runtime.partition import Partitioner
@@ -301,7 +291,7 @@ async def run_source(
     batches_out = recorder.counter("operator.batches_out", operator_id=op_id, subtask_index=sub)
     bytes_out = recorder.counter("operator.bytes_out", operator_id=op_id, subtask_index=sub)
     bytes_on = bytes_out is not NOOP_COUNTER  # FULL tier only — skip the Arrow buffer-size walk
-    # A source has no process/on_watermark, so without this it shows zero self-time and reads as idle
+    # A source has no process/on_eos, so without this it shows zero self-time and reads as idle
     # even when generation is the bottleneck. Time each frame's production (the generator step).
     step = _MicrosAccumulator(
         recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
@@ -378,9 +368,9 @@ async def _run_operator_loop(
 
     The one- and two-input loops are identical but for how a data batch is handled, so they share this
     core: ``dispatch(input_index, batch, collector)`` routes the batch to the operator's handler —
-    ``process`` for one input, ``process_left``/``process_right`` chosen by the input's side for two.
-    Watermark combination is the minimum over *all* inputs (a join's is therefore ``min(left, right)``),
-    and EOS is forwarded only once every input — both ports — has closed."""
+    ``process`` for one input, ``process_left``/``process_right`` chosen by the input's side for two. EOS
+    is forwarded only once every input — both ports — has closed, calling ``on_eos`` first to flush.
+    """
     op_id, opcls, loc = ctx.operator_id, type(op).__name__, _source_location(op)
     sub, n = ctx.subtask_index, mailbox.num_inputs
 
@@ -398,57 +388,39 @@ async def _run_operator_loop(
     batch_rows_hist = recorder.histogram(
         "operator.batch_rows", operator_id=op_id, subtask_index=sub
     )
-    wm_hist = recorder.histogram(
-        "operator.on_watermark_micros", operator_id=op_id, subtask_index=sub
-    )
+    eos_hist = recorder.histogram("operator.on_eos_micros", operator_id=op_id, subtask_index=sub)
     proc_calls = recorder.counter("operator.process_calls", operator_id=op_id, subtask_index=sub)
-    wm_calls = recorder.counter("operator.on_watermark_calls", operator_id=op_id, subtask_index=sub)
+    eos_calls = recorder.counter("operator.on_eos_calls", operator_id=op_id, subtask_index=sub)
     step = _MicrosAccumulator(
         recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
     )
     awaits = recorder.counter("runtime.await_count", operator_id=op_id, subtask_index=sub)
     input_wait = recorder.counter("edge.input_wait_micros", operator_id=op_id)
-    wm_gauge = recorder.gauge("watermark.combined_micros", operator_id=op_id, subtask_index=sub)
-    advances = recorder.counter("watermark.advances", operator_id=op_id)
-    wm_final = recorder.gauge("watermark.final_micros", operator_id=op_id)
     recorder.set_gauge("eos.expected", n, operator_id=op_id)
 
-    tracker = WatermarkTracker(n)
     collector = ListCollector()
     closed = [False] * n
     started = perf_counter_ns()
     state_on = recorder is not NULL_RECORDER  # gate the state-size walk; OFF/no-op runs skip it
 
     def _sample_state() -> None:
-        # Sampled at each fire — the high-water point, before on_watermark flushes due windows. The
-        # gauge's MAX reduction keeps the peak across fires. sizes() is O(state-names), not a store walk.
+        # Sampled once at EOS — the high-water point, before on_eos flushes buffered state. sizes() is
+        # O(state-names), not a store walk.
         for (sop_id, name), (entries, keys) in ctx.state_backend.sizes().items():
             recorder.set_gauge("state.entries", entries, operator_id=sop_id, state_name=name)
             recorder.set_gauge("state.keys", keys, operator_id=sop_id, state_name=name)
 
-    def _fire(t: int, frame_kind: str) -> None:
+    def _flush_state() -> None:
+        """At EOS on every input: sample state high-water, then run ``on_eos`` to emit final results."""
         if state_on:
             _sample_state()
         w0 = perf_counter_ns()
-        with _capture(recorder, op_id, opcls, loc, "on_watermark", frame_kind=frame_kind):
-            op.on_watermark(t, collector)
+        with _capture(recorder, op_id, opcls, loc, "on_eos"):
+            op.on_eos(collector)
         dt_ns = perf_counter_ns() - w0
-        wm_hist.observe(dt_ns // 1000)
-        wm_calls.add(1)
-        step.add_ns(
-            dt_ns
-        )  # on_watermark is a synchronous critical section too — see runtime.step_micros
-
-    async def _advance(advanced: int | None) -> None:
-        """On a strict watermark advance: record it, fire due windows/timers, flush, then forward the
-        watermark downstream. A no-op when the combined watermark did not move."""
-        if advanced is None:
-            return
-        wm_gauge.set(advanced)
-        advances.add(1)
-        _fire(advanced, "watermark")
-        await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
-        await _broadcast(Watermark(advanced), outputs)
+        eos_hist.observe(dt_ns // 1000)
+        eos_calls.add(1)
+        step.add_ns(dt_ns)  # on_eos is a synchronous critical section too — see runtime.step_micros
 
     with _capture(recorder, op_id, opcls, loc, "open"):
         op.open(ctx)
@@ -492,29 +464,15 @@ async def _run_operator_loop(
                 proc_calls.add(1)
                 await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
 
-            elif isinstance(frame, Watermark):
-                await _advance(tracker.update(i, frame.t))
-
-            elif isinstance(frame, StatusIdle):
-                recorder.incr("watermark.input_idle", 1, operator_id=op_id, input_index=i)
-                await _advance(tracker.set_idle(i))
-
-            elif isinstance(frame, StatusActive):
-                recorder.incr("watermark.input_active", 1, operator_id=op_id, input_index=i)
-                tracker.set_active(i)
-
             elif isinstance(frame, EOS):
                 recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
                 closed[i] = True
                 mailbox.close_input(i)
-                advanced = tracker.close_input(i)
                 if all(closed):
-                    # Distinct terminal path: flush every pending window at WATERMARK_MAX, then break
-                    # to forward EOS — no watermark broadcast, so not an _advance() call.
-                    _fire(WATERMARK_MAX, "eos")
+                    # Every input closed: flush buffered state via on_eos, then break to forward EOS.
+                    _flush_state()
                     await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
                     break
-                await _advance(advanced)
 
             else:  # an unknown/unhandled frame must fail loudly, never silently vanish
                 raise TypeError(
@@ -525,7 +483,6 @@ async def _run_operator_loop(
         mailbox.close()  # cancel any recvs still armed if the actor unwound mid-fan-in (fail-fast)
         with _capture(recorder, op_id, opcls, loc, "close"):
             op.close()
-        wm_final.set(tracker.combined)
         # Inbound Arrow IPC decode happens in the channels' background read loops; total it once here.
         # Zero unless an input crossed a socket, so single-process runs record nothing.
         decoded = mailbox.decode_micros()
@@ -572,8 +529,8 @@ async def run_two_input(
 
     The mailbox concatenates the left input's channels before the right's, so input indices
     ``[0, left_input_count)`` are the left side (``process_left``) and the rest are the right
-    (``process_right``). The shared loop combines watermarks as the minimum over all of them
-    (``min(left, right)``) and forwards EOS only after every channel of both sides has closed."""
+    (``process_right``). The shared loop forwards EOS only after every channel of both sides has
+    closed, calling ``on_eos`` first so the join can flush any buffered state."""
 
     def dispatch(i: int, batch: pa.RecordBatch, out: Collector) -> None:
         if i < left_input_count:
@@ -676,7 +633,7 @@ async def run_async_sink(
                     recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
                     mailbox.close_input(i)
                 elif frame.is_control:
-                    pass  # a v1 sink has no event-time logic: watermarks / idle / active are ignored
+                    pass  # reserved control frames (e.g. Barrier) carry no sink action
                 else:
                     raise TypeError(
                         f"async sink {op_id!r} received an unhandled frame on input {i}: "
@@ -711,17 +668,6 @@ class _Data:
         self.task = task
 
 
-class _Marker:
-    """A control slot in the reorder buffer: a combined-watermark advance, computed in mailbox read order,
-    to forward once every earlier data slot has been integrated and emitted (so it never overtakes
-    in-flight data)."""
-
-    __slots__ = ("advanced",)
-
-    def __init__(self, advanced: int) -> None:
-        self.advanced = advanced
-
-
 async def run_async_transform(
     op: AsyncOneInputOperator,
     ctx: OperatorContext,
@@ -730,18 +676,16 @@ async def run_async_transform(
     *,
     recorder: Recorder = NULL_RECORDER,
 ) -> None:
-    """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 9) to
+    """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 8) to
     completion, then forward EOS.
 
-    Realizing that contract means reordering out-of-order fetch completions back into input order and
-    forwarding watermarks/EOS in band — which the sink's TaskGroup cannot, so this is a ``deque`` of slots
-    the driver reaps as fetches complete:
+    Realizing that contract means reordering out-of-order fetch completions back into input order — which
+    the sink's TaskGroup cannot, so this is a ``deque`` of slots the driver reaps as fetches complete:
 
-    * The ``deque`` holds DATA slots (a batch + its in-flight fetch task, in input order) and MARKER slots
-      (a combined-watermark advance). The head is the reorder point: ``integrate``/emit drains a DATA head
-      once its fetch is done; a MARKER fires its watermark only when it reaches the head, after every
-      earlier batch is emitted — yet later fetches keep running behind it. A fetch's wall duration is read
-      off its task when the actor reaps it, feeding ``async.request_micros``.
+    * The ``deque`` holds DATA slots (a batch + its in-flight fetch task, in input order). The head is the
+      reorder point: ``integrate``/emit drains a DATA head once its fetch is done — yet later fetches keep
+      running behind it. A fetch's wall duration is read off its task when the actor reaps it, feeding
+      ``async.request_micros``.
     * ``max_in_flight`` bounds the buffer: ``buffered`` counts DATA slots and is decremented on pop, not on
       completion, so a slow head cannot let the buffer grow without limit; a full buffer stalls reads — the
       backpressure to upstream. ``awaiting`` separately counts fetches still in flight (the
@@ -752,13 +696,14 @@ async def run_async_transform(
       fails fast on any fetch (not only the head) without ever waiting on a blocked head. On failure or
       teardown the ``finally`` cancels and awaits every pending task, running each ``fetch``'s own
       ``try/finally`` cleanup promptly.
-    * Terminal: only once the mailbox is exhausted *and* nothing is buffered does it fire ``WATERMARK_MAX``
-      and forward EOS — strictly after the last batch is emitted, so EOS never overtakes in-flight data.
+    * Terminal: only once the mailbox is exhausted *and* nothing is buffered does it call ``on_eos`` to
+      flush buffered state, then forward EOS — strictly after the last batch is emitted, so EOS never
+      overtakes in-flight data.
 
     The driver installs the :class:`~nautilus.core.operator.OperatorContext` guard that keeps a concurrent
-    ``fetch`` out of keyed state, opening it only for the synchronous ``open``/``integrate``/
-    ``on_watermark``/``close`` calls; ``runtime.step_micros`` here is those calls' self-time only, never
-    the awaited I/O."""
+    ``fetch`` out of keyed state, opening it only for the synchronous ``open``/``integrate``/``on_eos``/
+    ``close`` calls; ``runtime.step_micros`` here is those calls' self-time only, never the awaited I/O.
+    """
     op_id, opcls, loc = ctx.operator_id, type(op).__name__, _source_location(op)
     sub, n = ctx.subtask_index, mailbox.num_inputs
 
@@ -774,19 +719,14 @@ async def run_async_transform(
     batch_rows_hist = recorder.histogram(
         "operator.batch_rows", operator_id=op_id, subtask_index=sub
     )
-    wm_hist = recorder.histogram(
-        "operator.on_watermark_micros", operator_id=op_id, subtask_index=sub
-    )
+    eos_hist = recorder.histogram("operator.on_eos_micros", operator_id=op_id, subtask_index=sub)
     proc_calls = recorder.counter("operator.process_calls", operator_id=op_id, subtask_index=sub)
-    wm_calls = recorder.counter("operator.on_watermark_calls", operator_id=op_id, subtask_index=sub)
+    eos_calls = recorder.counter("operator.on_eos_calls", operator_id=op_id, subtask_index=sub)
     step = _MicrosAccumulator(
         recorder.counter("runtime.step_micros", operator_id=op_id, subtask_index=sub)
     )
     awaits = recorder.counter("runtime.await_count", operator_id=op_id, subtask_index=sub)
     input_wait = recorder.counter("edge.input_wait_micros", operator_id=op_id)
-    wm_gauge = recorder.gauge("watermark.combined_micros", operator_id=op_id, subtask_index=sub)
-    advances = recorder.counter("watermark.advances", operator_id=op_id)
-    wm_final = recorder.gauge("watermark.final_micros", operator_id=op_id)
     requests = recorder.counter("async.requests", operator_id=op_id, subtask_index=sub)
     req_micros = recorder.counter("async.request_micros", operator_id=op_id, subtask_index=sub)
     timeouts = recorder.counter("async.timeouts", operator_id=op_id, subtask_index=sub)
@@ -807,7 +747,6 @@ async def run_async_transform(
     timeout_us = op.timeout_micros()
     timeout_s = None if timeout_us is None else timeout_us / 1_000_000
 
-    tracker = WatermarkTracker(n)
     collector = ListCollector()
     state_on = recorder is not NULL_RECORDER  # gate the state-size walk; OFF/no-op runs skip it
     backend = (
@@ -815,7 +754,7 @@ async def run_async_transform(
     )  # returns the raw backend for engine sampling (bypasses the guard)
     started = perf_counter_ns()
 
-    pending: deque[_Data | _Marker] = deque()
+    pending: deque[_Data] = deque()
     buffered = (
         0  # DATA slots awaiting drain, in input order; max_in_flight caps it — the backpressure
     )
@@ -835,27 +774,20 @@ async def run_async_transform(
             recorder.set_gauge("state.entries", entries, operator_id=sop_id, state_name=name)
             recorder.set_gauge("state.keys", keys, operator_id=sop_id, state_name=name)
 
-    def _fire(t: int, frame_kind: str) -> None:
+    def _flush_state() -> None:
+        """At EOS: sample state high-water, then run ``on_eos`` to emit final results."""
         if state_on:
             _sample_state()
         w0 = perf_counter_ns()
         with (
-            _capture(recorder, op_id, opcls, loc, "on_watermark", frame_kind=frame_kind),
+            _capture(recorder, op_id, opcls, loc, "on_eos"),
             ctx._state_section(),
         ):
-            op.on_watermark(t, ctx, collector)
+            op.on_eos(ctx, collector)
         dt_ns = perf_counter_ns() - w0
-        wm_hist.observe(dt_ns // 1000)
-        wm_calls.add(1)
-        step.add_ns(dt_ns)  # on_watermark is a synchronous critical section too
-
-    async def _advance(advanced: int) -> None:
-        """Forward a combined-watermark advance: record it, fire due windows/timers, flush, broadcast."""
-        wm_gauge.set(advanced)
-        advances.add(1)
-        _fire(advanced, "watermark")
-        await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
-        await _broadcast(Watermark(advanced), outputs)
+        eos_hist.observe(dt_ns // 1000)
+        eos_calls.add(1)
+        step.add_ns(dt_ns)  # on_eos is a synchronous critical section too
 
     async def _timed(batch: pa.RecordBatch) -> tuple[object, int]:
         """Run one ``fetch`` under its per-request timeout; return its result and the wall time it took."""
@@ -890,8 +822,8 @@ async def run_async_transform(
         progress.set()
 
     def _classify(i: int, frame: Frame) -> None:
-        """Place one read frame into the reorder buffer: launch a fetch for data; turn a
-        watermark/idle/active/EOS into a combined-watermark advance carried in read order."""
+        """Place one read frame into the reorder buffer: launch a fetch for a data batch, or record EOS on
+        its input."""
         nonlocal buffered, awaiting
         if isinstance(frame, Batch):
             rows = frame.num_rows
@@ -908,28 +840,9 @@ async def run_async_transform(
             in_flight_gauge.set(
                 awaiting
             )  # gauge keeps the max — the peak fetches awaiting I/O at once
-        elif isinstance(frame, Watermark):
-            advanced = tracker.update(i, frame.t)
-            if advanced is not None:
-                pending.append(_Marker(advanced))
-        elif isinstance(frame, StatusIdle):
-            recorder.incr("watermark.input_idle", 1, operator_id=op_id, input_index=i)
-            advanced = tracker.set_idle(i)
-            if advanced is not None:
-                pending.append(_Marker(advanced))
-        elif isinstance(frame, StatusActive):
-            recorder.incr("watermark.input_active", 1, operator_id=op_id, input_index=i)
-            tracker.set_active(i)
         elif isinstance(frame, EOS):
             recorder.incr("eos.received", 1, operator_id=op_id, input_index=i)
-            advanced = tracker.close_input(i)
             mailbox.close_input(i)
-            # Forward a watermark advance only when a *non-terminal* input closed (min over the inputs
-            # still open). Closing the LAST input advances the tracker to WATERMARK_MAX, but that is the
-            # terminal _fire(WATERMARK_MAX) below — forwarding it here too would double-fire on_watermark
-            # and emit a spurious Watermark(MAX), unlike the sync loop.
-            if advanced is not None and not mailbox.exhausted:
-                pending.append(_Marker(advanced))
         else:  # an unknown/unhandled frame must fail loudly, never silently vanish
             raise TypeError(
                 f"async transform {op_id!r} received an unhandled frame on input {i}: "
@@ -937,49 +850,47 @@ async def run_async_transform(
             )
 
     async def _drain_head() -> None:
-        """Emit ready data in input order and forward exposed watermark markers, stopping at the first DATA
-        slot whose fetch is still running (it gates everything behind it). Bails on a failed fetch so the
-        loop's fail-fast abort — which also records it — surfaces the error, not a reap here."""
+        """Emit ready data in input order, stopping at the first DATA slot whose fetch is still running (it
+        gates everything behind it). Bails on a failed fetch so the loop's fail-fast abort — which also
+        records it — surfaces the error, not a reap here."""
         nonlocal buffered
         while pending and not failed:
             head = pending[0]
-            if isinstance(head, _Marker):
-                pending.popleft()
-                await _advance(head.advanced)
-            elif head.task.done():
-                pending.popleft()
-                buffered -= 1  # on pop, not completion — see the buffered note above; keeps the buffer bounded
-                result, dur_ns = head.task.result()
-                requests.add(1)
-                req_micros.add(dur_ns // 1000)
-                p0 = perf_counter_ns()
-                with (
-                    _capture(
-                        recorder,
-                        op_id,
-                        opcls,
-                        loc,
-                        "integrate",
-                        frame_kind="batch",
-                        batch_rows=head.batch.num_rows,
-                    ),
-                    ctx._state_section(),
-                ):
-                    op.integrate(head.batch, result, ctx, collector)
-                dt_ns = perf_counter_ns() - p0
-                proc_hist.observe(dt_ns // 1000)
-                proc_calls.add(1)
-                step.add_ns(dt_ns)
-                await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
-            else:
+            if not head.task.done():
                 break
+            pending.popleft()
+            buffered -= (
+                1  # on pop, not completion — keeps the buffer bounded (see the buffered note above)
+            )
+            result, dur_ns = head.task.result()
+            requests.add(1)
+            req_micros.add(dur_ns // 1000)
+            p0 = perf_counter_ns()
+            with (
+                _capture(
+                    recorder,
+                    op_id,
+                    opcls,
+                    loc,
+                    "integrate",
+                    frame_kind="batch",
+                    batch_rows=head.batch.num_rows,
+                ),
+                ctx._state_section(),
+            ):
+                op.integrate(head.batch, result, ctx, collector)
+            dt_ns = perf_counter_ns() - p0
+            proc_hist.observe(dt_ns // 1000)
+            proc_calls.add(1)
+            step.add_ns(dt_ns)
+            await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
 
     def _ready() -> bool:
         """Whether the loop can make progress without blocking: a fetch failed, the armed read completed,
-        or the head slot is drainable (a marker, or a finished fetch)."""
+        or the head fetch has finished."""
         if failed or (get_task is not None and get_task.done()):
             return True
-        return bool(pending) and (isinstance(pending[0], _Marker) or pending[0].task.done())
+        return bool(pending) and pending[0].task.done()
 
     with _capture(recorder, op_id, opcls, loc, "open"), ctx._state_section():
         op.open(ctx)
@@ -1006,10 +917,10 @@ async def run_async_transform(
                 armed_ns = perf_counter_ns()
 
             # Terminal: the mailbox is exhausted (else a read would be armed above) and nothing is buffered
-            # — every fetch reaped and its trailing markers drained by the loop below. Fire WATERMARK_MAX to
-            # close every pending window, then break to forward EOS strictly after the last batch is emitted.
+            # — every fetch reaped and emitted by the drain below. Call on_eos to flush buffered state, then
+            # break to forward EOS strictly after the last batch is emitted, so EOS never overtakes data.
             if get_task is None and buffered == 0:
-                _fire(WATERMARK_MAX, "eos")
+                _flush_state()
                 await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
                 break
 
@@ -1034,7 +945,7 @@ async def run_async_transform(
     finally:
         # Cancel every still-pending fetch (and the armed read) BEFORE awaiting them — gathering a
         # blocked fetch without cancelling it would hang teardown forever.
-        leftover: list[asyncio.Future[Any]] = [s.task for s in pending if isinstance(s, _Data)]
+        leftover: list[asyncio.Future[Any]] = [s.task for s in pending]
         if get_task is not None:
             leftover.append(get_task)
         for fut in leftover:
@@ -1046,7 +957,6 @@ async def run_async_transform(
         mailbox.close()
         with _capture(recorder, op_id, opcls, loc, "close"), ctx._state_section():
             await op.close()
-        wm_final.set(tracker.combined)
         decoded = mailbox.decode_micros()
         if decoded:
             recorder.incr("transport.decode_micros", decoded, operator_id=op_id)

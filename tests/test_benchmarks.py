@@ -7,13 +7,12 @@ import pyarrow as pa
 
 from nautilus.benchmarks import SlowMap, SyntheticKeyedSource, SyntheticTextSource, bench_params
 from nautilus.core.operator import ListCollector
-from nautilus.core.records import EOS, Batch, Watermark
+from nautilus.core.records import EOS, Batch
 from nautilus.driver.local import run_local_chain
 from nautilus.pipelines import (
     bench_backpressure,
     bench_fanout,
     bench_keyed,
-    bench_late,
     bench_linear,
     bench_skew,
 )
@@ -27,8 +26,8 @@ def _batches(source):
     return [f.data for f in asyncio.run(_drain(source)) if isinstance(f, Batch)]
 
 
-async def test_keyed_source_shape_keys_and_watermarks():
-    src = SyntheticKeyedSource(num_batches=6, batch_rows=10, key_cardinality=4, wm_every=2)
+async def test_keyed_source_shape_and_key_distribution():
+    src = SyntheticKeyedSource(num_batches=6, batch_rows=10, key_cardinality=4)
     frames = await _drain(src)
     batches = [f for f in frames if isinstance(f, Batch)]
     assert len(batches) == 6
@@ -38,9 +37,8 @@ async def test_keyed_source_shape_keys_and_watermarks():
     assert batches[0].data.column("ts").to_pylist() == list(range(10))
     assert batches[1].data.column("ts").to_pylist() == list(range(10, 20))
     assert set(batches[0].data.column("key").to_pylist()) == {0, 1, 2, 3}
-    # a watermark every 2 batches, then exactly one EOS to end the bounded stream.
-    assert sum(isinstance(f, Watermark) for f in frames) == 3
-    assert isinstance(frames[-1], EOS)
+    # the bounded stream is exactly the 6 data batches then one terminal EOS — no other frames.
+    assert len(frames) == 7 and isinstance(frames[-1], EOS)
 
 
 async def test_text_source_explodes_into_tokens():
@@ -75,29 +73,6 @@ def test_skew_concentrates_rows_on_a_few_hot_keys():
     assert len(counts) > 1  # still more than one key (it is skewed, not collapsed)
 
 
-def test_jitter_makes_timestamps_out_of_order():
-    ordered = _batches(SyntheticKeyedSource(num_batches=1, batch_rows=256, key_cardinality=8))[0]
-    ts = ordered.column("ts").to_pylist()
-    assert ts == sorted(ts)  # default stream is perfectly ordered
-    jittered = _batches(
-        SyntheticKeyedSource(num_batches=1, batch_rows=256, key_cardinality=8, jitter=30)
-    )[0]
-    jts = jittered.column("ts").to_pylist()
-    assert jts != sorted(jts) and min(jts) >= 0  # out of order, never negative
-
-
-def test_watermark_lag_holds_the_watermark_behind_the_latest_event():
-    frames = asyncio.run(
-        _drain(
-            SyntheticKeyedSource(
-                num_batches=2, batch_rows=10, key_cardinality=4, wm_every=2, watermark_lag=5
-            )
-        )
-    )
-    wms = [f.t for f in frames if isinstance(f, Watermark)]
-    assert wms == [20 - 1 - 5]  # without lag it would be the latest index, 19
-
-
 def test_nulls_varied_values_and_payload_widen_the_data():
     batch = _batches(
         SyntheticKeyedSource(
@@ -130,7 +105,7 @@ def test_benchmark_pipelines_are_deterministic(monkeypatch):
     monkeypatch.setenv("NAUTILUS_BENCH_ROWS", "8000")
     monkeypatch.setenv("NAUTILUS_BENCH_BATCH", "1000")
     monkeypatch.setenv("NAUTILUS_BENCH_KEYS", "50")
-    builders = (bench_keyed, bench_linear, bench_fanout, bench_skew, bench_late, bench_backpressure)
+    builders = (bench_keyed, bench_linear, bench_fanout, bench_skew, bench_backpressure)
     for builder in builders:
         digests = set()
         for _ in range(3):

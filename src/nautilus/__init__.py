@@ -16,8 +16,8 @@ into an inner equi-join::
 
 For the simplest case the one-liner :func:`run` takes a source and a list of operators directly —
 ``run(from_batches(lines), [Tokenize("line", "word"), KeyedCount("word")])``. ``from_batches`` wraps a
-bare ``pyarrow.RecordBatch`` and appends the terminal :data:`EOS_FRAME`; for an event-time stream it also
-accepts :class:`Batch` / :class:`Watermark` frames. Reach for ``InMemorySource([...])`` only when you need
+bare ``pyarrow.RecordBatch`` and appends the terminal :data:`EOS_FRAME`. Reach for
+``InMemorySource([...])`` only when you need
 exact frame control. (:func:`run_local_chain` is the ``await``-able form of ``run`` for an async caller.)
 Anything not re-exported here is still importable from its concrete module (e.g. ``nautilus.dsl``,
 ``nautilus.operators``, ``nautilus.telemetry``).
@@ -32,7 +32,7 @@ from nautilus.core.operator import (
     OperatorContext,
     SourceOperator,
 )
-from nautilus.core.records import EOS_FRAME, Batch, Watermark
+from nautilus.core.records import EOS_FRAME, Batch
 from nautilus.driver.local import run, run_local_chain
 from nautilus.driver.result import RunResult
 from nautilus.dsl import SinkHandle, Stream, source
@@ -42,7 +42,6 @@ from nautilus.operators import (
     HashJoin,
     InMemorySource,
     KeyedCount,
-    KeyedTumblingSum,
     MapBatch,
     Tokenize,
     from_batches,
@@ -75,11 +74,9 @@ __all__ = [
     "FilterRows",
     "Tokenize",
     "KeyedCount",
-    "KeyedTumblingSum",
     "HashJoin",
-    # data frames (for building event-time inputs by hand)
+    # data frames (for building inputs by hand)
     "Batch",
-    "Watermark",
     "EOS_FRAME",
     # tensor columns (imagery + embeddings)
     "tensor_array",

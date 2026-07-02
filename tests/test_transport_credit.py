@@ -8,7 +8,7 @@ import socket
 
 import pytest
 
-from nautilus.core.records import EOS, EOS_FRAME, Batch, Watermark
+from nautilus.core.records import EOS, EOS_FRAME, Barrier, Batch
 from nautilus.runtime.mailbox import Mailbox
 from nautilus.testing import batch
 from nautilus.transport.socket_channel import SocketChannel
@@ -66,10 +66,10 @@ async def test_control_not_blocked_by_saturated_data() -> None:
         await asyncio.wait_for(send_ch.send(Batch(batch(i=[99]))), timeout=0.2)
 
     # a CONTROL send is not gated by credit and completes immediately
-    await asyncio.wait_for(send_ch.send(Watermark(99)), timeout=0.5)
+    await asyncio.wait_for(send_ch.send(Barrier(99)), timeout=0.5)
 
     frames = [await asyncio.wait_for(recv_ch.recv(), timeout=0.5) for _ in range(window + 1)]
-    assert isinstance(frames[-1], Watermark) and frames[-1].t == 99
+    assert isinstance(frames[-1], Barrier) and frames[-1].checkpoint_id == 99
     await send_ch.close()
     await recv_ch.close()
 

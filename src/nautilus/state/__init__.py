@@ -1,10 +1,10 @@
 """Keyed state: per-key, per-namespace storage with a pluggable backend.
 
 State is scoped by ``(operator_id, name, key, namespace)``. The *key* is the partitioning key (a
-tuple of Python values); the *namespace* distinguishes sub-states of the same key, e.g. one window
-instance. Access goes through a :class:`KeyContext` captured by each typed handle, so there is no
-shared mutable "current key" cursor that could race under async — a handle always refers to exactly
-the key/namespace it was created for.
+tuple of Python values); the *namespace* separates sub-states of one key — a backend capability no
+built-in operator sets today. Access goes through a :class:`KeyContext` captured by each typed handle,
+so there is no shared mutable "current key" cursor that could race under async — a handle always refers
+to exactly the key/namespace it was created for.
 
 The MVP backend is a plain in-memory dict. The :class:`StateBackend` ABC declares
 ``snapshot``/``restore`` from day one so a spilling/checkpointing backend can be added later without
@@ -60,14 +60,14 @@ class StateBackend(ABC):
 
     @abstractmethod
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
-        """Iterate ``(key, namespace, value)`` for one operator/state-name. Used to enumerate, e.g.,
-        all open windows when flushing. The caller must NOT mutate this state during iteration — collect
-        the keys to change, then clear/put them afterward (as the keyed operators do), so a backend may
-        stream entries lazily rather than copy the whole store."""
+        """Iterate ``(key, namespace, value)`` for one operator/state-name — how a keyed operator
+        enumerates its state to flush it at end of stream. The caller must NOT mutate this state during
+        iteration — collect the keys to change, then clear/put them afterward (as the keyed operators
+        do), so a backend may stream entries lazily rather than copy the whole store."""
 
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         """Per ``(operator_id, name)``: ``(entries, distinct_keys)`` currently held. ``entries`` counts
-        every ``(key, namespace)`` slot — for a tumbling-window aggregation that is keys × open windows.
+        every ``(key, namespace)`` slot — for a keyed aggregation, one per key.
         The actor samples this to emit ``state.entries`` / ``state.keys``; a backend that cannot report
         cheaply returns ``{}`` (the default) rather than walking its store on the hot path."""
         return {}
@@ -112,7 +112,7 @@ class InMemoryStateBackend(StateBackend):
 
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
         # Lazy: no full-store copy. Callers collect-then-clear (see the ABC contract), so the store is
-        # not mutated mid-iteration — avoids an O(store) allocation on every flushing watermark.
+        # not mutated mid-iteration — avoids an O(store) allocation on the end-of-stream flush.
         for scope, value in self._store.items():
             if scope.operator_id == operator_id and scope.name == name:
                 yield scope.key, scope.namespace, value

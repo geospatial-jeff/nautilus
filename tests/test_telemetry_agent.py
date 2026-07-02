@@ -1,14 +1,14 @@
 """S3: the agent-facing surface — markdown digest (numbers ⊆ JSON), query helpers that project but
-never diagnose, and operator-author metrics via ctx.metrics."""
+never diagnose, and per-operator metrics (like the end-of-stream flush count) attributed to the operator
+that recorded them."""
 
 import re
 
 from nautilus.core.records import EOS_FRAME
 from nautilus.core.time import TestClock
 from nautilus.driver.local import run_local_chain
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, Tokenize
-from nautilus.testing import data, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.operators import InMemorySource, KeyedCount, Tokenize
+from nautilus.testing import data
 
 WORDS = [data(line=["the cat sat", "the dog ran"]), data(line=["the cat the cat"]), EOS_FRAME]
 
@@ -53,27 +53,10 @@ async def test_query_helpers_project_not_diagnose():
     assert sw == sorted(sw, reverse=True)
 
 
-async def test_ctx_metrics_window_fires_global_aggregation():
+async def test_on_eos_flush_of_global_aggregation_counted_once():
     op1 = (await _wordcount_report()).operator("op1")
     assert op1 is not None
-    fires = sum(p.value for p in op1.counters if p.name == "window.fires")
-    assert fires == 1  # KeyedCount flushes once at EOS
-
-
-async def test_ctx_metrics_window_fires_tumbling():
-    frames = [
-        data(key=["a", "a"], val=[1, 2], ts=[1, 5]),
-        wm(10),
-        data(key=["a"], val=[10], ts=[12]),
-        wm(20),
-        EOS_FRAME,
-    ]
-    result = await run_local_chain(
-        InMemorySource(frames),
-        [KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))],
-        clock=TestClock(),
-    )
-    op0 = result.telemetry.operator("op0")
-    assert op0 is not None
-    fires = sum(p.value for p in op0.counters if p.name == "window.fires")
-    assert fires == 2  # window [0,10) fires at wm=10, [10,20) at wm=20
+    calls = sum(p.value for p in op1.counters if p.name == "operator.on_eos_calls")
+    assert (
+        calls == 1
+    )  # KeyedCount, a global aggregation, flushes exactly once when its inputs close

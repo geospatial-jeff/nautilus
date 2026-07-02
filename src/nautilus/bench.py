@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import nautilus
-from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
+from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.pipeline import graph_from_pipeline
@@ -115,7 +115,7 @@ def _git_commit() -> str | None:
 @dataclass(frozen=True)
 class BenchResult:
     pipeline: str
-    scale: dict[str, int]  # rows, batch, keys, wm_every, parallelism, workers, tier
+    scale: dict[str, int]  # rows, batch, keys, parallelism, workers, tier
     trials: int
     throughput_rows_per_sec: Stats
     structural_digest: str
@@ -160,14 +160,13 @@ def result_from_dict(d: dict[str, Any]) -> BenchResult:
 
 
 @contextmanager
-def _scaled_env(rows: int, batch: int, keys: int, wm_every: int) -> Iterator[None]:
+def _scaled_env(rows: int, batch: int, keys: int) -> Iterator[None]:
     """Set the synthetic-source scale for the duration (restored after). A non-synthetic pipeline
     ignores these, so the harness works for any pipeline."""
     overrides = {
         "NAUTILUS_BENCH_ROWS": str(rows),
         "NAUTILUS_BENCH_BATCH": str(batch),
         "NAUTILUS_BENCH_KEYS": str(keys),
-        "NAUTILUS_BENCH_WM_EVERY": str(wm_every),
     }
     # The scale dict does NOT record the stressor knobs bench-skew/bench-backpressure read (SKEW,
     # DELAY_US), so clear any ambient value for the duration — the pipelines fall back to their built-in
@@ -275,7 +274,6 @@ def measure(
     rows: int = DEFAULT_ROWS,
     batch: int = DEFAULT_BATCH,
     keys: int = DEFAULT_KEYS,
-    wm_every: int = DEFAULT_WM_EVERY,
     parallelism: int = 1,
     workers: int = 1,
     capacity: int = 16,
@@ -295,7 +293,7 @@ def measure(
         )
     throughputs: list[float] = []
     digests: list[str] = []
-    with _scaled_env(rows, batch, keys, wm_every):
+    with _scaled_env(rows, batch, keys):
         for _ in range(warmup):
             run_once(
                 pipeline, parallelism=parallelism, workers=workers, capacity=capacity, tier=tier
@@ -312,7 +310,6 @@ def measure(
             "rows": rows,
             "batch": batch,
             "keys": keys,
-            "wm_every": wm_every,
             "parallelism": parallelism,
             "workers": workers,
             "tier": int(tier),
@@ -335,7 +332,6 @@ def measure_like(result: BenchResult, **overrides: object) -> BenchResult:
         rows=s["rows"],
         batch=s["batch"],
         keys=s["keys"],
-        wm_every=s["wm_every"],
         parallelism=s["parallelism"],
         workers=s["workers"],
         tier=Tier(s["tier"]),

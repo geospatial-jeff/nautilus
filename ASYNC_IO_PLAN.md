@@ -2,15 +2,22 @@
 
 A design + staged implementation plan for letting **intermediate operators and sinks do efficient
 async I/O**, not only the source. This is a working plan; when the work lands it folds into
-`DESIGN.md` (a new mechanism 9, plus amendments to mechanisms 4 and 5) and `IMPLEMENTATION_PLAN.md`
+`DESIGN.md` (a new mechanism 8, plus amendments to mechanisms 3 and 4) and `IMPLEMENTATION_PLAN.md`
 (Stage 6). The design below was generated and then adversarially verified against the code; the four
 defects that verification found are folded into the loop contract here, not left open.
 
+> **Superseded (watermarks removed).** After this plan landed, event-time watermarks and windowing were
+> removed from nautilus entirely. The async loop no longer carries watermark markers or a `WATERMARK_MAX`
+> terminal flush, and the flush hook is `on_eos` (not `on_watermark`): the ordered reorder buffer now holds
+> only DATA slots and forwards `EOS` after draining them, calling `on_eos` for the terminal flush. The
+> watermark/marker language in the design below is the original plan; the current async design is
+> `DESIGN.md` mechanism 8 and the `run_async_transform` / `run_async_sink` docstrings.
+>
 > **Status.** The **async sink** (sink scope of 6.0–6.2) and the **async transform** (6.3 — the
 > fetch/integrate split: `AsyncOneInputOperator`, `AsyncMapBatch`, `run_async_transform`'s ordered reorder
 > loop, the enforced `OperatorContext` state guard, the DSL `.map_async`/`.apply_async`, the
 > `async_one_input` IR kind, the cross-process path) have landed — stateless *and* keyed; `DESIGN.md`
-> mechanism 9 records them. Still planned (6.4): **unordered** mode (stateless-only, completion-order) and
+> mechanism 8 records them. Still planned (6.4): **unordered** mode (stateless-only, completion-order) and
 > the **NDVI example rework**. Ordered-only is shipped, so the unordered-rejected-for-keyed rule below is
 > moot until unordered lands; the loop rejects `ordered()=False` for now.
 
@@ -43,7 +50,7 @@ place that may `await`.
 
 ## The constraint that creates the problem
 
-Operators are synchronous on purpose. `DESIGN.md` mechanism 5: `process`/`on_watermark` never `await`;
+Operators are synchronous on purpose. `DESIGN.md` mechanism 4: `process`/`on_eos` never `await`;
 each per-batch step runs to completion as one critical section, so it cannot interleave with anything
 else on the event loop. That is exactly what makes keyed state (`nautilus.state`) **lock-free and
 single-writer**: each operator instance is driven by one asyncio task and owns its own state backend,
@@ -360,8 +367,8 @@ first-class). The example/CLI wiring and the at-least-once/timeout contracts are
   equivalent.
 - **6.4 — unordered mode (stateless only) + the NDVI rework + the design docs.** The unordered
   hard-barrier path restricted to stateless maps, with `async.in_flight` peak assertions; rework
-  `examples/sentinel2_ndvi.py` per above; finalize `DESIGN.md` (corrected mechanism 5, extended
-  mechanism 4 termination, the robustness/at-least-once row, new mechanism 9 "Async I/O stages"),
+  `examples/sentinel2_ndvi.py` per above; finalize `DESIGN.md` (corrected mechanism 4, extended
+  mechanism 3 termination, the robustness/at-least-once row, new mechanism 8 "Async I/O stages"),
   `IMPLEMENTATION_PLAN.md` Stage 6, README run line if it changes, and glossary/reference entries
   (async stage, ordered vs unordered, in-flight bound).
 

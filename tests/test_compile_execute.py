@@ -22,10 +22,9 @@ from nautilus.driver.local import run_local_chain
 from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_compiled, run_plan
-from nautilus.operators import InMemorySource, KeyedCount, KeyedTumblingSum, MapBatch, Tokenize
+from nautilus.operators import InMemorySource, KeyedCount, MapBatch, Tokenize
 from nautilus.pipelines import wordcount
-from nautilus.testing import TestClock, data, multiset, staged_graph, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.testing import TestClock, data, multiset, staged_graph
 
 _WORDS = ["the", "cat", "sat", "dog", "ran", "a", "fox", "jumped", "x", "y"]
 
@@ -56,40 +55,26 @@ def _wordcount_chain(rng: random.Random) -> tuple[list, _Specs, list[OneInputOpe
     return frames, specs, serial
 
 
-def _windowed_chain(rng: random.Random) -> tuple[list, _Specs, list[OneInputOperator]]:
+def _keyed_chain(rng: random.Random) -> tuple[list, _Specs, list[OneInputOperator]]:
+    # A keyless identity map (MapBatch) feeding a keyed aggregate (KeyedCount) — a different edge shape
+    # than _wordcount_chain's fan-out Tokenize, so the two builders cover distinct keyless partitioners.
     frames: list = []
-    clock_t = 0
     for _ in range(rng.randint(2, 4)):
         m = rng.randint(1, 6)
-        frames.append(
-            data(
-                key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)],
-                val=[rng.randint(1, 5) for _ in range(m)],
-                ts=[clock_t + rng.randint(0, 8) for _ in range(m)],
-            )
-        )
-        clock_t += 10
-        frames.append(wm(clock_t))
+        frames.append(data(key=[rng.choice(["a", "b", "c", "d"]) for _ in range(m)]))
     frames.append(EOS_FRAME)
     specs: _Specs = [
         (MapBatch(lambda b: b), rng.choice([1, 2]), None),  # keyless rebalance/forward
-        (
-            KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
-            rng.choice([1, 2, 3]),
-            ("key",),
-        ),
+        (KeyedCount("key"), rng.choice([1, 2, 3]), ("key",)),  # keyed shuffle
     ]
-    serial = [
-        MapBatch(lambda b: b),
-        KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10)),
-    ]
+    serial = [MapBatch(lambda b: b), KeyedCount("key")]
     return frames, specs, serial
 
 
 async def test_compiled_parallel_matches_serial_over_random_linear_graphs() -> None:
     rng = random.Random(2024)
     for trial in range(24):
-        builder = rng.choice([_wordcount_chain, _windowed_chain])
+        builder = rng.choice([_wordcount_chain, _keyed_chain])
         frames, specs, serial_transforms = builder(rng)
 
         serial = await run_local_chain(
@@ -204,24 +189,3 @@ async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
         run = await run_plan(graph(), key_groups=g, clock=TestClock())
         assert multiset(run) == multiset(default), g  # co-partitioning: result always preserved
         assert (_digest(run) == _digest(default)) is q_divides_g, g  # digest matches iff Q | G
-
-
-# --- custom operator metrics survive the compile -> execute path --------------------------------
-
-
-async def test_window_fires_survives_compile_execute() -> None:
-    # KeyedCount emits a custom ctx.metrics counter (window.fires) when it flushes at EOS. The executor
-    # must give each instance its own metrics recorder, so the counter reaches the report.
-    graph = staged_graph(
-        InMemorySource([data(line=["the fox the dog the"]), EOS_FRAME]),
-        [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), 2, ("word",))],
-    )
-    result = await run_plan(graph, clock=TestClock())
-    fires = sum(
-        p.value
-        for o in result.telemetry.operators
-        if o.operator_id == "op1"
-        for p in o.counters
-        if p.name == "window.fires"
-    )
-    assert fires >= 1

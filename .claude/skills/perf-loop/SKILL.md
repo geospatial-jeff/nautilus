@@ -18,10 +18,10 @@ to write. This applies to any speed/scalability change, whether or not it came f
 
 ## 1. Run a workload that actually exercises the engine
 
-The built-in `wordcount` / `windowed-sum` examples are tens of rows — every duration sits on the
-sub-microsecond noise floor, no channel fills, state never grows. Use the benchmarks (`bench-keyed`,
-`bench-linear`, `bench-fanout` in `nautilus.benchmarks`), scaled by environment so the same pipeline
-serves a quick check and a real measurement:
+The built-in `wordcount` example is tens of rows — every duration sits on the sub-microsecond noise
+floor, no channel fills, state never grows. Use the benchmarks (`bench-keyed`, `bench-linear`,
+`bench-fanout` in `nautilus.benchmarks`), scaled by environment so the same pipeline serves a quick
+check and a real measurement:
 
 ```bash
 NAUTILUS_BENCH_ROWS=2000000 NAUTILUS_BENCH_BATCH=4096 NAUTILUS_BENCH_KEYS=1000 \
@@ -29,14 +29,13 @@ NAUTILUS_BENCH_ROWS=2000000 NAUTILUS_BENCH_BATCH=4096 NAUTILUS_BENCH_KEYS=1000 \
 ```
 
 Pick the workload to match the question. The clean micro-benchmarks isolate one cost each: `bench-keyed`
-(keyed shuffle + per-key state + window firing), `bench-linear` (per-batch runtime overhead, no shuffle
-or state), `bench-fanout` (per-row Python in a flat-map). The realistic-scenario benchmarks add the
+(keyed shuffle + per-key state, flushed at end of stream), `bench-linear` (per-batch runtime overhead, no
+shuffle or state), `bench-fanout` (per-row Python in a flat-map). The realistic-scenario benchmarks add the
 stressors a real stream has, which the clean ones can't reach: `bench-skew` (zipfian hot keys → partition
-imbalance, the classic distributed killer — read per-subtask `operator.rows_in`/`process_micros`),
-`bench-late` (out-of-order events + watermark lag → late data, windows held open, state growth), and
+imbalance, the classic distributed killer — read per-subtask `operator.rows_in`/`process_micros`) and
 `bench-backpressure` (a deliberately slow stage → the channel saturates so `edge.queue_depth_hist` /
 `edge.send_wait_micros` / `edge.credit_wait_micros` finally populate). The `SyntheticKeyedSource` knobs
-(`skew`, `jitter`, `value_spread`, `null_fraction`, `payload_bytes`) compose these if you need a custom
+(`skew`, `value_spread`, `null_fraction`, `payload_bytes`) compose these if you need a custom
 mix. Add `--parallelism N` to run N instances (the keyed shuffle then routes by key); add `--workers W`
 to spawn W processes (a true shuffle then crosses a TCP socket — `benchmarks/baseline.json` carries a
 `bench-keyed-dist` entry that does exactly this). Keep total rows fixed when sweeping a knob so throughput
@@ -71,7 +70,7 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
 - **Occupancy** = `busy_us / wall` per instance (`by_occupancy`). The stage that gates the run but shows
   *low* occupancy is spending wall on something `step_micros` doesn't count: the keyed shuffle
   (`partition.route_micros`), waiting for input (`edge.input_wait_micros`), or cross-process I/O
-  (`transport.*`). High occupancy means CPU-bound in its own `process`/`on_watermark` — *except a source*,
+  (`transport.*`). High occupancy means CPU-bound in its own `process`/`on_eos` — *except a source*,
   whose `step_micros` also counts the awaits its `frames()` performs, so a fully-occupied source may be
   I/O-bound, not compute-bound (next).
 - **I/O-bound source** = `io.wait_micros / runtime.step_micros`. A source is the only operator that may
@@ -81,7 +80,7 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
   dominates, the lever is concurrency / request coalescing in `frames()`, not faster code. A source with
   *no* `io.wait_micros` is uninstrumented, not necessarily compute-bound — bracket its awaits and re-run
   before concluding.
-- **Self-time** (`by_self_time`, `operator.process_micros` / `operator.on_watermark_micros` histograms):
+- **Self-time** (`by_self_time`, `operator.process_micros` / `operator.on_eos_micros` histograms):
   the operator with the most busy time is the CPU bottleneck. Read its `process()` — per-row Python and
   `to_pylist()` materialization are the usual cause; the histogram shows whether it is a few slow batches
   or uniformly slow.
@@ -93,7 +92,7 @@ Read it through these lenses. Each turns facts into *a place to look*, never a v
 - **Skew**: compare `operator.process_micros` and `operator.rows_in` *across subtasks of the same
   operator*. One instance with most of the rows/time is an unbalanced key distribution, not a code cost.
 - **State growth**: `state.entries` / `state.keys` (max). This is the only unbounded structure; a high or
-  climbing value is both a memory risk and the size of the per-watermark window-flush scan.
+  climbing value is both a memory risk and the size of the end-of-stream flush scan.
 - **Shuffle cost**: `partition.route_micros` (sum) on the *sending* operator — the keyed shuffle's per-row
   key extraction and hashing, otherwise invisible between process and send.
 - **Cross-process** (`--workers` runs, FULL tier): `transport.bytes_sent` (wire volume — wide schemas and
@@ -117,7 +116,7 @@ too.
 ## 4. Change the code, then prove you only changed the speed
 
 Make the one targeted change. Then **guard correctness with the structural digest** — a SHA-256 over only
-the provably-reproducible facts (topology + row/EOS/watermark counts), excluding all timing. With a
+the provably-reproducible facts (topology + row/batch/EOS counts), excluding all timing. With a
 deterministic source (the benchmarks are), a pure speed change must leave it identical:
 
 ```python

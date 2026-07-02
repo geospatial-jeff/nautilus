@@ -2,21 +2,21 @@
 
 The operator types differ by how many inputs they have and whether they may ``await``:
 
-* :class:`SourceOperator` has no input; it produces the frame sequence (data, watermarks, EOS).
+* :class:`SourceOperator` has no input; it produces the frame sequence (data batches and EOS).
 * :class:`OneInputOperator` transforms a single input stream, synchronously.
-* :class:`TwoInputOperator` (reserved for joins) combines two inputs with a min-watermark.
+* :class:`TwoInputOperator` (reserved for joins) combines two inputs.
 * :class:`AsyncOneInputOperator` transforms one input but does its I/O in an awaiting ``fetch`` the
   engine runs as bounded concurrent tasks, then folds each result into state and emits in a synchronous
   ``integrate`` — so I/O overlaps while keyed state stays single-writer.
 * :class:`AsyncSink` is a terminal that writes each batch to an external store in an awaiting ``write``.
 
 An actor drives each operator (see :mod:`nautilus.runtime.actor`). The synchronous methods —
-``process``/``on_watermark``/``integrate`` — must not ``await``; they emit into a :class:`Collector` and
+``process``/``on_eos``/``integrate`` — must not ``await``; they emit into a :class:`Collector` and
 the actor performs the awaiting (backpressured) sends between calls, so each runs as one critical section
 the GIL makes safe without locks. Only a source's ``frames``, an async transform's ``fetch``, and a
 sink's ``write`` may ``await``; that awaiting half is handed no :class:`Collector` and no state, and
 reaching keyed state or the recorder from it raises :class:`StateAccessError` (why: ``DESIGN.md``
-mechanism 9).
+mechanism 8).
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ _GUARD_MSG = (
 class _StateGuard:
     """The open/closed flag an async transform's guard shares between its wrapped ``state_backend`` and
     ``metrics``. The driver installs it closed and opens it only inside the synchronous
-    open/integrate/on_watermark/close steps (:meth:`OperatorContext._state_section`), so any access from a
+    open/integrate/on_eos/close steps (:meth:`OperatorContext._state_section`), so any access from a
     concurrent ``fetch`` finds it closed."""
 
     __slots__ = ("open",)
@@ -218,14 +218,14 @@ class OperatorContext:
     def entries(self, name: str) -> Iterator[tuple[KeyContext, object]]:
         """Iterate ``(KeyContext, value)`` for every entry of this operator's named state — the
         flush-time counterpart to :meth:`value_state` / :meth:`reducing_state`. Operator code uses this
-        to enumerate all keys/windows at a watermark without naming its own ``operator_id`` or building a
+        to enumerate all keys at end of stream without naming its own ``operator_id`` or building a
         ``StateScope`` by hand. The snapshot is stable to mutate during iteration (e.g. to clear).
         """
         for key, namespace, value in self.state_backend.entries(self.operator_id, name):
             yield KeyContext(key, namespace), value
 
     def clear_state(self, name: str, kctx: KeyContext) -> None:
-        """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key/window
+        """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key
         enumerated via :meth:`entries`)."""
         self.state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
 
@@ -245,8 +245,8 @@ class OperatorContext:
 
     @contextmanager
     def _state_section(self) -> Iterator[None]:
-        """Engine-only: open the guard for one synchronous ``open``/``integrate``/``on_watermark``/
-        ``close`` call, restoring the prior state on exit so nested calls compose. A no-op when no guard is
+        """Engine-only: open the guard for one synchronous ``open``/``integrate``/``on_eos``/``close``
+        call, restoring the prior state on exit so nested calls compose. A no-op when no guard is
         installed (every synchronous operator)."""
         guard = self._guard
         if guard is None:
@@ -298,10 +298,9 @@ class SourceOperator(ABC):
 
     @abstractmethod
     def frames(self) -> AsyncIterator[Frame]:
-        """Async-yield the stream's frames in order: data :class:`~nautilus.core.records.Batch` es,
-        :class:`~nautilus.core.records.Watermark` s, idleness markers, and finally exactly one
-        :class:`~nautilus.core.records.EOS` for a bounded source (an unbounded source simply never
-        yields EOS)."""
+        """Async-yield the stream's frames in order: data :class:`~nautilus.core.records.Batch` es, and
+        finally exactly one :class:`~nautilus.core.records.EOS` for a bounded source (an unbounded source
+        simply never yields EOS)."""
 
     def close(self) -> None:
         """Called once after iteration completes (including after cancellation). Release resources."""
@@ -313,8 +312,8 @@ class OneInputOperator(ABC):
     - **map** — one batch in, one transformed batch out (:class:`~nautilus.operators.MapBatch`).
     - **filter** — drop rows (:class:`~nautilus.operators.FilterRows`).
     - **flat-map** — one row to many (:class:`~nautilus.operators.Tokenize`).
-    - **reduce / aggregate** — accumulate per key in state and emit on a watermark
-      (:class:`~nautilus.operators.KeyedCount`, :class:`~nautilus.operators.KeyedTumblingSum`).
+    - **reduce / aggregate** — accumulate per key in state and emit at end of stream
+      (:class:`~nautilus.operators.KeyedCount`).
     """
 
     def open(self, ctx: OperatorContext) -> None:
@@ -324,9 +323,10 @@ class OneInputOperator(ABC):
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         """Handle a data batch. Synchronous; emit results via ``out``. Must not block/await."""
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        """Event-time progress reached ``t``. Fire due windows/timers; emit via ``out``. The actor
-        forwards the watermark downstream *after* this returns. Default: no-op (stateless ops)."""
+    def on_eos(self, out: Collector) -> None:
+        """End of stream: the input has closed. Flush any buffered per-key state and emit final results
+        via ``out``. The actor forwards EOS downstream *after* this returns. Default: no-op (stateless
+        ops)."""
 
     def key_columns(self) -> tuple[str, ...] | None:
         """The columns this operator's input must be co-partitioned on, or ``None`` if it is keyless.
@@ -359,7 +359,7 @@ class AsyncOneInputOperator(ABC):
       keyed-state read-modify-write never spans a yield.
 
     Splitting this way lets a *keyed* async enrich keep many lookups in flight — strictly more than a
-    stateless-only async map. ``DESIGN.md`` mechanism 9 is why awaiting here is safe;
+    stateless-only async map. ``DESIGN.md`` mechanism 8 is why awaiting here is safe;
     :func:`~nautilus.runtime.actor.run_async_transform` is how the engine drives it.
     """
 
@@ -385,10 +385,9 @@ class AsyncOneInputOperator(ABC):
         """Fold one batch's fetched ``result`` into keyed state via ``ctx`` and emit via ``out``.
         Synchronous; must not block/await (the engine runs it serially, per the class contract)."""
 
-    def on_watermark(self, t: int, ctx: OperatorContext, out: Collector) -> None:
-        """Event-time progress reached ``t`` (forwarded downstream after this returns). Fire due
-        windows/timers; touch state via ``ctx`` and emit via ``out``. Default: no-op (stateless ops).
-        """
+    def on_eos(self, ctx: OperatorContext, out: Collector) -> None:
+        """End of stream (EOS forwarded downstream after this returns). Flush any buffered per-key state:
+        touch state via ``ctx`` and emit via ``out``. Default: no-op (stateless ops)."""
 
     def key_columns(self) -> tuple[str, ...] | None:
         """The columns this operator's input must be co-partitioned on, or ``None`` if keyless — the same
@@ -430,7 +429,7 @@ class AsyncSink(ABC):
     concurrency, deadline, and partitioning. Writes are **at-least-once** — a failed run re-runs the whole
     job — so a write must be idempotent under replay (deterministic keys / upsert). Why a sink may
     ``await`` where a transform may not, and how it replaces the synthesized collecting sink, is
-    ``DESIGN.md`` mechanism 9; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
+    ``DESIGN.md`` mechanism 8; how the engine drives it is :func:`~nautilus.runtime.actor.run_async_sink`.
     """
 
     def open(self, ctx: OperatorContext) -> None:
@@ -472,11 +471,9 @@ class AsyncSink(ABC):
 class TwoInputOperator(ABC):
     """An operator with two input streams and one output — a join. The actor drives it like a one-input
     operator (see :func:`~nautilus.runtime.actor.run_two_input`), with one difference: a data batch
-    arrives on the **left** input (:meth:`process_left`) or the **right** (:meth:`process_right`). Event
-    time and termination stay the actor's job: the operator watermark is the minimum over *both* inputs
-    (``min(left, right)``), :meth:`on_watermark` fires at that combined watermark, and the actor forwards
-    EOS downstream only after both inputs have closed — advancing to ``WATERMARK_MAX`` first, so a final
-    :meth:`on_watermark` flushes any buffered state.
+    arrives on the **left** input (:meth:`process_left`) or the **right** (:meth:`process_right`).
+    Termination stays the actor's job: it forwards EOS downstream only after both inputs have closed,
+    calling :meth:`on_eos` first so a join can flush any buffered state.
 
     Both inputs are co-partitioned on the join key by the keyed shuffle, so every row of a given key
     reaches the same instance from either side; the operator buffers and matches per key locally.
@@ -493,9 +490,9 @@ class TwoInputOperator(ABC):
     def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
         """Handle a batch from the right input. Synchronous; emit results via ``out``; must not block/await."""
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        """Event-time progress reached ``t`` (the minimum over both inputs). Fire due windows/timers and
-        emit via ``out``. Default: no-op (a global join emits matches as they arrive)."""
+    def on_eos(self, out: Collector) -> None:
+        """End of stream on both inputs. Flush any buffered state and emit via ``out``. Default: no-op
+        (a global join emits matches as they arrive)."""
 
     def close(self) -> None:
         """Called once after EOS on both inputs. Override to release resources / clear buffers."""
