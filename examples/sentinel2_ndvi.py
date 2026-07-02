@@ -60,9 +60,6 @@ COLLECTION = "sentinel-2-l2a"
 #: Any sentinel-2-l2a item works; NDVI needs red (B04) and near-infrared (B08), 10 m bands with fill 0.
 DEFAULT_ITEM_IDS = ("S2B_2VMJ_20260629_0_L2A",)
 
-#: Read the coarsest overview by default — a few tiles, a few seconds; ``0`` is full resolution.
-DEFAULT_LEVEL = -1
-
 
 @dataclass(frozen=True)
 class Cog:
@@ -74,11 +71,11 @@ class Cog:
 
 
 class TileReader(Protocol):
-    """The decode stage's I/O seam: open a COG at a resolution level, then fetch one internal tile decoded
-    to an ``(H, W)`` array. Injecting it runs the pipeline without network in tests; the real one is
-    :class:`AsyncGeotiffReader`."""
+    """The decode stage's I/O seam: open a COG at full native resolution, then fetch one internal tile
+    decoded to an ``(H, W)`` array. Injecting it runs the pipeline without network in tests; the real one
+    is :class:`AsyncGeotiffReader`."""
 
-    async def open(self, href: str, level: int) -> Cog: ...
+    async def open(self, href: str) -> Cog: ...
 
     async def fetch_tile(self, cog: Cog, x: int, y: int) -> np.ndarray: ...
 
@@ -131,7 +128,7 @@ class AsyncOpenAndDecode(AsyncOneInputOperator):
     (``asyncio.gather``, intra-scene overlap), while the engine keeps up to ``max_in_flight`` scenes
     decoding at once (inter-scene overlap); ``integrate`` emits each decoded tile-row as ``(item_id, red,
     nir)`` tensor columns — the fan-out unit :class:`TileNdvi` consumes. The row (not the whole scene) is
-    the batch, so a coarse overview stays a handful of small batches.
+    the batch, so even a native-resolution scene streams as many small batches, not one huge one.
 
     Stateless — no keyed state — so it could run ``ordered=False`` (completion order) to let a quick scene
     emit ahead of a slow one; it stays ordered here for a reproducible run. The reader is acquired in
@@ -142,11 +139,9 @@ class AsyncOpenAndDecode(AsyncOneInputOperator):
         self,
         *,
         reader: TileReader | None = None,
-        level: int = DEFAULT_LEVEL,
         max_in_flight: int = 8,
     ) -> None:
         self._reader = reader
-        self._level = level
         self._cap = max_in_flight
 
     def open(self, ctx: OperatorContext) -> None:
@@ -168,9 +163,7 @@ class AsyncOpenAndDecode(AsyncOneInputOperator):
             batch.column("nir_href").to_pylist(),
             strict=True,
         ):
-            red, nir = await asyncio.gather(
-                reader.open(red_href, self._level), reader.open(nir_href, self._level)
-            )
+            red, nir = await asyncio.gather(reader.open(red_href), reader.open(nir_href))
             nx, ny = red.tile_count
             grid_rows = []
             for y in range(ny):  # a row of tiles for both bands, range-read + decoded concurrently
@@ -356,10 +349,10 @@ class AsyncGeotiffReader:
     def __init__(self) -> None:
         self._store = S3Store("sentinel-cogs", region="us-west-2", skip_signature=True)
 
-    async def open(self, href: str, level: int) -> Cog:
+    async def open(self, href: str) -> Cog:
         cog = await GeoTIFF.open(urlparse(href).path.lstrip("/"), store=self._store)
-        obj = [cog, *cog.overviews][level]  # 0 = full resolution, then overviews, coarsest last
-        return Cog(obj, obj.tile_count)
+        # The base IFD — full native resolution (cog.overviews holds the coarser levels, unused here).
+        return Cog(cog, cog.tile_count)
 
     async def fetch_tile(self, cog: Cog, x: int, y: int) -> np.ndarray:
         tile = await cog.handle.fetch_tile(x, y)  # range request + threaded decode
@@ -369,7 +362,6 @@ class AsyncGeotiffReader:
 def sentinel2_ndvi(
     item_ids: tuple[str, ...] | list[str] = DEFAULT_ITEM_IDS,
     *,
-    level: int = DEFAULT_LEVEL,
     reader: TileReader | None = None,
     resolver: AssetResolver | None = None,
     parallelism: int = 1,
@@ -383,7 +375,7 @@ def sentinel2_ndvi(
     """
     stream = (
         stream_source(Sentinel2ItemSource(item_ids, resolver=resolver))
-        .apply_async(AsyncOpenAndDecode(reader=reader, level=level), parallelism=parallelism)
+        .apply_async(AsyncOpenAndDecode(reader=reader), parallelism=parallelism)
         .apply(TileNdvi(), parallelism=parallelism)
         .apply(MeanNdviByItem(), parallelism=parallelism)
     )

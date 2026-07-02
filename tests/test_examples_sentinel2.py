@@ -50,7 +50,7 @@ class FakeReader:
     def __init__(self, scenes: dict[str, Scene]) -> None:
         self.scenes = scenes
 
-    async def open(self, href: str, level: int) -> Any:
+    async def open(self, href: str) -> Any:
         band, item = href.split("://")
         coords = list(
             self.scenes[item]["red"]
@@ -208,7 +208,7 @@ async def test_write_only_sink_writes_each_scene_and_returns_no_batches() -> Non
 
 @pytest.mark.network
 def test_real_sentinel2_scene_mean_is_in_range() -> None:
-    # End-to-end against the public bucket via async-geotiff, at the coarsest overview (a few tiles).
+    # End-to-end against the public bucket via async-geotiff, at full native resolution (a heavy scene).
     rows = asyncio.run(run_plan(s2.sentinel2_ndvi())).to_pylist()
     assert len(rows) == 1
     assert rows[0]["valid_count"] > 0
