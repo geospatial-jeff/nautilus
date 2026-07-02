@@ -991,26 +991,24 @@ async def run_async_transform(
             else:
                 break
 
-    def _pop_ready_before_barrier() -> _Data | None:
-        """Remove and return the first *finished* DATA slot in the leading pre-barrier segment (the DATA
-        ahead of the first marker), or ``None`` if every fetch there is still in flight. Completion order,
-        not input order: a later slot whose fetch finished first comes out first. The scan stops at the
-        first marker — the hard barrier — so a slot behind a not-yet-forwarded watermark is never drained
-        early (the segment ahead of a marker is bounded by ``max_in_flight``, so the scan is cheap).
-        """
+    def _leading_ready_index() -> int | None:
+        """Index of the first *finished* DATA slot in the leading pre-barrier segment — the DATA ahead of the
+        first marker — or ``None`` if every fetch there is still in flight. Completion order, not input
+        order: a later slot whose fetch finished first comes out first. The scan stops at the first marker —
+        the hard barrier — so a slot behind a not-yet-forwarded watermark is never drained early; the
+        segment is bounded by ``max_in_flight``, so the scan is cheap."""
         for j, slot in enumerate(pending):
             if isinstance(slot, _Marker):
                 return None
             if slot.task.done():
-                del pending[j]
-                return slot
+                return j
         return None
 
     async def _drain_unordered() -> None:
-        """Unordered drain (``ordered()=False``): emit any finished fetch in the leading pre-barrier segment
-        — the DATA ahead of the first pending marker — so a slow fetch does not block a finished one. A
-        watermark/EOS marker still fires only once every DATA ahead of it has drained (the hard barrier), so
-        it never overtakes its data. Stateless-only; the rejection is enforced before the loop."""
+        """Unordered drain (``ordered()=False``): emit any finished fetch in the leading pre-barrier segment,
+        so a slow fetch does not block a finished one. A watermark/EOS marker still fires only once every
+        DATA ahead of it has drained (the hard barrier), so it never overtakes its data. Stateless-only; the
+        rejection is enforced before the loop."""
         nonlocal buffered
         while pending and not failed:
             head = pending[0]
@@ -1018,10 +1016,16 @@ async def run_async_transform(
                 pending.popleft()
                 await _advance(head.advanced)
                 continue
-            slot = _pop_ready_before_barrier()
-            if slot is None:
-                break  # every fetch in the leading segment is still running — wait for a completion
-            # decrement on pop, not on completion — keeps the buffer bounded like the ordered drain
+            j = _leading_ready_index()
+            if j is None:
+                break  # every fetch ahead of the barrier is still running — wait for a completion
+            slot = pending[j]
+            assert isinstance(
+                slot, _Data
+            )  # _leading_ready_index returns only a finished DATA index
+            del pending[
+                j
+            ]  # decrement buffered on pop, not on completion — keeps the buffer bounded
             buffered -= 1
             await _emit_data(slot)
 
@@ -1029,18 +1033,11 @@ async def run_async_transform(
         return bool(pending) and (isinstance(pending[0], _Marker) or pending[0].task.done())
 
     def _can_drain_unordered() -> bool:
-        # Progress is possible only if the head marker can fire, or some fetch in the leading segment has
-        # finished; a marker mid-segment is the barrier, so a slot behind it does not count as drainable.
-        if not pending:
-            return False
-        if isinstance(pending[0], _Marker):
-            return True
-        for slot in pending:
-            if isinstance(slot, _Marker):
-                return False
-            if slot.task.done():
-                return True
-        return False
+        # The head marker can fire, or some fetch ahead of the first marker has finished; a slot behind a
+        # marker (the barrier) does not count as drainable.
+        return bool(pending) and (
+            isinstance(pending[0], _Marker) or _leading_ready_index() is not None
+        )
 
     drain = _drain_head if ordered else _drain_unordered
     can_drain = _can_drain_ordered if ordered else _can_drain_unordered
