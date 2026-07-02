@@ -19,8 +19,8 @@ import cloudpickle
 from nautilus.api import linear_graph, one_input
 from nautilus.compile import compile_graph
 from nautilus.core.records import EOS_FRAME
-from nautilus.operators import InMemorySource, KeyedCount, Tokenize
 from nautilus.driver.run import run_compiled
+from nautilus.operators import InMemorySource, KeyedCount, Tokenize
 from nautilus.testing import data
 
 

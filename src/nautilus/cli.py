@@ -35,7 +35,7 @@ from nautilus.bench import (
     run_once,
     save_baseline,
 )
-from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS, DEFAULT_WM_EVERY
+from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS
 from nautilus.core.time import SystemClock
 from nautilus.driver.result import RunResult
 from nautilus.pipelines import EXAMPLES, GRAPH_EXAMPLES, load_pipeline
@@ -435,7 +435,6 @@ def bench(
     rows: int = typer.Option(DEFAULT_ROWS, help="bench-* total rows (ignored by fixed pipelines)."),
     batch: int = typer.Option(DEFAULT_BATCH, help="bench-* rows per batch."),
     keys: int = typer.Option(DEFAULT_KEYS, help="bench-* distinct keys."),
-    wm_every: int = typer.Option(DEFAULT_WM_EVERY, "--wm-every", help="bench-* watermark cadence."),
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
     workers: int = typer.Option(1, help="Worker processes (>1 deploys across them)."),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
@@ -470,7 +469,6 @@ def bench(
                 rows=rows,
                 batch=batch,
                 keys=keys,
-                wm_every=wm_every,
                 parallelism=parallelism,
                 workers=workers,
                 capacity=capacity,

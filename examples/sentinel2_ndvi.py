@@ -34,7 +34,7 @@ from async_geotiff import GeoTIFF
 from obstore.store import S3Store
 
 from nautilus.core.operator import Collector, OneInputOperator, OperatorContext, SourceOperator
-from nautilus.core.records import EOS_FRAME, WATERMARK_MAX, Batch, Frame
+from nautilus.core.records import EOS_FRAME, Batch, Frame
 from nautilus.driver.local import run
 from nautilus.state import KeyContext
 from nautilus.tensors import tensor_array, to_numpy
@@ -162,7 +162,7 @@ class TileNdvi(OneInputOperator):
 class MeanNdviByItem(OneInputOperator):
     """Average NDVI per scene — the keyed reduction. Sums each item's ``(ndvi_sum, valid_count)`` partials
     in keyed state and, at end of stream, emits ``Σsum / Σcount`` per item: the same global keyed
-    aggregation as :class:`~nautilus.operators.KeyedCount`, firing once at ``WATERMARK_MAX``. Keyed by
+    aggregation as :class:`~nautilus.operators.KeyedCount`, firing once at end of stream. Keyed by
     item, so a parallel run gathers a scene's tiles onto one instance."""
 
     _STATE = "ndvi_acc"  # keyed state; each entry is a running (sum, count) pair
@@ -199,9 +199,7 @@ class MeanNdviByItem(OneInputOperator):
                 (partial_sum, partial_count)
             )
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        if t < WATERMARK_MAX:
-            return  # global aggregation: only the terminal watermark fires it
+    def on_eos(self, out: Collector) -> None:
         items, means, counts, fired = [], [], [], []
         for kctx, (total, count) in self._ctx.entries(self._STATE):
             items.append(kctx.key[0])

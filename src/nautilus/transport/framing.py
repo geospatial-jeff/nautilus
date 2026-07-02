@@ -4,8 +4,7 @@ Each message on a socket is ``[1-byte kind][4-byte big-endian length][payload]``
 
 - ``DATA``: a :class:`~nautilus.core.records.Batch`; its ``pa.RecordBatch`` is written as an Arrow IPC
   stream (canonical extension types such as ``fixed_shape_tensor`` survive the round trip).
-- ``CONTROL``: a control frame (:class:`Watermark`, :class:`EOS`, :class:`StatusIdle`,
-  :class:`StatusActive`, :class:`Barrier`), msgpack-encoded as a small dict.
+- ``CONTROL``: a control frame (:class:`EOS`, :class:`Barrier`), msgpack-encoded as a small dict.
 - ``CREDIT``: an integer credit count (msgpack), returned by the consumer to the producer.
 """
 
@@ -17,18 +16,7 @@ from enum import IntEnum
 import msgpack
 import pyarrow as pa
 
-from nautilus.core.records import (
-    ACTIVE_FRAME,
-    EOS,
-    EOS_FRAME,
-    IDLE_FRAME,
-    Barrier,
-    Batch,
-    Frame,
-    StatusActive,
-    StatusIdle,
-    Watermark,
-)
+from nautilus.core.records import EOS, EOS_FRAME, Barrier, Batch, Frame
 
 _HEADER = 5  # 1 kind byte + 4 length bytes
 _MAX_FRAME_BYTES = (
@@ -107,14 +95,8 @@ def _ipc_to_batch(payload: bytes) -> pa.RecordBatch:
 
 
 def _control_to_bytes(frame: Frame) -> bytes:
-    if isinstance(frame, Watermark):
-        return bytes(msgpack.packb({"k": "wm", "t": frame.t}))
     if isinstance(frame, Barrier):
         return bytes(msgpack.packb({"k": "barrier", "id": frame.checkpoint_id}))
-    if isinstance(frame, StatusIdle):
-        return bytes(msgpack.packb({"k": "idle"}))
-    if isinstance(frame, StatusActive):
-        return bytes(msgpack.packb({"k": "active"}))
     if isinstance(frame, EOS):
         return bytes(msgpack.packb({"k": "eos"}))
     raise ValueError(f"cannot encode frame: {frame!r}")
@@ -123,14 +105,8 @@ def _control_to_bytes(frame: Frame) -> bytes:
 def _bytes_to_control(payload: bytes) -> Frame:
     fields = msgpack.unpackb(payload, raw=False)
     tag = fields["k"]
-    if tag == "wm":
-        return Watermark(int(fields["t"]))
     if tag == "barrier":
         return Barrier(int(fields["id"]))
-    if tag == "idle":
-        return IDLE_FRAME
-    if tag == "active":
-        return ACTIVE_FRAME
     if tag == "eos":
         return EOS_FRAME
     raise ValueError(f"unknown control tag: {tag!r}")

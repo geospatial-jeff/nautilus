@@ -67,7 +67,7 @@ class StateBackend(ABC):
 
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         """Per ``(operator_id, name)``: ``(entries, distinct_keys)`` currently held. ``entries`` counts
-        every ``(key, namespace)`` slot — for a tumbling-window aggregation that is keys × open windows.
+        every ``(key, namespace)`` slot — for a keyed aggregation, one per key.
         The actor samples this to emit ``state.entries`` / ``state.keys``; a backend that cannot report
         cheaply returns ``{}`` (the default) rather than walking its store on the hot path."""
         return {}
@@ -112,7 +112,7 @@ class InMemoryStateBackend(StateBackend):
 
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
         # Lazy: no full-store copy. Callers collect-then-clear (see the ABC contract), so the store is
-        # not mutated mid-iteration — avoids an O(store) allocation on every flushing watermark.
+        # not mutated mid-iteration — avoids an O(store) allocation on the end-of-stream flush.
         for scope, value in self._store.items():
             if scope.operator_id == operator_id and scope.name == name:
                 yield scope.key, scope.namespace, value
