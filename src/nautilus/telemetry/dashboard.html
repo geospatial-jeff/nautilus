@@ -6,7 +6,7 @@
 <title>nautilus telemetry</title>
 <style>
   :root { --fg:#e6e6e6; --dim:#8a8f98; --bg:#0e1116; --panel:#171b22; --line:#262b33;
-          --live:#3fb950; --done:#8a8f98; --accent:#58a6ff; }
+          --live:#3fb950; --done:#8a8f98; --accent:#58a6ff; --stale:#d29922; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg);
          font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -15,7 +15,16 @@
   h1 { font-size:15px; margin:0; font-weight:600; }
   .badge { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
   .badge.live { background:rgba(63,185,80,.15); color:var(--live); }
-  .badge.completed { background:rgba(138,143,152,.18); color:var(--done); }
+  .badge.completed { background:rgba(88,166,255,.18); color:var(--accent); }
+  .badge .dot, .statusbar .dot { width:8px; height:8px; border-radius:50%; background:currentColor;
+          display:inline-block; margin-right:6px; vertical-align:middle; }
+  .badge.live .dot, .statusbar.live .dot { animation:pulse 1.15s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.25; } }
+  .statusbar { padding:11px 18px; font-size:13px; font-weight:600; letter-spacing:.02em;
+          border-bottom:1px solid var(--line); display:flex; align-items:center; }
+  .statusbar.live { background:rgba(63,185,80,.10); color:var(--live); }
+  .statusbar.completed { background:rgba(88,166,255,.16); color:var(--accent); }
+  .statusbar.stale { background:rgba(210,153,34,.16); color:var(--stale); }
   .meta { color:var(--dim); }
   main { padding:18px; display:grid; gap:18px; max-width:1100px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
@@ -44,10 +53,11 @@
 <body>
 <header>
   <h1>nautilus</h1>
-  <span id="status" class="badge live">live</span>
+  <span id="status" class="badge live"><span class="dot"></span>live</span>
   <span class="meta" id="run">—</span>
   <span class="meta" id="totals"></span>
 </header>
+<div id="statusbar" class="statusbar live"><span class="dot"></span>connecting…</div>
 <main>
   <section class="panel"><h2>hardware</h2><div id="hw" class="workers"></div></section>
   <section class="panel"><h2>operators</h2><table id="ops"><thead></thead><tbody></tbody></table></section>
@@ -97,9 +107,13 @@ function spark(vals, max) {                 // inline SVG sparkline, no deps
 }
 
 function render(doc) {
+  const status = doc.status || "live";
+  if (!doc.operators) {   // server is up, but no worker has reported yet — don't render empty tables
+    applyState(status==="completed" ? "completed" : "live",
+               status==="completed" ? "run complete" : "waiting for workers…");
+    return;
+  }
   meanings = {}; ((doc.catalog&&doc.catalog.metrics)||[]).forEach(m=>meanings[m.name]=m.meaning);
-  const badge = document.getElementById("status");
-  badge.textContent = doc.status; badge.className = "badge " + doc.status;
   document.getElementById("run").textContent =
     `run ${doc.run_id} · wall ${fmt(doc.meta.wall_micros)} µs · ${doc.meta.clock_kind}`;
 
@@ -112,6 +126,12 @@ function render(doc) {
   document.getElementById("totals").textContent =
     `${s.total_rows_in} rows in → ${s.total_rows_out} rows out · ${s.total_errors} errors`
     + (procs.length>1 ? ` · ${procs.length} workers` : "");
+  if (status === "completed") {
+    const wall = doc.meta ? (doc.meta.wall_micros/1e6).toFixed(1) : "?";
+    applyState("completed", `run complete — tasks stopped · ${s.total_rows_out} rows out · wall ${wall}s`);
+  } else {
+    applyState("live", "running — live telemetry" + (procs.length>1 ? ` · ${procs.length} workers` : ""));
+  }
 
   // hardware — one card group per worker, each with its own rolling sparklines (keyed by node)
   const showNode = procs.length>1;
@@ -181,11 +201,32 @@ function card(lbl,num,h,max){return `<div class="card"><div class="num">${num}</
   <div class="lbl">${lbl}</div>${spark(h||[],max)}</div>`;}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 
+let completed = false;   // sticky once the run reports done, so a later poll miss stays "complete"
+let fails = 0;           // consecutive failed polls → the run's process went away
+
+function applyState(kind, text) {
+  const bar = document.getElementById("statusbar");
+  bar.className = "statusbar " + kind;
+  bar.innerHTML = (kind==="live" ? '<span class="dot"></span>' : kind==="completed" ? "✓ " : "⚠ ") + esc(text);
+  const badge = document.getElementById("status");
+  badge.className = "badge " + (kind==="stale" ? "completed" : kind);
+  badge.innerHTML = (kind==="live" ? '<span class="dot"></span>' : "")
+    + (kind==="stale" ? "disconnected" : kind);
+  document.title = (kind==="live" ? "● live" : kind==="completed" ? "✓ complete" : "⚠ offline") + " · nautilus";
+  if (kind==="completed") completed = true;
+}
+
 async function tick() {
   try {
     const r = await fetch("/api/telemetry.json", {cache:"no-store"});
-    if (r.ok) render(await r.json());
-  } catch (e) { /* transient; retry next tick */ }
+    if (!r.ok) throw new Error("http " + r.status);
+    fails = 0;
+    render(await r.json());
+  } catch (e) {
+    // The server is gone or unreachable. Once the run has completed we keep showing "complete"; before
+    // that, a few misses in a row means it stopped mid-run — say so rather than freezing on stale numbers.
+    if (!completed && ++fails >= 4) applyState("stale", "disconnected — the run's process has stopped");
+  }
 }
 tick(); setInterval(tick, 750);
 </script>

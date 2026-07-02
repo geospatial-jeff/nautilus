@@ -167,3 +167,14 @@ def test_dashboard_html_renders_per_worker_hardware() -> None:
     # It reads every process row, not just the first — the single-process assumption this stage removes.
     assert '.find(o=>o.kind==="process")' not in html
     assert 'filter(o=>o.kind==="process")' in html
+
+
+def test_dashboard_html_makes_completion_obvious() -> None:
+    html = load_dashboard_html().decode()
+    # A finished run must be unmissable: a full-width, color-coded status bar (not just the small header
+    # pill), the completion text, and a browser-tab title that flips so it reads from another tab.
+    assert 'id="statusbar"' in html
+    assert "run complete" in html
+    assert "document.title" in html
+    # A mid-run disconnect is a distinct state, not silently frozen numbers or a false "complete".
+    assert "statusbar.stale" in html
