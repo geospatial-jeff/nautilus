@@ -13,7 +13,7 @@ every worker immediately, so a failure never hangs or orphans a process.
 
 from __future__ import annotations
 
-import logging
+import warnings
 from collections.abc import Callable
 from dataclasses import replace
 from time import perf_counter_ns
@@ -24,7 +24,7 @@ import pyarrow as pa
 from nautilus.api import LogicalGraph
 from nautilus.cluster.cohort import LocalCohort, RemoteCohort, WorkerCohort
 from nautilus.cluster.launcher import spawn_workers
-from nautilus.cluster.placement import max_parallelism, place
+from nautilus.cluster.placement import effective_worker_count, place
 from nautilus.cluster.protocol import Done, Failed, Heartbeat, decode_batches
 from nautilus.cluster.rendezvous import WorkerCrashed, WorkerError, bind_barrier
 from nautilus.compile import compile_graph
@@ -38,7 +38,6 @@ from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.telemetry.report import NullSink, RunReport, Sink, build_report
 from nautilus.transport.connector import DEFAULT_CONNECT_TIMEOUT
 
-_log = logging.getLogger(__name__)
 _DEFAULT_BOOTSTRAP_TIMEOUT = 60.0  # max seconds of silence between worker registrations during bind
 
 
@@ -93,10 +92,15 @@ def deploy(
     if num_workers < 1:
         raise ValueError(f"num_workers must be >= 1, got {num_workers}")
     plan = compile_graph(graph, key_groups=key_groups)
-    effective = min(num_workers, max_parallelism(plan))
+    effective = effective_worker_count(plan, num_workers)
     if effective < num_workers:
-        _log.info(
-            "capping workers from %d to %d (the plan's maximum parallelism)", num_workers, effective
+        # Loud, not a hidden INFO log: silently capping the count reads as the CLI ignoring --workers.
+        # Surface what happened and the fix, so the user isn't left wondering where their workers went.
+        warnings.warn(
+            f"requested {num_workers} workers, but the widest operator has parallelism {effective}, so "
+            f"{num_workers - effective} would sit idle; running {effective}. Raise the pipeline's "
+            f"parallelism to spread across more workers.",
+            stacklevel=2,
         )
     worker_ids = list(range(effective))
     placement = place(plan, worker_ids)

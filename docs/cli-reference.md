@@ -48,7 +48,7 @@ nautilus run PIPELINE [options]
 | `--save PATH` | none | write the full JSON report to `PATH` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
 | `--head` | `5` | rows of pipeline output to preview |
-| `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
+| `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes; capped at `--parallelism`, since a worker past the widest operator would sit idle) |
 | `--parallelism` | `1` | instances per operator (keyed operators shuffle by key) |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); runs multi-node instead of spawning locally |
 
@@ -145,7 +145,7 @@ nautilus dashboard PIPELINE [options]
 | `--host` | `127.0.0.1` | bind host (`0.0.0.0` exposes it; add authentication) |
 | `--telemetry` | `counters` | `off` / `counters` / `events` / `full` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
-| `--workers` | `1` | worker processes to distribute across (`>1` serves telemetry aggregated live) |
+| `--workers` | `1` | worker processes to distribute across (`>1` serves telemetry aggregated live; capped at `--parallelism`) |
 | `--parallelism` | `1` | instances per operator (keyed ops shuffle by key) |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); serves multi-node instead of spawning locally |
 | `--linger` / `--no-linger` | `--linger` | keep serving after a bounded run completes |
@@ -196,7 +196,7 @@ nautilus bench PIPELINE [options]
 | `--warmup` | `1` | discarded warmup runs |
 | `--rows` / `--batch` / `--keys` / `--wm-every` | per env | synthetic-source scale |
 | `--parallelism` | `1` | instances per operator |
-| `--workers` | `1` | worker processes (>1 deploys) |
+| `--workers` | `1` | worker processes (>1 deploys; capped at `--parallelism`) |
 | `--capacity` | `16` | channel capacity |
 | `--telemetry` | `counters` | tier (must be ≥ `counters`) |
 | `--json` | `false` | print the result as JSON |

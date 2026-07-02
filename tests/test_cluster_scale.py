@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import random
 
+import pytest
+
 from nautilus.cluster import deploy
 from nautilus.core.operator import OneInputOperator
 from nautilus.core.records import EOS_FRAME
@@ -48,6 +50,9 @@ def _keyed_spec(p: int) -> _Spec:
 # --- correctness across random W x parallelism --------------------------------------------------
 
 
+@pytest.mark.filterwarnings(
+    "ignore:requested"
+)  # random combos over-provision on purpose; capping is fine
 def test_distributed_matches_serial_over_random_workers_and_parallelism() -> None:
     rng = random.Random(2024)
     for trial in range(6):
@@ -104,8 +109,10 @@ def test_structural_digest_is_placement_invariant_across_worker_counts() -> None
 
 
 def test_workers_capped_at_max_parallelism() -> None:
-    # max parallelism here is 3 (KeyedCount); asking for 8 workers caps to 3 — no empty worker, no hang.
-    result = deploy(_wordcount_graph(), num_workers=8)
+    # max parallelism here is 3 (KeyedCount); asking for 8 workers caps to 3 — no empty worker, no hang —
+    # and says so loudly (a UserWarning), not through a hidden INFO log the user never sees.
+    with pytest.warns(UserWarning, match="requested 8 workers"):
+        result = deploy(_wordcount_graph(), num_workers=8)
     nodes = {o.node for o in result.telemetry.operators if o.kind != "process"}
     assert nodes == {"worker-0", "worker-1", "worker-2"}
 

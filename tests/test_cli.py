@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 import nautilus
@@ -82,15 +83,40 @@ def test_dashboard_single_process_serves_and_exits():
 
 
 def test_dashboard_distributed_serves_across_workers():
-    # --workers 2 routes through serve_cluster: it spawns two workers, serves the aggregated report, then
-    # exits on its own with --no-linger. The "across 2 workers" note proves it took the distributed path.
+    # --workers 2 --parallelism 2 routes through serve_cluster: two *real* workers (parallelism must match,
+    # or deploy caps the count), serving the aggregated report, then exiting on its own with --no-linger.
     result = runner.invoke(
         app,
-        ["dashboard", "wordcount", "--workers", "2", "--no-linger", "--no-open", "--port", "0"],
+        [
+            "dashboard",
+            "wordcount",
+            "--workers",
+            "2",
+            "--parallelism",
+            "2",
+            "--no-linger",
+            "--no-open",
+            "--port",
+            "0",
+        ],
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
     assert "across 2 workers" in result.stdout
+
+
+@pytest.mark.filterwarnings("ignore:requested")  # the cap warning is asserted in test_cluster_scale
+def test_dashboard_reports_capped_worker_count_honestly():
+    # The confusing case, made honest: asking for more workers than the pipeline's parallelism must not
+    # claim workers that don't exist. wordcount at the default parallelism 1 fills one worker, so three
+    # requested reads as "1 of 3", not "3".
+    result = runner.invoke(
+        app,
+        ["dashboard", "wordcount", "--workers", "3", "--no-linger", "--no-open", "--port", "0"],
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 0, result.output
+    assert "across 1 of 3 workers" in result.stdout
 
 
 def test_version():

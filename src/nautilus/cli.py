@@ -185,7 +185,8 @@ def run(
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     head: int = typer.Option(5, help="Rows of pipeline output to preview."),
     workers: int = typer.Option(
-        1, help="Worker processes to deploy across (>1 spawns and distributes)."
+        1,
+        help="Worker processes to deploy across (>1 spawns and distributes; capped at --parallelism).",
     ),
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
     daemons: str = typer.Option(
@@ -443,7 +444,7 @@ def bench(
     batch: int = typer.Option(DEFAULT_BATCH, help="bench-* rows per batch."),
     keys: int = typer.Option(DEFAULT_KEYS, help="bench-* distinct keys."),
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
-    workers: int = typer.Option(1, help="Worker processes (>1 deploys across them)."),
+    workers: int = typer.Option(1, help="Worker processes (>1 deploys; capped at --parallelism)."),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     telemetry: str = typer.Option(
         "counters", help="Tier to measure at (>= counters; the digest needs it)."
@@ -599,7 +600,9 @@ def dashboard(
     telemetry: str = typer.Option("counters", help="off | counters | events | full"),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     workers: int = typer.Option(
-        1, help="Worker processes to distribute across (>1 serves telemetry aggregated live)."
+        1,
+        help="Worker processes to distribute across (>1 serves telemetry aggregated live; capped at "
+        "--parallelism).",
     ),
     parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
     daemons: str = typer.Option(
@@ -641,13 +644,26 @@ def dashboard(
         raise typer.Exit(code=2) from None
 
     distributed = workers > 1 or roster is not None
+    requested = len(roster) if roster else workers
+    effective = requested
+    if distributed:
+        # Compile once to learn how many workers the plan can actually fill; deploy caps to this (extra
+        # workers would sit idle), so the panel shows the real count, not the requested one.
+        from nautilus.cluster.placement import effective_worker_count
+        from nautilus.compile import compile_graph
+
+        effective = effective_worker_count(compile_graph(graph), requested)
 
     def on_ready(url: str) -> None:
-        where = (
-            f"across {len(roster)} daemons"
-            if roster
-            else f"across {workers} workers" if distributed else "single process"
-        )
+        if not distributed:
+            where = "single process"
+        else:
+            noun = "daemons" if roster else "workers"
+            where = (
+                f"across {effective} of {requested} {noun} — raise --parallelism to use all {requested}"
+                if effective < requested
+                else f"across {effective} {noun}"
+            )
         console.print(
             Panel.fit(
                 f"live dashboard at [bold]{url}[/bold]\nrunning '{pipeline}' ({where}) · "
