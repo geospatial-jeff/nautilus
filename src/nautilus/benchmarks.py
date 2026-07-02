@@ -64,9 +64,20 @@ async def async_io_wait(batch: pa.RecordBatch) -> pa.RecordBatch:
     microseconds (default 1000) to stand in for a real external lookup, then returns the batch unchanged.
     Where :func:`async_passthrough` isolates the engine's per-batch overhead, this exercises the thing an
     async transform exists for — *overlapping* awaited I/O — so throughput should approach
-    ``max_in_flight`` batches per fetch-latency, far above the serial `1 / latency`. Identity output keeps
-    the structural digest stable; module-level so a ``--workers`` run can cloudpickle it."""
-    await asyncio.sleep(_env_int("NAUTILUS_BENCH_FETCH_US", 1000) / 1_000_000)
+    ``max_in_flight`` batches per fetch-latency, far above the serial `1 / latency`.
+
+    ``NAUTILUS_BENCH_SLOW_EVERY`` (default 0 = uniform) makes roughly one batch in N sleep
+    ``NAUTILUS_BENCH_SLOW_FACTOR``× longer (default 20), keyed off the batch's first key so it stays
+    deterministic. That skew is the head-of-line blocking that separates ordered from unordered emission:
+    under ordered a slow head pins buffer slots that finished tails could reuse, so ``ordered=False``
+    (completion order) reads further ahead and runs faster. Identity output keeps the structural digest
+    stable — latency, and hence emission order, is not a digest input — so this benchmarks safely either
+    way; module-level so a ``--workers`` run can cloudpickle it."""
+    base_us = _env_int("NAUTILUS_BENCH_FETCH_US", 1000)
+    slow_every = _env_int("NAUTILUS_BENCH_SLOW_EVERY", 0)
+    if slow_every and int(batch.column(0)[0].as_py()) % slow_every == 0:
+        base_us *= _env_int("NAUTILUS_BENCH_SLOW_FACTOR", 20)
+    await asyncio.sleep(base_us / 1_000_000)
     return batch
 
 

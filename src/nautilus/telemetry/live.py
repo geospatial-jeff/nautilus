@@ -22,6 +22,7 @@ from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, Protocol
 
+from nautilus.api import LogicalGraph
 from nautilus.compile import compile_graph
 from nautilus.core.operator import OneInputOperator, SourceOperator
 from nautilus.core.time import SystemClock
@@ -159,10 +160,10 @@ class LiveServer:
         self._thread.join(timeout=2.0)
 
 
-async def serve_local_chain(
-    source: SourceOperator,
-    transforms: list[OneInputOperator],
+async def serve_graph(
+    graph: LogicalGraph,
     *,
+    key_groups: int | None = None,
     capacity: int = DEFAULT_CAPACITY,
     telemetry: TelemetryConfig | None = None,
     host: str = "127.0.0.1",
@@ -172,7 +173,9 @@ async def serve_local_chain(
     open_browser: bool = False,
     on_ready: Callable[[str], None] | None = None,
 ) -> None:
-    """Serve a live dashboard while running a pipeline. Bounded pipelines complete then (with
+    """Serve a live dashboard while running a :class:`~nautilus.api.LogicalGraph` — the graph-shaped
+    counterpart to :func:`serve_local_chain`, so a join or an async-stage pipeline (which a linear
+    ``(source, transforms)`` cannot express) can be dashboarded too. Bounded graphs complete then (with
     ``linger``) keep serving the frozen final snapshot until cancelled; ``max_seconds`` caps unbounded
     ones. Cancellation (Ctrl-C from the CLI) unwinds cleanly and frees the port."""
     clk = SystemClock()
@@ -182,9 +185,9 @@ async def serve_local_chain(
     run_id = config.run_id
     assert run_id is not None  # set just above; bind to a non-optional local for make_run_meta
     registry = RecorderRegistry()
-    # Compile the chain to a plan and serve/run that — the same engine a non-live run uses — so the live
+    # Compile the graph to a plan and serve/run that — the same engine a non-live run uses — so the live
     # topology is exactly what executes (one topology builder, plan_to_topology).
-    plan = compile_graph(graph_from_pipeline(source, transforms, 1))
+    plan = compile_graph(graph, key_groups=key_groups)
     topology = plan_to_topology(plan, capacity)
     loop = asyncio.get_running_loop()
     started_at = clk.now_micros()
@@ -253,6 +256,36 @@ async def serve_local_chain(
         with contextlib.suppress(BaseException):
             await asyncio.gather(drive_task, run_task, return_exceptions=True)
         server.stop()
+
+
+async def serve_local_chain(
+    source: SourceOperator,
+    transforms: list[OneInputOperator],
+    *,
+    capacity: int = DEFAULT_CAPACITY,
+    telemetry: TelemetryConfig | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8787,
+    linger: bool = True,
+    max_seconds: float | None = None,
+    open_browser: bool = False,
+    on_ready: Callable[[str], None] | None = None,
+) -> None:
+    """Serve a live dashboard while running a linear ``(source, transforms)`` pipeline — a thin wrapper
+    over :func:`serve_graph` that lowers the chain to a one-instance graph first, so the live topology is
+    exactly what executes. Bounded pipelines complete then (with ``linger``) keep serving the frozen final
+    snapshot until cancelled; ``max_seconds`` caps unbounded ones."""
+    await serve_graph(
+        graph_from_pipeline(source, transforms, 1),
+        capacity=capacity,
+        telemetry=telemetry,
+        host=host,
+        port=port,
+        linger=linger,
+        max_seconds=max_seconds,
+        open_browser=open_browser,
+        on_ready=on_ready,
+    )
 
 
 async def serve_report(

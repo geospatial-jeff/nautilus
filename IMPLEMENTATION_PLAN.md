@@ -146,9 +146,12 @@ inside intermediate operators — while keeping keyed state single-writer. Desig
   (`AsyncOneInputOperator`, `AsyncMapBatch`), driven by `run_async_transform`'s ordered reorder loop —
   stateless and keyed, with the await-time state guard enforced on `OperatorContext`. DSL `.map_async` /
   `.apply_async`; the `async_one_input` IR kind; the cross-process path. Emission is ordered (the digest
-  stays reproducible); unordered is rejected for now.
-- **6.4 — Unordered mode + the NDVI example rework · Planned.** Completion-order emission for stateless
-  maps, and moving COG decode out of the Sentinel-2 source into its own async stage. Detail in
+  stays reproducible).
+- **6.4 — Unordered mode + the NDVI example rework · Done.** A stateless async map may emit in
+  **completion order** (`ordered=False`) — a slow batch no longer blocks a finished one — with EOS still a
+  hard barrier; rejected for keyed stages so the digest stays reproducible. The
+  Sentinel-2 example is reworked into a `Stream` graph that moves COG open + range-read + decode out of
+  the source into an `AsyncOpenAndDecode` async transform, with an opt-in `--write` async sink. Detail in
   `ASYNC_IO_PLAN.md`.
 
 ## Telemetry · **Done**

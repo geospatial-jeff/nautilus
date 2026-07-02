@@ -155,15 +155,19 @@ class Stream:
         fn: Callable[[pa.RecordBatch], Awaitable[pa.RecordBatch]],
         *,
         max_in_flight: int = 8,
+        ordered: bool = True,
         parallelism: int = 1,
     ) -> Stream:
         """Apply an async ``batch -> batch`` function with overlapping I/O
-        (:class:`~nautilus.operators.AsyncMapBatch`): up to ``max_in_flight`` calls run at once and
-        results are emitted in input order. The stateless async map — enrich a batch from an awaited
-        lookup without crowding the I/O into the source. Keyless, so a parallel run round-robins batches
-        across instances (the I/O fan-out)."""
+        (:class:`~nautilus.operators.AsyncMapBatch`): up to ``max_in_flight`` calls run at once. The
+        stateless async map — enrich a batch from an awaited lookup without crowding the I/O into the
+        source. Keyless, so a parallel run round-robins batches across instances (the I/O fan-out).
+
+        ``ordered=False`` emits in completion order instead of input order (lower latency), sound here
+        because the map is stateless (see
+        :meth:`~nautilus.core.operator.AsyncOneInputOperator.ordered`)."""
         return self._extend(
-            lambda: AsyncMapBatch(fn, max_in_flight=max_in_flight),
+            lambda: AsyncMapBatch(fn, max_in_flight=max_in_flight, ordered=ordered),
             key_columns=None,
             parallelism=parallelism,
             kind="async_one_input",
@@ -182,7 +186,17 @@ class Stream:
         operator's own :meth:`~nautilus.core.operator.AsyncOneInputOperator.key_columns`, so a keyed async
         stage co-partitions and its per-key state is never split. At parallelism > 1 the instance is
         deep-copied per subtask (acquire its client in ``open()``, not ``__init__``); a parallelism-1
-        ``apply_async`` shares the one instance, so scale it by passing ``parallelism`` here."""
+        ``apply_async`` shares the one instance, so scale it by passing ``parallelism`` here.
+
+        A keyed operator (one that declares ``key_columns``) must stay ordered: ``ordered()=False`` is
+        stateless-only, so it is rejected here for a keyed operator (:meth:`map_async` is the unordered
+        path; why: :meth:`~nautilus.core.operator.AsyncOneInputOperator.ordered`)."""
+        if not operator.ordered() and operator.key_columns() is not None:
+            raise ValueError(
+                f"apply_async: {type(operator).__name__} declares key_columns()="
+                f"{operator.key_columns()!r} (keyed state) but ordered()=False; unordered emission is "
+                "stateless-only, so a keyed async stage must stay ordered for a reproducible digest"
+            )
         keys = _norm(key_columns) if key_columns is not None else operator.key_columns()
         factory: Callable[[], object] = (
             (lambda: operator) if parallelism == 1 else (lambda: copy.deepcopy(operator))

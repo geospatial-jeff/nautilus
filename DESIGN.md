@@ -108,8 +108,11 @@ dimension. `nautilus.tensors` converts these to and from numpy.
    keyed state or telemetry from it *raises* — enforced at the state backend itself, so even a handle
    cached in `integrate` cannot slip a write past it. The engine — not the
    operator — owns concurrency, ordering, and the EOS barrier; the in-flight bound doubles as
-   the backpressure to upstream; and emission defaults to input order so a run stays reproducible
-   (unordered throughput is a planned addition). An async `write` is at-least-once — a failed job re-runs
+   the backpressure to upstream; and emission defaults to input order so a run stays reproducible. A
+   *stateless* transform may opt into **completion order** (`ordered=False`) for lower latency — a slow
+   batch no longer blocks a finished one — which is rejected for a keyed stage, because a conditional-on-
+   state `integrate` would make its row counts, and so the structural digest, depend on fetch timing; EOS
+   stays a hard barrier either way. An async `write` is at-least-once — a failed job re-runs
    whole (`Barrier`/exactly-once stays reserved), so it must be idempotent under replay. The compiler
    synthesizes the collecting `CollectSink` only when the leaf is *not* an `AsyncSink`, so an authored
    sink takes the leaf's place and every existing graph lowers byte-for-byte unchanged. The exact

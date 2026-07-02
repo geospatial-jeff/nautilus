@@ -203,6 +203,13 @@ def run(
     if head > 0 and len(result) > 0:
         total_rows = sum(b.num_rows for b in result)
         console.print(_preview_table(result[0], head, total_rows, len(result)))
+    elif head > 0 and len(result) == 0:
+        # No batches to preview — either an empty result, or a write-only run that ended in an async sink
+        # (its output went to an external store, so the summary's rows-in / telemetry is what to read).
+        console.print(
+            "[dim]no output rows to preview — an empty result, or a write-only run whose output "
+            "went to an external sink[/dim]"
+        )
 
     if show == "summary":
         s = report.summary
@@ -600,13 +607,10 @@ def dashboard(
     open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser."),
 ) -> None:
     """Run a PIPELINE and serve a live telemetry dashboard in the browser."""
-    from nautilus.telemetry.live import serve_local_chain
+    from nautilus.pipelines import is_graph_pipeline, load_graph_pipeline
+    from nautilus.telemetry.live import serve_graph, serve_local_chain
 
-    try:
-        source, transforms = load_pipeline(pipeline)
-    except (KeyError, ImportError, AttributeError) as e:
-        console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
-        raise typer.Exit(code=2) from None
+    config = TelemetryConfig(tier=_tier(telemetry), clock=SystemClock())
 
     def on_ready(url: str) -> None:
         console.print(
@@ -616,22 +620,31 @@ def dashboard(
             )
         )
 
-    config = TelemetryConfig(tier=_tier(telemetry), clock=SystemClock())
+    common = dict(
+        capacity=capacity,
+        telemetry=config,
+        host=host,
+        port=port,
+        linger=linger,
+        max_seconds=max_seconds,
+        open_browser=open_browser,
+        on_ready=on_ready,
+    )
     try:
-        asyncio.run(
-            serve_local_chain(
-                source,
-                transforms,
-                capacity=capacity,
-                telemetry=config,
-                host=host,
-                port=port,
-                linger=linger,
-                max_seconds=max_seconds,
-                open_browser=open_browser,
-                on_ready=on_ready,
-            )
-        )
+        # A graph pipeline (a join, or an async-stage example like sentinel2-ndvi) serves from its
+        # LogicalGraph via serve_graph; a linear (source, transforms) via serve_local_chain. Both run at
+        # parallelism 1 for the dashboard.
+        if is_graph_pipeline(pipeline):
+            coro = serve_graph(load_graph_pipeline(pipeline, 1), **common)  # type: ignore[arg-type]
+        else:
+            source, transforms = load_pipeline(pipeline)
+            coro = serve_local_chain(source, transforms, **common)  # type: ignore[arg-type]
+    except (KeyError, ImportError, AttributeError) as e:
+        console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
+        raise typer.Exit(code=2) from None
+
+    try:
+        asyncio.run(coro)
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
     except OSError as e:

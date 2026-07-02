@@ -504,16 +504,6 @@ def test_async_one_input_is_public_api() -> None:
     assert public is internal
 
 
-def test_ordered_false_is_rejected() -> None:
-    class _Unordered(AsyncMapBatch):
-        def ordered(self) -> bool:
-            return False
-
-    handle = source(_batches([1, 2])).apply_async(_Unordered(_double))
-    with pytest.raises((NotImplementedError, ExceptionGroup)):
-        asyncio.run(handle.run_async())
-
-
 def test_max_in_flight_must_be_positive() -> None:
     handle = source(_batches([1])).map_async(_double, max_in_flight=0)
     with pytest.raises((ValueError, ExceptionGroup)):
@@ -591,3 +581,153 @@ def test_async_one_input_builder_in_explicit_edge_graph() -> None:
     )
     out = asyncio.run(run_compiled(compile_graph(g)))
     assert sorted(r["v"] for r in out.to_pylist()) == [4, 8]  # *2 (async) then *2 (sync)
+
+
+# --- unordered mode (stateless only): completion-order emission ----------------------------------
+
+
+class _GatedMap(AsyncOneInputOperator):
+    """A stateless async map whose every fetch blocks on a per-value :class:`asyncio.Event`, so a test can
+    open the gates in a chosen order and force a deterministic *completion* order — proving unordered
+    emission follows completion, not input, order without relying on sleep timing."""
+
+    def __init__(
+        self, gates: dict[int, asyncio.Event], *, ordered: bool = False, max_in_flight: int = 8
+    ) -> None:
+        self._gates = gates
+        self._ordered = ordered
+        self._cap = max_in_flight
+
+    def max_in_flight(self) -> int:
+        return self._cap
+
+    def ordered(self) -> bool:
+        return self._ordered
+
+    async def fetch(self, batch: pa.RecordBatch) -> object:
+        await self._gates[batch.column("v")[0].as_py()].wait()
+        return batch
+
+    def integrate(
+        self, batch: pa.RecordBatch, result: object, ctx: OperatorContext, out: Collector
+    ) -> None:
+        out.emit(batch)
+
+
+class _UnorderedKeyedCount(AsyncKeyedCount):
+    """A keyed async enrich that (illegally) asks for completion-order emission — the case the digest-
+    reproducibility rule forbids, so the DSL and the actor must both reject it."""
+
+    def ordered(self) -> bool:
+        return False
+
+
+def test_unordered_stateless_matches_sync_map() -> None:
+    vals = list(range(24))
+    got = source(_batches(vals, per_batch=2)).map_async(_double, ordered=False).collect()
+    # Order is not asserted (that is the point of unordered); every doubled value is still present exactly
+    # once — a stateless map conserves rows whichever order the fetches finish in.
+    assert sorted(r["v"] for r in got) == [v * 2 for v in vals]
+
+
+def test_unordered_digest_is_stable_and_equals_ordered() -> None:
+    vals = list(range(30))
+
+    def digest(ordered: bool) -> str:
+        return (
+            source(_batches(vals, per_batch=3))
+            .map_async(_double, max_in_flight=8, ordered=ordered)
+            .run()
+            .telemetry.structural_digest()
+        )
+
+    # The structural digest hashes per-operator totals (rows/batches/EOS counts), which a stateless map
+    # leaves order-invariant — so unordered is reproducible across latency trials AND byte-for-byte equal
+    # to ordered. This is why unordered is safe to bench and sound only for a stateless stage.
+    assert digest(False) == digest(False)
+    assert digest(False) == digest(True)
+
+
+def test_unordered_in_flight_overlaps_and_is_bounded() -> None:
+    cap = 4
+    result = (
+        source(_batches(list(range(20)))).map_async(_double, max_in_flight=cap, ordered=False).run()
+    )
+    peak = _gauge_max(result.telemetry, "async.in_flight")
+    assert (
+        2 <= peak <= cap
+    )  # genuinely overlapping, never above the bound — the plan's peak assertion
+    assert _counter_total(result.telemetry, "async.requests") == 20
+    assert sorted(r["v"] for r in result.to_pylist()) == [v * 2 for v in range(20)]
+
+
+async def test_unordered_emits_in_completion_order() -> None:
+    # The head (v=0) is gated shut while later fetches finish, so unordered emits them first — the latency
+    # win a slow head would forfeit under ordered. Gates opened in a deliberately non-input order; each
+    # value must appear in exactly that order, proving completion-order (not input-order) emission.
+    vals = [0, 1, 2, 3]
+    gates = {v: asyncio.Event() for v in vals}
+    op = _GatedMap(gates, ordered=False)
+    in_chan, out_chan = InProcChannel(64), InProcChannel(64)
+    emitted: list[int] = []
+    progress = (
+        asyncio.Event()
+    )  # set on every emission, so the controller waits without busy-polling
+    release_order = [2, 0, 3, 1]
+
+    async def feed() -> None:
+        for v in vals:
+            await in_chan.send(Batch(pa.record_batch({"v": [v]})))
+        await in_chan.send(EOS_FRAME)
+
+    async def collect() -> None:
+        while True:
+            fr = await out_chan.recv()
+            if isinstance(fr, Batch):
+                emitted.append(fr.data.column("v")[0].as_py())
+                progress.set()
+            elif isinstance(fr, EOS):
+                return
+
+    async def controller() -> None:
+        for v in release_order:
+            gates[v].set()
+            while v not in emitted:  # wait for this release to drain before opening the next gate
+                progress.clear()
+                if v not in emitted:
+                    await progress.wait()
+
+    async def drive() -> None:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(
+                run_async_transform(
+                    op, OperatorContext("op0"), Mailbox([in_chan]), [Output([out_chan], Forward())]
+                )
+            )
+            tg.create_task(feed())
+            tg.create_task(collect())
+            tg.create_task(controller())
+
+    await asyncio.wait_for(drive(), timeout=5)
+    assert emitted == release_order  # completion order, not the input order [0, 1, 2, 3]
+
+
+def test_unordered_keyed_is_rejected_at_build() -> None:
+    # A keyed async operator asking for completion order is rejected when the Stream is built — the
+    # friendly, early failure before anything runs.
+    with pytest.raises(ValueError, match="stateless-only"):
+        source(_batches([1, 2])).apply_async(_UnorderedKeyedCount(), key_columns="k")
+
+
+def test_unordered_keyed_hand_built_ir_is_rejected() -> None:
+    # The actor backstops a hand-built IR that pairs an unordered operator with keyed state, bypassing the
+    # DSL's build-time check: run_async_transform raises rather than emit a non-reproducible digest.
+    g = LogicalGraph(
+        (
+            source_vertex("s", lambda: from_batches(pa.record_batch({"k": ["a", "b"]}))),
+            async_one_input("a", lambda: _UnorderedKeyedCount()),
+        ),
+        (LogicalEdge("s", "a", 0, ("k",)),),
+    )
+    with pytest.raises((ValueError, ExceptionGroup)):
+        asyncio.run(run_compiled(compile_graph(g)))

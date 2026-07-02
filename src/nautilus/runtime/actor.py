@@ -679,13 +679,16 @@ async def run_async_transform(
     """Drive an async one-input transform (the fetch/integrate contract, ``DESIGN.md`` mechanism 8) to
     completion, then forward EOS.
 
-    Realizing that contract means reordering out-of-order fetch completions back into input order — which
-    the sink's TaskGroup cannot, so this is a ``deque`` of slots the driver reaps as fetches complete:
+    Realizing that contract means handling out-of-order fetch completions — which the sink's TaskGroup
+    cannot — so this is a ``deque`` of slots the driver reaps as fetches complete:
 
-    * The ``deque`` holds DATA slots (a batch + its in-flight fetch task, in input order). The head is the
-      reorder point: ``integrate``/emit drains a DATA head once its fetch is done — yet later fetches keep
-      running behind it. A fetch's wall duration is read off its task when the actor reaps it, feeding
-      ``async.request_micros``.
+    * The ``deque`` holds DATA slots (a batch + its in-flight fetch task, in input order). Under **ordered**
+      emission (``ordered()`` default) the head is the reorder point: a DATA head drains once its fetch is
+      done, yet later fetches keep running behind it — so emission and the keyed-state fold stay in input
+      order and the structural digest is reproducible. Under **unordered** (``ordered()=False``,
+      stateless-only) any finished fetch drains as it completes, so a slow fetch does not pin finished ones
+      behind it (the throughput win under head-of-line blocking). A fetch's wall duration is read off its
+      task when the actor reaps it, feeding ``async.request_micros``.
     * ``max_in_flight`` bounds the buffer: ``buffered`` counts DATA slots and is decremented on pop, not on
       completion, so a slow head cannot let the buffer grow without limit; a full buffer stalls reads — the
       backpressure to upstream. ``awaiting`` separately counts fetches still in flight (the
@@ -733,10 +736,15 @@ async def run_async_transform(
     in_flight_gauge = recorder.gauge("async.in_flight", operator_id=op_id, subtask_index=sub)
     recorder.set_gauge("eos.expected", n, operator_id=op_id)
 
-    if not op.ordered():
-        raise NotImplementedError(
-            f"async transform {op_id!r} requested ordered()=False; only ordered (input-order) emission "
-            "is implemented — unordered is a planned addition"
+    ordered = op.ordered()
+    if not ordered and op.key_columns() is not None:
+        # Unordered (completion-order) emission is stateless-only: rows_out/batches_out are order-dependent
+        # when integrate emits conditionally on running keyed state, so an unordered keyed stage would have
+        # a non-reproducible structural digest. The DSL rejects this at build; this is the IR backstop.
+        raise ValueError(
+            f"async transform {op_id!r} requested ordered()=False with key_columns()="
+            f"{op.key_columns()!r}; unordered (completion-order) emission is stateless-only — a keyed "
+            "stage must stay ordered so its structural digest stays reproducible"
         )
     cap = op.max_in_flight()
     if cap < 1:
@@ -849,10 +857,37 @@ async def run_async_transform(
                 f"{type(frame).__name__}"
             )
 
+    async def _emit_data(slot: _Data) -> None:
+        """Integrate one finished fetch's result and flush downstream — the body the ordered and unordered
+        drains share. ``integrate`` runs inside the guard's open section on the actor task, so its
+        keyed-state critical section never spans a yield (``DESIGN.md`` mechanism 8)."""
+        result, dur_ns = slot.task.result()
+        requests.add(1)
+        req_micros.add(dur_ns // 1000)
+        p0 = perf_counter_ns()
+        with (
+            _capture(
+                recorder,
+                op_id,
+                opcls,
+                loc,
+                "integrate",
+                frame_kind="batch",
+                batch_rows=slot.batch.num_rows,
+            ),
+            ctx._state_section(),
+        ):
+            op.integrate(slot.batch, result, ctx, collector)
+        dt_ns = perf_counter_ns() - p0
+        proc_hist.observe(dt_ns // 1000)
+        proc_calls.add(1)
+        step.add_ns(dt_ns)
+        await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
+
     async def _drain_head() -> None:
-        """Emit ready data in input order, stopping at the first DATA slot whose fetch is still running (it
-        gates everything behind it). Bails on a failed fetch so the loop's fail-fast abort — which also
-        records it — surfaces the error, not a reap here."""
+        """Ordered drain (the default): emit ready data strictly in input order, stopping at the first slot
+        whose fetch is still running (it gates everything behind it). Bails on a failed fetch so the loop's
+        fail-fast abort — which also records it — surfaces the error, not a reap here."""
         nonlocal buffered
         while pending and not failed:
             head = pending[0]
@@ -860,37 +895,52 @@ async def run_async_transform(
                 break
             pending.popleft()
             buffered -= (
-                1  # on pop, not completion — keeps the buffer bounded (see the buffered note above)
+                1  # on pop, not completion — keeps the buffer bounded (see the buffered note)
             )
-            result, dur_ns = head.task.result()
-            requests.add(1)
-            req_micros.add(dur_ns // 1000)
-            p0 = perf_counter_ns()
-            with (
-                _capture(
-                    recorder,
-                    op_id,
-                    opcls,
-                    loc,
-                    "integrate",
-                    frame_kind="batch",
-                    batch_rows=head.batch.num_rows,
-                ),
-                ctx._state_section(),
-            ):
-                op.integrate(head.batch, result, ctx, collector)
-            dt_ns = perf_counter_ns() - p0
-            proc_hist.observe(dt_ns // 1000)
-            proc_calls.add(1)
-            step.add_ns(dt_ns)
-            await _flush(collector, outputs, rows_out, batches_out, bytes_out_arg)
+            await _emit_data(head)
+
+    def _first_ready_index() -> int | None:
+        """Index of the first *finished* fetch in the buffer (completion order, not input order — a later
+        slot whose fetch finished first comes out first), or ``None`` if every in-flight fetch is still
+        running. The buffer is bounded by ``max_in_flight`` so the scan is cheap. With watermarks removed
+        there is no mid-stream marker, so the whole buffer is drainable — the only barrier is terminal EOS.
+        """
+        for j, slot in enumerate(pending):
+            if slot.task.done():
+                return j
+        return None
+
+    async def _drain_unordered() -> None:
+        """Unordered drain (``ordered()=False``): emit any finished fetch as it completes, so a slow fetch
+        does not block a finished one behind it. Stateless-only (rejected for keyed stages before the loop),
+        so out-of-order integration touches no keyed state and cannot perturb the structural digest.
+        """
+        nonlocal buffered
+        while not failed:
+            j = _first_ready_index()
+            if j is None:
+                break
+            slot = pending[j]
+            del pending[j]
+            buffered -= 1  # on pop, not completion — keeps the buffer bounded
+            await _emit_data(slot)
+
+    def _can_drain_ordered() -> bool:
+        return bool(pending) and pending[0].task.done()
+
+    def _can_drain_unordered() -> bool:
+        return _first_ready_index() is not None
+
+    drain = _drain_head if ordered else _drain_unordered
+    can_drain = _can_drain_ordered if ordered else _can_drain_unordered
 
     def _ready() -> bool:
         """Whether the loop can make progress without blocking: a fetch failed, the armed read completed,
-        or the head fetch has finished."""
+        or the drain can advance (a finished fetch — the head under ordered, any slot under unordered).
+        """
         if failed or (get_task is not None and get_task.done()):
             return True
-        return bool(pending) and pending[0].task.done()
+        return can_drain()
 
     with _capture(recorder, op_id, opcls, loc, "open"), ctx._state_section():
         op.open(ctx)
@@ -941,7 +991,7 @@ async def run_async_transform(
                 get_task = None
                 _classify(i, frame)
 
-            await _drain_head()
+            await drain()
     finally:
         # Cancel every still-pending fetch (and the armed read) BEFORE awaiting them — gathering a
         # blocked fetch without cancelling it would hang teardown forever.
