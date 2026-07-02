@@ -48,28 +48,32 @@ starts from evidence, not a cold read.
 
 ## 2026-07-01 — Unordered async-transform emission (completion order) for stateless maps
 
-- **Commit:** `a943670`
+- **Commit:** `a943670` (unordered drain), reconciled onto the watermark-free loop in the PR #5 merge.
 - **Change:** `run_async_transform` (`src/nautilus/runtime/actor.py`) gained a completion-order drain
-  (`ordered=False`, stateless-only): it emits any finished fetch in the leading pre-barrier segment instead
-  of strictly at the deque head, so a slow fetch no longer pins reorder-buffer slots that finished tails
-  could reuse (a watermark/EOS stays a hard barrier). The ordered default is untouched — the two drains
-  share an extracted `_emit_data` body. Exposed as `AsyncMapBatch(ordered=)` / `.map_async(ordered=)`;
-  `bench-async-io` reads `NAUTILUS_BENCH_ORDERED`, and `async_io_wait` grows an opt-in
-  `NAUTILUS_BENCH_SLOW_EVERY`/`_FACTOR` latency skew so a benchmark can create head-of-line blocking.
-- **Impact (`nautilus bench bench-async-io`, median of 5 trials; Linux x86_64 · Python 3.12.3):** the win
-  *is* head-of-line blocking, so it appears only when the reorder buffer — not raw concurrency — is the
-  bottleneck: a small `max_in_flight` with occasional slow fetches. At `max_in_flight=4`, 2 ms base fetch,
-  one batch in 40 running 15× slower (400k rows), ordered **1,244,844 → unordered 2,021,356 rows/s
-  (1.62×)**. With a wide window that already overlaps everything (`max_in_flight=64`, uniform latency) there
-  is nothing to unblock and the two are within noise — so this is an opt-in throughput knob for
-  order-insensitive stages, not a free default.
+  (`ordered=False`, stateless-only): `_drain_unordered` emits any finished fetch — found by scanning the
+  reorder buffer in completion order (`_first_ready_index`) — instead of strictly at the deque head, so a
+  slow fetch no longer pins buffer slots that finished tails could reuse. With watermarks removed the only
+  barrier is terminal EOS, so the scan spans the whole buffer (there is no mid-stream marker). The ordered
+  default is untouched — the two drains share an extracted `_emit_data` body. Exposed as
+  `AsyncMapBatch(ordered=)` / `.map_async(ordered=)`; `bench-async-io` reads `NAUTILUS_BENCH_ORDERED`, and
+  `async_io_wait` grows an opt-in `NAUTILUS_BENCH_SLOW_EVERY`/`_FACTOR` latency skew so a benchmark can
+  create head-of-line blocking.
+- **Impact (`nautilus bench bench-async-io`, median of 7 trials; Linux x86_64 · Python 3.12.3):** the
+  driver of the win is latency *skew* — occasional slow fetches with finished ones queued behind them — not
+  the window size. With one batch in 40 running 15× slower (2 ms base fetch, 400k rows), unordered beats
+  ordered at every `max_in_flight`: **159k → 503k rows/s (+217%)** at 4, **633k → 1.81M (+186%)** at 16,
+  **1.96M → 4.93M (+151%)** at 64. The absolute gap widens with the window — both throughputs scale with it
+  — while the relative win stays ~1.5–2.2×. Under *uniform* latency there is nothing to unblock and the two
+  are within noise at any window, so this is an opt-in throughput knob for order-insensitive stages under
+  skewed I/O latency, not a free default.
 - **Regression:** the ordered path — the default, and the only path a keyed stage may use — is unchanged by
-  the `_emit_data` extraction: `bench-async` **39.0M → 41.1M rows/s (+5.4%)**, `bench-async-io` **38.5M →
-  38.3M (−0.5%)**, both inside the harness's 7% gate; digest `1bcf9d55d7ca` unchanged.
-- **Correctness:** structural digest **byte-identical** ordered vs unordered (`092e4b2fdea9` at the skew
-  config) — a stateless map's rows/batches/watermark counts are order-invariant, which is *why* unordered
-  is sound and stays out of the digest; a keyed stage is rejected up front. Full async-transform suite green
-  (completion-order, marker-barrier, in-flight-peak, digest-equals-ordered, keyed-rejection).
+  the `_emit_data` extraction: `nautilus bench-check` reports all ten pipelines within noise of the
+  baseline (`bench-async` −0.4%, `bench-async-io` −1.5%), every structural digest unchanged.
+- **Correctness:** structural digest **byte-identical** ordered vs unordered (`d709cc94b8` at the skew
+  config) — a stateless map's rows/batches/EOS counts are order-invariant, which is *why* unordered is
+  sound and stays out of the digest; a keyed stage is rejected up front (DSL build-time, with an actor
+  backstop for a hand-built IR). Full async-transform suite green (completion-order, in-flight-peak,
+  digest-equals-ordered, keyed build/IR rejection).
 
 ---
 
