@@ -38,3 +38,9 @@ def max_parallelism(plan: PhysicalPlan) -> int:
     workers ``0..max_parallelism-1`` ever host an instance, so a larger ``W`` would spawn empty workers.
     """
     return max(op.parallelism for op in plan.operators)
+
+
+def effective_worker_count(plan: PhysicalPlan, requested: int) -> int:
+    """How many workers a ``requested``-worker deploy actually runs on: capped at :func:`max_parallelism`,
+    since round-robin placement would leave any worker past that width with no instance to host."""
+    return min(requested, max_parallelism(plan))

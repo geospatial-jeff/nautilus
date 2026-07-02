@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import cloudpickle
 import numpy as np
 import pyarrow as pa
 
@@ -99,6 +100,11 @@ def _load_example_builder(filename: str, fn_name: str) -> Callable[..., Any]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # so the example's @dataclass can resolve its own annotations
     spec.loader.exec_module(module)
+    # A file-loaded example isn't importable by name, so cloudpickle would pickle its operators by
+    # reference to this synthetic module — and a spawned worker, which never loaded the file, couldn't
+    # resolve it (ModuleNotFoundError on plan load). Registering the module pickles those operators by
+    # value instead, so the plan is self-contained and runs on any worker, local or remote.
+    cloudpickle.register_pickle_by_value(module)
     builder: Callable[..., Any] = getattr(module, fn_name)
     return builder
 

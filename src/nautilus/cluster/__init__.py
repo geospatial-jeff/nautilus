@@ -7,8 +7,11 @@ mechanically by an import-linter contract: no data-path package (``nautilus.runt
 
 :func:`~nautilus.cluster.coordinator.deploy` is the entry point: it runs a :class:`LogicalGraph` across
 spawned worker processes and returns a :class:`RunResult`.
+:func:`~nautilus.cluster.dashboard.serve_cluster` wraps it to serve a live dashboard of the aggregated
+telemetry while the run is in flight.
 """
 
 from nautilus.cluster.coordinator import WorkerCrashed, WorkerError, deploy
+from nautilus.cluster.dashboard import serve_cluster
 
-__all__ = ["deploy", "WorkerError", "WorkerCrashed"]
+__all__ = ["deploy", "serve_cluster", "WorkerError", "WorkerCrashed"]

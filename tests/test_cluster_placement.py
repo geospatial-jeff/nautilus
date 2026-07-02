@@ -7,7 +7,7 @@ across workers. The map must be deterministic so a worker can recompute nothing 
 from __future__ import annotations
 
 from nautilus.api import LogicalVertex, linear_graph
-from nautilus.cluster.placement import max_parallelism, place
+from nautilus.cluster.placement import effective_worker_count, max_parallelism, place
 from nautilus.compile import compile_graph
 from nautilus.operators import InMemorySource, KeyedCount, Tokenize
 
@@ -51,3 +51,11 @@ def test_placement_is_deterministic() -> None:
 def test_max_parallelism_is_the_widest_operator() -> None:
     assert max_parallelism(_plan(5)) == 5
     assert max_parallelism(_plan(1)) == 1
+
+
+def test_effective_worker_count_caps_at_max_parallelism() -> None:
+    # More workers than the widest operator caps to that width (extra workers would sit idle); asking for
+    # the same or fewer passes through unchanged.
+    assert effective_worker_count(_plan(3), 8) == 3
+    assert effective_worker_count(_plan(3), 2) == 2
+    assert effective_worker_count(_plan(5), 5) == 5

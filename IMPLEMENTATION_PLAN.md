@@ -158,12 +158,16 @@ invariants are `DESIGN.md` mechanism 8; the loop mechanics are the `run_async_tr
 
 Self-describing telemetry, with analysis left outside the engine (see `DESIGN.md`). Every run ships a
 versioned `RunReport` — JSON, a token-budgeted markdown digest for agents, and the generated
-`docs/telemetry-reference.md` — and a live HTTP dashboard serves the same report mid-run. Reserved
-catalog keys fill in as Stages 1.5–4 land.
+`docs/telemetry-reference.md` — and a live HTTP dashboard serves the same report mid-run: single-process,
+or aggregated live across every worker in a distributed run (each worker pushes a snapshot to the
+coordinator on an interval, which rebuilds and serves the merged report). Reserved catalog keys fill in as
+Stages 1.5–4 land.
 
 ## CLI · **Done**
 
 `nautilus` (also `python -m nautilus`): `run`, `worker` (the multi-node worker daemon a coordinator
-dials), `examples`, `catalog`, `reference`, `dashboard` and `serve`, `version`, `task` (prints a
-ready-to-paste agent prompt), and the benchmarking pair `bench` / `bench-check` (median-of-trials
-throughput vs. a baseline; the CI regression gate). A pipeline is a built-in name or `module:function`.
+dials), `examples`, `catalog`, `reference`, `dashboard` (live telemetry — single-process, or
+`--workers`/`--daemons` to serve a distributed run's telemetry aggregated live) and `serve`, `version`,
+`task` (prints a ready-to-paste agent prompt), and the benchmarking pair `bench` / `bench-check`
+(median-of-trials throughput vs. a baseline; the CI regression gate). A pipeline is a built-in name or
+`module:function`.
