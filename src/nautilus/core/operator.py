@@ -225,7 +225,7 @@ class OperatorContext:
             yield KeyContext(key, namespace), value
 
     def clear_state(self, name: str, kctx: KeyContext) -> None:
-        """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key/window
+        """Clear one entry of this operator's named state (the keyed-handle ``clear`` for a key
         enumerated via :meth:`entries`)."""
         self.state_backend.clear(StateScope(self.operator_id, name, kctx.key, kctx.namespace))
 

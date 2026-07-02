@@ -5,7 +5,7 @@ fills a channel, grows state, or pushes a histogram past its low buckets. These 
 millions of rows with *no* real-time pacing (unlike :class:`~nautilus.demos.DemoStreamSource`, which
 sleeps), so a run is bound by the engine, not a timer — which is what a throughput measurement needs.
 
-Generation is **deterministic** — even the randomized-looking knobs (skew, jitter, varied values, nulls)
+Generation is **deterministic** — even the randomized-looking knobs (skew, varied values, nulls)
 draw from a fixed seed — so a re-run produces byte-identical input. That is what lets the dev loop trust a
 structural digest as an unchanged-output check across a code change, and read a throughput delta as a real
 effect rather than input noise.
@@ -38,7 +38,7 @@ import pyarrow as pa
 from nautilus.core.operator import Collector, OneInputOperator, SourceOperator
 from nautilus.core.records import EOS_FRAME, Batch, Frame
 
-#: Fixed seed for the realism knobs (skew, jitter, nulls, varied values). Fixed so a re-run reproduces
+#: Fixed seed for the realism knobs (skew, nulls, varied values). Fixed so a re-run reproduces
 #: byte-identical input even with randomized-looking data — the structural digest stays a usable gate.
 _SEED = 0x5EED
 

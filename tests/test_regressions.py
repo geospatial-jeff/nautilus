@@ -35,6 +35,25 @@ def test_in_memory_source_rejects_non_frame():
         InMemorySource(["not a frame"])  # type: ignore[list-item]
 
 
+# --- C56: a recorder may only write metrics of its own owner -----------------------------------
+
+
+def test_recorder_owner_gate():
+    from nautilus.telemetry import Owner, TelemetryConfig, Tier, make_recorder
+
+    cfg = TelemetryConfig(tier=Tier.COUNTERS)
+    engine = make_recorder(operator_id="op0", op_class="X", kind="one_input", config=cfg)
+    author = make_recorder(
+        operator_id="op0", op_class="X", kind="one_input", config=cfg, owner=Owner.AUTHOR
+    )
+    engine.counter("operator.rows_out", operator_id="op0", subtask_index=0)  # engine metric: ok
+    author.counter("io.wait_micros", operator_id="op0")  # author metric: ok
+    with pytest.raises(KeyError):  # author recorder may not write an engine key
+        author.counter("operator.rows_out", operator_id="op0", subtask_index=0)
+    with pytest.raises(KeyError):  # engine recorder may not write an author key
+        engine.counter("io.wait_micros", operator_id="op0")
+
+
 # --- C32: an empty key_columns tuple is rejected, not silently downgraded to keyless ------------
 
 
