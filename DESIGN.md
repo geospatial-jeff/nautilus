@@ -190,8 +190,10 @@ report layer, so report-building can never creep onto the hot path. Every reader
 recorders, which makes new readers additive: the returned `RunResult` and the live `nautilus dashboard`
 read the same recordings, and neither required any change to instrumentation. That single-registry reader
 model is per-process: a distributed run has one registry per worker, each worker ships its raw snapshots
-to the coordinator, and the coordinator builds the one report at the job boundary (the live dashboard
-stays single-process).
+to the coordinator, and the coordinator builds the one report at the job boundary. A live dashboard over a
+distributed run extends this without breaching the firewall: each worker additionally *pushes* a snapshot
+on an interval over the same control plane, and the coordinator rebuilds and serves the aggregated report
+as those arrive — still moving only control messages, so the data path stays scheduler-free.
 
 Every metric is declared once in a catalog — its name, unit, and a plain-language meaning — so a report
 describes itself and its schema cannot drift from the code; a lint rejects any meaning written as
