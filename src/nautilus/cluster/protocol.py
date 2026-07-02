@@ -12,7 +12,8 @@ necessity:
   so canonical extension types (e.g. ``fixed_shape_tensor``) survive the boundary.
 
 Recorder snapshots are ordinary pickled objects (plain numbers and tuples), carried inline in
-:class:`Done`. The coordinator aggregates them into the one report at the job boundary.
+:class:`Done` — and, when a live dashboard is attached, in each periodic :class:`Heartbeat` too. The
+coordinator aggregates them into the one report at the job boundary.
 """
 
 from __future__ import annotations
@@ -49,6 +50,18 @@ class Failed:
 
     worker_id: int
     traceback: str
+
+
+@dataclass(frozen=True)
+class Heartbeat:
+    """worker → coordinator: a mid-run reading of my recorders, pushed on an interval so a live dashboard
+    can show this run across every worker. Carries the same ``snapshots`` as :class:`Done`, but as a
+    periodic push rather than a terminal one. It is **not** a liveness signal — a missed heartbeat means
+    nothing, and a hard crash is still caught by the exit code (local) or the control-connection close
+    (remote), not by its absence."""
+
+    worker_id: int
+    snapshots: list[InstanceSnapshot]
 
 
 def encode_batches(batches: list[pa.RecordBatch]) -> bytes:

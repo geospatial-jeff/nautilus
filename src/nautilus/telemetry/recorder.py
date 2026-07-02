@@ -51,6 +51,11 @@ class TelemetryConfig:
     #: the config digest because it affects only non-deterministic, non-structural metrics.
     sample_system: bool = True
     sample_interval_micros: int = 500_000
+    #: When set, each worker pushes a snapshot of its recorders to the coordinator this often (micros), so
+    #: a distributed run can be dashboarded live; ``None`` leaves it off, so a run with no dashboard
+    #: attached ships nothing extra. Excluded from the config digest (like the ``sample_*`` fields): it
+    #: changes only how often telemetry is shipped, never a recorded value.
+    heartbeat_interval_micros: int | None = None
 
 
 DEFAULT_CONFIG = TelemetryConfig()
