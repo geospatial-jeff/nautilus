@@ -598,6 +598,15 @@ def dashboard(
     host: str = typer.Option("127.0.0.1", help="Bind host (use 0.0.0.0 to expose; needs auth)."),
     telemetry: str = typer.Option("counters", help="off | counters | events | full"),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
+    workers: int = typer.Option(
+        1, help="Worker processes to distribute across (>1 serves telemetry aggregated live)."
+    ),
+    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
+    daemons: str = typer.Option(
+        None,
+        help="host:port,... of worker daemons to dial (or $NAUTILUS_DAEMONS); serves multi-node instead "
+        "of spawning locally.",
+    ),
     linger: bool = typer.Option(
         True, "--linger/--no-linger", help="Keep serving after a bounded run."
     ),
@@ -606,45 +615,76 @@ def dashboard(
     ),
     open_browser: bool = typer.Option(False, "--open", help="Open the dashboard in a browser."),
 ) -> None:
-    """Run a PIPELINE and serve a live telemetry dashboard in the browser."""
+    """Run a PIPELINE and serve a live telemetry dashboard in the browser. With --workers >1 (or
+    --daemons) it runs distributed and serves the telemetry aggregated across every worker."""
+    from nautilus.driver.pipeline import graph_from_pipeline
     from nautilus.pipelines import is_graph_pipeline, load_graph_pipeline
-    from nautilus.telemetry.live import serve_graph, serve_local_chain
 
     config = TelemetryConfig(tier=_tier(telemetry), clock=SystemClock())
+    roster = _parse_daemons(daemons)
 
-    def on_ready(url: str) -> None:
-        console.print(
-            Panel.fit(
-                f"live dashboard at [bold]{url}[/bold]\nrunning '{pipeline}' · press Ctrl-C to stop",
-                title="nautilus dashboard",
-            )
-        )
-
-    common = dict(
-        capacity=capacity,
-        telemetry=config,
-        host=host,
-        port=port,
-        linger=linger,
-        max_seconds=max_seconds,
-        open_browser=open_browser,
-        on_ready=on_ready,
-    )
+    # Build one LogicalGraph at the requested parallelism — a linear (source, transforms) pipeline lowers
+    # to a graph exactly as serve_graph runs it — so the single-process and distributed paths serve the
+    # identical topology.
     try:
-        # A graph pipeline (a join, or an async-stage example like sentinel2-ndvi) serves from its
-        # LogicalGraph via serve_graph; a linear (source, transforms) via serve_local_chain. Both run at
-        # parallelism 1 for the dashboard.
         if is_graph_pipeline(pipeline):
-            coro = serve_graph(load_graph_pipeline(pipeline, 1), **common)  # type: ignore[arg-type]
+            graph = load_graph_pipeline(pipeline, parallelism)
         else:
             source, transforms = load_pipeline(pipeline)
-            coro = serve_local_chain(source, transforms, **common)  # type: ignore[arg-type]
+            graph = graph_from_pipeline(source, transforms, parallelism)
     except (KeyError, ImportError, AttributeError) as e:
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
 
+    distributed = workers > 1 or roster is not None
+
+    def on_ready(url: str) -> None:
+        where = (
+            f"across {len(roster)} daemons"
+            if roster
+            else f"across {workers} workers" if distributed else "single process"
+        )
+        console.print(
+            Panel.fit(
+                f"live dashboard at [bold]{url}[/bold]\nrunning '{pipeline}' ({where}) · "
+                "press Ctrl-C to stop",
+                title="nautilus dashboard",
+            )
+        )
+
     try:
-        asyncio.run(coro)
+        if distributed:
+            from nautilus.cluster import serve_cluster
+
+            serve_cluster(
+                graph,
+                num_workers=workers,
+                daemons=roster,
+                capacity=capacity,
+                telemetry=config,
+                host=host,
+                port=port,
+                linger=linger,
+                max_seconds=max_seconds,
+                open_browser=open_browser,
+                on_ready=on_ready,
+            )
+        else:
+            from nautilus.telemetry.live import serve_graph
+
+            asyncio.run(
+                serve_graph(
+                    graph,
+                    capacity=capacity,
+                    telemetry=config,
+                    host=host,
+                    port=port,
+                    linger=linger,
+                    max_seconds=max_seconds,
+                    open_browser=open_browser,
+                    on_ready=on_ready,
+                )
+            )
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
     except OSError as e:

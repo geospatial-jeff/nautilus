@@ -68,6 +68,29 @@ def test_catalog_markdown_lists_every_metric():
     assert "Nautilus telemetry reference" in result.stdout
 
 
+def test_dashboard_single_process_serves_and_exits():
+    # --no-linger + a bounded pipeline: serve, run to completion, exit on its own. COLUMNS keeps the Rich
+    # panel from wrapping the phrases asserted below.
+    result = runner.invoke(
+        app, ["dashboard", "wordcount", "--no-linger", "--port", "0"], env={"COLUMNS": "200"}
+    )
+    assert result.exit_code == 0, result.output
+    assert "live dashboard" in result.stdout
+    assert "single process" in result.stdout
+
+
+def test_dashboard_distributed_serves_across_workers():
+    # --workers 2 routes through serve_cluster: it spawns two workers, serves the aggregated report, then
+    # exits on its own with --no-linger. The "across 2 workers" note proves it took the distributed path.
+    result = runner.invoke(
+        app,
+        ["dashboard", "wordcount", "--workers", "2", "--no-linger", "--port", "0"],
+        env={"COLUMNS": "200"},
+    )
+    assert result.exit_code == 0, result.output
+    assert "across 2 workers" in result.stdout
+
+
 def test_version():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0

@@ -131,7 +131,8 @@ nautilus reference [--write]
 
 ### dashboard
 
-Run a pipeline and serve a live telemetry dashboard over HTTP.
+Run a pipeline and serve a live telemetry dashboard over HTTP. With `--workers >1` (or `--daemons`) it
+runs distributed and serves the telemetry aggregated across every worker — one dashboard for the whole run.
 
 ```
 nautilus dashboard PIPELINE [options]
@@ -144,11 +145,15 @@ nautilus dashboard PIPELINE [options]
 | `--host` | `127.0.0.1` | bind host (`0.0.0.0` exposes it; add authentication) |
 | `--telemetry` | `counters` | `off` / `counters` / `events` / `full` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
+| `--workers` | `1` | worker processes to distribute across (`>1` serves telemetry aggregated live) |
+| `--parallelism` | `1` | instances per operator (keyed ops shuffle by key) |
+| `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); serves multi-node instead of spawning locally |
 | `--linger` / `--no-linger` | `--linger` | keep serving after a bounded run completes |
 | `--max-seconds` | none | stop after N seconds (caps unbounded runs) |
 | `--open` | `false` | open the dashboard in a browser |
 
-Example: `uv run nautilus dashboard image-embed --open`
+Example (single process): `uv run nautilus dashboard image-embed --open`
+Example (distributed): `uv run nautilus dashboard wordcount --workers 2 --parallelism 2`
 
 ### serve
 
