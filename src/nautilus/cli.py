@@ -66,6 +66,13 @@ def _tier(name: str) -> Tier:
         raise typer.BadParameter(f"telemetry must be one of: {', '.join(_TIERS)}") from None
 
 
+def _resolve_parallelism(parallelism: int | None, workers: int) -> int:
+    """``--parallelism`` defaults to ``--workers``: asking for N workers should mean N-way work, or the
+    surplus would be capped away (deploy warns when it is). Pass ``--parallelism`` explicitly only to
+    decouple them — fan out wider than the workers, or run parallel in a single process."""
+    return workers if parallelism is None else parallelism
+
+
 def _run(
     pipeline: str,
     tier: Tier,
@@ -185,10 +192,11 @@ def run(
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     head: int = typer.Option(5, help="Rows of pipeline output to preview."),
     workers: int = typer.Option(
-        1,
-        help="Worker processes to deploy across (>1 spawns and distributes; capped at --parallelism).",
+        1, help="Worker processes to deploy across (>1 spawns and distributes)."
     ),
-    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
+    parallelism: int | None = typer.Option(
+        None, help="Instances per operator (keyed ops shuffle by key); defaults to --workers."
+    ),
     daemons: str = typer.Option(
         None,
         help="host:port,... of worker daemons to dial (or $NAUTILUS_DAEMONS); runs multi-node instead "
@@ -196,9 +204,12 @@ def run(
     ),
 ) -> None:
     """Run a PIPELINE and show its output and telemetry."""
-    result = _run(
-        pipeline, _tier(telemetry), capacity, workers, parallelism, _parse_daemons(daemons)
-    )
+    roster = _parse_daemons(daemons)
+    # In the daemon path the roster length is the worker count (deploy ignores --workers there), so default
+    # --parallelism to whichever actually sets the width.
+    requested = len(roster) if roster else workers
+    parallelism = _resolve_parallelism(parallelism, requested)
+    result = _run(pipeline, _tier(telemetry), capacity, workers, parallelism, roster)
     report = result.telemetry
 
     if head > 0 and len(result) > 0:
@@ -443,8 +454,10 @@ def bench(
     rows: int = typer.Option(DEFAULT_ROWS, help="bench-* total rows (ignored by fixed pipelines)."),
     batch: int = typer.Option(DEFAULT_BATCH, help="bench-* rows per batch."),
     keys: int = typer.Option(DEFAULT_KEYS, help="bench-* distinct keys."),
-    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
-    workers: int = typer.Option(1, help="Worker processes (>1 deploys; capped at --parallelism)."),
+    parallelism: int | None = typer.Option(
+        None, help="Instances per operator (keyed ops shuffle by key); defaults to --workers."
+    ),
+    workers: int = typer.Option(1, help="Worker processes (>1 deploys across them)."),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     telemetry: str = typer.Option(
         "counters", help="Tier to measure at (>= counters; the digest needs it)."
@@ -466,6 +479,7 @@ def bench(
     PERFORMANCE_CHANGELOG.md entry records."""
     key = label or pipeline
     tier = _tier(telemetry)
+    parallelism = _resolve_parallelism(parallelism, workers)
     if tier <= Tier.OFF:
         raise typer.BadParameter(
             "bench needs telemetry >= counters (the structural digest needs it)"
@@ -600,11 +614,11 @@ def dashboard(
     telemetry: str = typer.Option("counters", help="off | counters | events | full"),
     capacity: int = typer.Option(16, help="Channel capacity (backpressure bound)."),
     workers: int = typer.Option(
-        1,
-        help="Worker processes to distribute across (>1 serves telemetry aggregated live; capped at "
-        "--parallelism).",
+        1, help="Worker processes to distribute across (>1 serves telemetry aggregated live)."
     ),
-    parallelism: int = typer.Option(1, help="Instances per operator (keyed ops shuffle by key)."),
+    parallelism: int | None = typer.Option(
+        None, help="Instances per operator (keyed ops shuffle by key); defaults to --workers."
+    ),
     daemons: str = typer.Option(
         None,
         help="host:port,... of worker daemons to dial (or $NAUTILUS_DAEMONS); serves multi-node instead "
@@ -629,8 +643,11 @@ def dashboard(
 
     config = TelemetryConfig(tier=_tier(telemetry), clock=SystemClock())
     roster = _parse_daemons(daemons)
+    distributed = workers > 1 or roster is not None
+    requested = len(roster) if roster else workers
+    parallelism = _resolve_parallelism(parallelism, requested)
 
-    # Build one LogicalGraph at the requested parallelism — a linear (source, transforms) pipeline lowers
+    # Build one LogicalGraph at the resolved parallelism — a linear (source, transforms) pipeline lowers
     # to a graph exactly as serve_graph runs it — so the single-process and distributed paths serve the
     # identical topology.
     try:
@@ -643,8 +660,6 @@ def dashboard(
         console.print(f"[red]could not load pipeline[/red] {pipeline!r}: {e}")
         raise typer.Exit(code=2) from None
 
-    distributed = workers > 1 or roster is not None
-    requested = len(roster) if roster else workers
     effective = requested
     if distributed:
         # Compile once to learn how many workers the plan can actually fill; deploy caps to this (extra

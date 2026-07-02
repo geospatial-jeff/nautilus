@@ -83,22 +83,11 @@ def test_dashboard_single_process_serves_and_exits():
 
 
 def test_dashboard_distributed_serves_across_workers():
-    # --workers 2 --parallelism 2 routes through serve_cluster: two *real* workers (parallelism must match,
-    # or deploy caps the count), serving the aggregated report, then exiting on its own with --no-linger.
+    # --workers 2 with no --parallelism: parallelism now defaults to --workers, so this is a *real*
+    # 2-worker run (not capped to 1), serving the aggregated report, then exiting with --no-linger.
     result = runner.invoke(
         app,
-        [
-            "dashboard",
-            "wordcount",
-            "--workers",
-            "2",
-            "--parallelism",
-            "2",
-            "--no-linger",
-            "--no-open",
-            "--port",
-            "0",
-        ],
+        ["dashboard", "wordcount", "--workers", "2", "--no-linger", "--no-open", "--port", "0"],
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
@@ -107,16 +96,34 @@ def test_dashboard_distributed_serves_across_workers():
 
 @pytest.mark.filterwarnings("ignore:requested")  # the cap warning is asserted in test_cluster_scale
 def test_dashboard_reports_capped_worker_count_honestly():
-    # The confusing case, made honest: asking for more workers than the pipeline's parallelism must not
-    # claim workers that don't exist. wordcount at the default parallelism 1 fills one worker, so three
-    # requested reads as "1 of 3", not "3".
+    # Explicitly setting --parallelism below --workers still caps, and says so: parallelism 1 fills one
+    # worker, so three requested reads as "1 of 3". (Without --parallelism it would default to 3 — no cap.)
     result = runner.invoke(
         app,
-        ["dashboard", "wordcount", "--workers", "3", "--no-linger", "--no-open", "--port", "0"],
+        [
+            "dashboard",
+            "wordcount",
+            "--workers",
+            "3",
+            "--parallelism",
+            "1",
+            "--no-linger",
+            "--no-open",
+            "--port",
+            "0",
+        ],
         env={"COLUMNS": "200"},
     )
     assert result.exit_code == 0, result.output
     assert "across 1 of 3 workers" in result.stdout
+
+
+def test_parallelism_defaults_to_workers():
+    from nautilus.cli import _resolve_parallelism
+
+    assert _resolve_parallelism(None, 3) == 3  # unset → N workers means N-way work
+    assert _resolve_parallelism(1, 3) == 1  # explicit wins — the decouple case
+    assert _resolve_parallelism(None, 1) == 1
 
 
 def test_version():

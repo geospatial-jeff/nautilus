@@ -48,13 +48,13 @@ nautilus run PIPELINE [options]
 | `--save PATH` | none | write the full JSON report to `PATH` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
 | `--head` | `5` | rows of pipeline output to preview |
-| `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes; capped at `--parallelism`, since a worker past the widest operator would sit idle) |
-| `--parallelism` | `1` | instances per operator (keyed operators shuffle by key) |
+| `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
+| `--parallelism` | `--workers` | instances per operator (keyed operators shuffle by key); defaults to `--workers`, so `--workers N` is N-way. Set it below `--workers` and the surplus workers are capped away (with a warning) |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); runs multi-node instead of spawning locally |
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`
-Distributed (one machine): `uv run nautilus run wordcount --workers 2 --parallelism 2`
-Multi-node (dial daemons): `uv run nautilus run wordcount --parallelism 2 --daemons worker-0:9000,worker-1:9000`
+Distributed (one machine): `uv run nautilus run wordcount --workers 2` (parallelism follows → 2-way across 2 processes)
+Multi-node (dial daemons): `uv run nautilus run wordcount --daemons worker-0:9000,worker-1:9000`
 
 ### worker
 
@@ -145,15 +145,15 @@ nautilus dashboard PIPELINE [options]
 | `--host` | `127.0.0.1` | bind host (`0.0.0.0` exposes it; add authentication) |
 | `--telemetry` | `counters` | `off` / `counters` / `events` / `full` |
 | `--capacity` | `16` | channel capacity (backpressure bound) |
-| `--workers` | `1` | worker processes to distribute across (`>1` serves telemetry aggregated live; capped at `--parallelism`) |
-| `--parallelism` | `1` | instances per operator (keyed ops shuffle by key) |
+| `--workers` | `1` | worker processes to distribute across (`>1` serves telemetry aggregated live) |
+| `--parallelism` | `--workers` | instances per operator (keyed ops shuffle by key); defaults to `--workers` |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); serves multi-node instead of spawning locally |
 | `--linger` / `--no-linger` | `--linger` | keep serving after a bounded run completes |
 | `--max-seconds` | none | stop after N seconds (caps unbounded runs) |
 | `--open` / `--no-open` | `--open` | open the dashboard in a browser (best-effort; a no-op on a headless host) |
 
 Example (single process): `uv run nautilus dashboard image-embed --open`
-Example (distributed): `uv run nautilus dashboard wordcount --workers 2 --parallelism 2`
+Example (distributed): `uv run nautilus dashboard wordcount --workers 2`
 
 ### serve
 
@@ -195,8 +195,8 @@ nautilus bench PIPELINE [options]
 | `--trials` | `5` | measured runs (median + IQR over these) |
 | `--warmup` | `1` | discarded warmup runs |
 | `--rows` / `--batch` / `--keys` / `--wm-every` | per env | synthetic-source scale |
-| `--parallelism` | `1` | instances per operator |
-| `--workers` | `1` | worker processes (>1 deploys; capped at `--parallelism`) |
+| `--parallelism` | `--workers` | instances per operator; defaults to `--workers` |
+| `--workers` | `1` | worker processes (>1 deploys across them) |
 | `--capacity` | `16` | channel capacity |
 | `--telemetry` | `counters` | tier (must be ≥ `counters`) |
 | `--json` | `false` | print the result as JSON |

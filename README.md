@@ -58,7 +58,7 @@ directly. See [`docs/dsl-reference.md`](docs/dsl-reference.md) for every combina
 nautilus examples                 # list runnable example pipelines
 nautilus run wordcount            # run one; prints its output and a telemetry summary
 nautilus run wordcount --parallelism 3      # run each operator as 3 instances (keyed ops shuffle by key)
-nautilus run wordcount --workers 2 --parallelism 2   # spread across 2 worker processes
+nautilus run wordcount --workers 2          # spread 2-way across 2 worker processes (parallelism follows --workers)
 nautilus run wordcount --show markdown   # the telemetry digest formatted for an AI agent
 nautilus run wordcount --save report.json
 nautilus catalog                  # every metric nautilus records, with its meaning
