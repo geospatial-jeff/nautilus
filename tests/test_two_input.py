@@ -2,9 +2,9 @@
 
 These run a hand-built join graph (two sources into one `two_input` vertex on ports 0 and 1) through
 `run_plan`, so they exercise `run_two_input`, the port-ordered mailbox, and the executor's list-valued
-edge wiring together — left/right dispatch, the `min(left, right)` watermark, and EOS only after both
-sides close. The concrete join operator lands in a later sub-stage; here a stub two-input operator
-isolates the actor/executor behavior.
+edge wiring together — left/right dispatch and EOS only after both sides close. The concrete join
+operator lands in a later sub-stage; here a stub two-input operator isolates the actor/executor
+behavior.
 """
 
 from __future__ import annotations
@@ -15,10 +15,9 @@ import pyarrow as pa
 
 from nautilus.api import LogicalEdge, LogicalGraph, one_input, source, two_input
 from nautilus.core.operator import Collector, OperatorContext, TwoInputOperator
-from nautilus.core.records import WATERMARK_MAX
 from nautilus.driver.run import run_plan
 from nautilus.operators import InMemorySource, MapBatch
-from nautilus.testing import EOS_FRAME, data, wm
+from nautilus.testing import EOS_FRAME, data
 
 
 def _tag(batch: pa.RecordBatch, side: str) -> pa.RecordBatch:
@@ -37,9 +36,10 @@ class _SideTagger(TwoInputOperator):
         out.emit(_tag(batch, "R"))
 
 
-class _WatermarkLog(TwoInputOperator):
-    """Records the combined watermark at each on_watermark fire and emits the sequence at end of stream —
-    the observable shape of `min(left, right)` and the terminal WATERMARK_MAX flush."""
+class _EosLog(TwoInputOperator):
+    """Records each on_eos fire and emits the running sequence — the observable proof that the terminal
+    flush fires exactly once, and only after both inputs have closed (never once per input's EOS).
+    """
 
     def open(self, ctx: OperatorContext) -> None:
         self._fires: list[int] = []
@@ -48,14 +48,13 @@ class _WatermarkLog(TwoInputOperator):
 
     def process_right(self, batch: pa.RecordBatch, out: Collector) -> None: ...
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        self._fires.append(t)
-        if t == WATERMARK_MAX:
-            out.emit(pa.record_batch({"wm": pa.array(self._fires, pa.int64())}))
+    def on_eos(self, out: Collector) -> None:
+        self._fires.append(len(self._fires) + 1)
+        out.emit(pa.record_batch({"fires": pa.array(self._fires, pa.int64())}))
 
 
 class _CountBoth(TwoInputOperator):
-    """Counts rows seen on each side, emitting the totals only at the terminal watermark — so a non-zero,
+    """Counts rows seen on each side, emitting the totals only at end of stream (on_eos) — so a non-zero,
     correct count proves both inputs were fully drained before the all-inputs-EOS flush."""
 
     def open(self, ctx: OperatorContext) -> None:
@@ -68,9 +67,8 @@ class _CountBoth(TwoInputOperator):
     def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
         self._right += batch.num_rows
 
-    def on_watermark(self, t: int, out: Collector) -> None:
-        if t == WATERMARK_MAX:
-            out.emit(pa.record_batch({"left": [self._left], "right": [self._right]}))
+    def on_eos(self, out: Collector) -> None:
+        out.emit(pa.record_batch({"left": [self._left], "right": [self._right]}))
 
 
 async def test_two_input_dispatches_by_port() -> None:
@@ -90,39 +88,20 @@ async def test_two_input_dispatches_by_port() -> None:
 
 
 async def test_two_input_eos_after_both_inputs_close() -> None:
-    # Equal watermarks on both sides: the combined advances to 50 only once both have reported, and
-    # neither EOS can push it past 50 until the other side is also closed — so the sequence is exactly
-    # [50, WATERMARK_MAX] regardless of how the two inputs interleave.
+    # on_eos is the single terminal flush: the actor calls it exactly once, and only after BOTH inputs
+    # have sent their data and EOS — one side closing must not fire it early. So a batch on each side
+    # yields exactly one fire, regardless of how the two inputs interleave.
     g = LogicalGraph(
         vertices=(
-            source("L", lambda: InMemorySource([wm(50), EOS_FRAME])),
-            source("R", lambda: InMemorySource([wm(50), EOS_FRAME])),
-            two_input("j", lambda: _WatermarkLog()),
+            source("L", lambda: InMemorySource([data(v=[1, 2]), EOS_FRAME])),
+            source("R", lambda: InMemorySource([data(v=[3]), EOS_FRAME])),
+            two_input("j", lambda: _EosLog()),
         ),
         edges=(LogicalEdge("L", "j", 0), LogicalEdge("R", "j", 1)),
     )
     rows = (await run_plan(g)).to_pylist()
-    assert [r["wm"] for r in rows] == [50, WATERMARK_MAX]
-
-
-async def test_two_input_watermark_is_the_min_of_the_two_inputs() -> None:
-    # Asymmetric watermarks: left's (50) is higher than right's (30). Before either EOS, both sides have
-    # reported their real watermarks, so the combined — a MIN over inputs — first fires at the lower 30,
-    # never the higher 50. That first fire distinguishes min from a max- or left-only combine. (The exact
-    # later sequence depends on EOS interleaving, so we assert only the discriminating, deterministic
-    # facts: first fire = the min, monotonic, terminal WATERMARK_MAX.)
-    g = LogicalGraph(
-        vertices=(
-            source("L", lambda: InMemorySource([wm(50), EOS_FRAME])),
-            source("R", lambda: InMemorySource([wm(30), EOS_FRAME])),
-            two_input("j", lambda: _WatermarkLog()),
-        ),
-        edges=(LogicalEdge("L", "j", 0), LogicalEdge("R", "j", 1)),
-    )
-    fires = [r["wm"] for r in (await run_plan(g)).to_pylist()]
-    assert fires[0] == 30  # min(50, 30), not the max
-    assert fires == sorted(fires)  # monotonic non-decreasing
-    assert fires[-1] == WATERMARK_MAX  # terminal flush only after BOTH inputs EOS
+    # exactly one fire, emitted after both inputs closed — never once per input's EOS
+    assert [r["fires"] for r in rows] == [1]
 
 
 async def test_two_input_drains_a_parallel_left_before_flush() -> None:

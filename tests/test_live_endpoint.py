@@ -8,15 +8,14 @@ import urllib.error
 import urllib.request
 
 from nautilus.demos import DemoStreamSource
-from nautilus.operators import KeyedTumblingSum
+from nautilus.operators import KeyedCount
 from nautilus.telemetry.catalog import Tier
 from nautilus.telemetry.live import serve_local_chain
 from nautilus.telemetry.recorder import TelemetryConfig
-from nautilus.windows import TumblingEventTimeWindows
 
 
-def _window_op():
-    return KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(1_000_000))
+def _count_op():
+    return KeyedCount("key")
 
 
 def _get(url: str) -> tuple[int, bytes]:
@@ -38,7 +37,7 @@ async def _serve(src, *, linger, tier=Tier.COUNTERS):
     task = asyncio.create_task(
         serve_local_chain(
             src,
-            [_window_op()],
+            [_count_op()],
             telemetry=TelemetryConfig(tier=tier, sample_interval_micros=10_000),
             linger=linger,
             port=0,

@@ -3,8 +3,8 @@ in ``fetch`` (run as bounded, overlapping concurrent tasks) and whose result is 
 emitted in a synchronous ``integrate``, in input order.
 
 The "external I/O" here is an ``asyncio.sleep`` plus an in-process transform, so these run hermetically:
-what is exercised is the engine's driver — ordered emission under out-of-order completion, the watermark/
-EOS barriers, the in-flight bound, fail-fast, the per-request timeout, the state guard, and keyed
+what is exercised is the engine's driver — ordered emission under out-of-order completion, the EOS
+barrier, the in-flight bound, fail-fast, the per-request timeout, the state guard, and keyed
 co-partitioning — not any real network.
 """
 
@@ -25,7 +25,7 @@ from nautilus.api.graph import source as source_vertex
 from nautilus.compile import compile_graph
 from nautilus.compile.lower import SINK_ID
 from nautilus.core.operator import Collector, StateAccessError
-from nautilus.core.records import EOS, EOS_FRAME, WATERMARK_MAX, Batch, Watermark
+from nautilus.core.records import EOS, EOS_FRAME, Batch
 from nautilus.driver.run import run_compiled
 from nautilus.operators import MapBatch, _add, from_batches
 from nautilus.runtime.actor import Output, run_async_transform
@@ -104,9 +104,7 @@ class AsyncKeyedCount(AsyncOneInputOperator):
         for k in result:  # type: ignore[attr-defined]
             ctx.reducing_state(self._STATE, KeyContext((k,)), _add).add(1)
 
-    def on_watermark(self, t: int, ctx: OperatorContext, out: Collector) -> None:
-        if t < WATERMARK_MAX:
-            return
+    def on_eos(self, ctx: OperatorContext, out: Collector) -> None:
         keys: list[object] = []
         totals: list[int] = []
         fired: list[KeyContext] = []
@@ -167,9 +165,9 @@ def test_digest_is_stable_across_latency_trials() -> None:
         )
 
     # Latency-driven nondeterminism (out-of-order fetch completion) must not reach the structural digest:
-    # ordered emission keeps rows/batches/watermark counts reproducible across trials. (The digest differs
-    # from the sync map's by design — it includes op_class/kind — so output equality is asserted
-    # separately in test_ordered_map_async_equals_sync_map.)
+    # ordered emission keeps row and batch counts reproducible across trials. (The digest differs from the
+    # sync map's by design — it includes op_class/kind — so output equality is asserted separately in
+    # test_ordered_map_async_equals_sync_map.)
     assert digest_async() == digest_async()
 
 
@@ -222,12 +220,12 @@ def test_keyed_async_co_partitions_across_instances() -> None:
     assert len(set(owner.values())) > 1  # both instances were actually used
 
 
-# --- EOS / watermark ordering (direct drive, asserting order not just counts) -------------------
+# --- EOS ordering (direct drive, asserting order not just counts) -------------------------------
 
 
 async def _drive_and_capture(op: AsyncOneInputOperator, frames: list[object]) -> list[object]:
     """Drive a transform over one input and return the exact output FRAME sequence (data + control), so a
-    test can assert a watermark never overtakes the data before it and EOS comes last."""
+    test can assert the output frames stay in input order and EOS comes last."""
     in_chan = InProcChannel(256)
     out_chan = InProcChannel(256)
     captured: list[object] = []
@@ -254,55 +252,24 @@ async def _drive_and_capture(op: AsyncOneInputOperator, frames: list[object]) ->
     return captured
 
 
-async def test_eos_and_watermarks_drain_in_order() -> None:
-    # data1's fetch is slower than data2's, so data2 completes first — yet ordered emission + the marker
-    # barrier must yield Batch(1*2), Watermark(5), Batch(2*2), Watermark(10), then EOS. A watermark never
-    # overtakes the data before it, and the terminal close emits no spurious Watermark(WATERMARK_MAX): it
-    # fires on_watermark locally and signals completion with EOS, exactly like the synchronous loop.
-    frames = [
-        Batch(pa.record_batch({"v": [1]})),
-        Watermark(5),
-        Batch(pa.record_batch({"v": [2]})),
-        Watermark(10),
-        EOS_FRAME,
-    ]
-    out = await _drive_and_capture(AsyncMapBatch(_double), frames)
-    kinds = [
-        (
-            ("B", o.data.column("v")[0].as_py())
-            if isinstance(o, Batch)
-            else ("W", o.t) if isinstance(o, Watermark) else ("EOS", None)
-        )
-        for o in out
-    ]
-    assert kinds == [("B", 2), ("W", 5), ("B", 4), ("W", 10), ("EOS", None)]
-    assert WATERMARK_MAX not in [o.t for o in out if isinstance(o, Watermark)]
-
-
 def _frame_seq(out: list[object]) -> list[object]:
     return [
-        (
-            ("B", tuple(o.data.column("v").to_pylist()))
-            if isinstance(o, Batch)
-            else ("W", o.t) if isinstance(o, Watermark) else ("EOS", None)
-        )
+        ("B", tuple(o.data.column("v").to_pylist())) if isinstance(o, Batch) else ("EOS", None)
         for o in out
     ]
 
 
 async def test_async_loop_matches_sync_loop_frame_for_frame() -> None:
-    # The strong oracle: the async transform's full OUTPUT frame sequence (data + watermarks + EOS) is
-    # identical to the synchronous MapBatch loop's over the same watermark-rich input — so the async loop
-    # forwards watermarks/EOS exactly as the proven loop, not merely the same row count.
+    # The strong oracle: the async transform's full OUTPUT frame sequence (data + EOS) is identical to the
+    # synchronous MapBatch loop's over the same input — so the async loop forwards batches and EOS exactly
+    # as the proven loop, and in input order, not merely the same row count.
     from nautilus.operators import MapBatch
     from nautilus.runtime.actor import run_transform
 
     frames = [
         Batch(pa.record_batch({"v": [3]})),
         Batch(pa.record_batch({"v": [1]})),
-        Watermark(7),
         Batch(pa.record_batch({"v": [2]})),
-        Watermark(9),
         Batch(pa.record_batch({"v": [5]})),
         EOS_FRAME,
     ]

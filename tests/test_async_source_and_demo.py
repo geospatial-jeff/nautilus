@@ -11,21 +11,20 @@ from nautilus.core.operator import SourceOperator
 from nautilus.core.records import Frame
 from nautilus.demos import DemoStreamSource
 from nautilus.driver.local import run_local_chain
-from nautilus.operators import KeyedTumblingSum
+from nautilus.operators import KeyedCount
 from nautilus.telemetry.recorder import TelemetryConfig
 from nautilus.testing import data
-from nautilus.windows import TumblingEventTimeWindows
 
 
-def _window_op():
-    return KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(1_000_000))
+def _count_op():
+    return KeyedCount("key")
 
 
 async def test_demo_stream_stays_loop_responsive():
     src = DemoStreamSource(interval_s=0.01, max_batches=8)
     result = await run_local_chain(
         src,
-        [_window_op()],
+        [_count_op()],
         telemetry=TelemetryConfig(sample_interval_micros=5000),  # 5ms sampler ticks
     )
     rep = result.telemetry
@@ -34,9 +33,11 @@ async def test_demo_stream_stays_loop_responsive():
         p.value for p in rep.operator("source").counters if p.name == "operator.rows_out"
     )
     assert src_rows == 8 * 3
-    # ...the window operator fired live...
-    fires = sum(p.value for p in rep.operator("op0").counters if p.name == "window.fires")
-    assert fires > 0
+    # ...the count operator ran to EOS and emitted its per-key totals...
+    op_rows_out = sum(
+        p.value for p in rep.operator("op0").counters if p.name == "operator.rows_out"
+    )
+    assert op_rows_out > 0
     # ...and the sampler kept ticking WHILE the source slept (loop never froze)
     proc = rep.operator("process")
     lag = next((h for h in proc.histograms if h.name == "runtime.loop_lag_micros"), None)
@@ -54,7 +55,7 @@ async def test_unbounded_demo_cancels_cleanly():
 
     src = ClosingDemo(interval_s=0.01, max_batches=None)  # never ends on its own
     task = asyncio.create_task(
-        run_local_chain(src, [_window_op()], telemetry=TelemetryConfig(sample_interval_micros=5000))
+        run_local_chain(src, [_count_op()], telemetry=TelemetryConfig(sample_interval_micros=5000))
     )
     await asyncio.sleep(0.05)  # let a few batches flow
     task.cancel()
@@ -70,18 +71,16 @@ async def test_source_generator_finalized_on_cancel():
 
     class FinallySource(SourceOperator):
         async def frames(self) -> AsyncIterator[Frame]:
-            n = 0
             try:
                 while True:  # unbounded; only cancellation ends it
-                    yield data(key=["a"], val=[1], ts=[n])
+                    yield data(key=["a"], val=[1])
                     await asyncio.sleep(0.01)
-                    n += 1
             finally:
                 cleaned.set()
 
     task = asyncio.create_task(
         run_local_chain(
-            FinallySource(), [_window_op()], telemetry=TelemetryConfig(sample_system=False)
+            FinallySource(), [_count_op()], telemetry=TelemetryConfig(sample_system=False)
         )
     )
     await asyncio.sleep(0.03)  # let it suspend at the yield

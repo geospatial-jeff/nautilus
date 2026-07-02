@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from nautilus.core.records import ACTIVE_FRAME, EOS_FRAME, IDLE_FRAME, Barrier, Batch, Watermark
+from nautilus.core.records import EOS_FRAME, Barrier, Batch
 from nautilus.testing import batch
 from nautilus.transport.framing import Kind, decode, encode_credit, encode_frame, split
 
@@ -15,7 +15,7 @@ def _roundtrip(frame: object) -> object:
 
 
 def test_control_frames_roundtrip() -> None:
-    for frame in [Watermark(123456789), EOS_FRAME, IDLE_FRAME, ACTIVE_FRAME, Barrier(7)]:
+    for frame in [EOS_FRAME, Barrier(7)]:
         assert _roundtrip(frame) == frame
 
 
@@ -42,6 +42,6 @@ def test_credit_roundtrip() -> None:
 
 
 def test_kind_tags() -> None:
-    assert split(encode_frame(Watermark(1)))[0] == Kind.CONTROL
+    assert split(encode_frame(Barrier(1)))[0] == Kind.CONTROL
     assert split(encode_frame(Batch(batch(x=[1]))))[0] == Kind.DATA
     assert split(encode_credit(1))[0] == Kind.CREDIT

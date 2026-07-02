@@ -1,4 +1,4 @@
-"""Telemetry that performance analysis needs: occupancy is countable (on_watermark time is in
+"""Telemetry that performance analysis needs: occupancy is countable (on_eos time is in
 step_micros), state growth is visible (state.entries/keys), and keyed-shuffle cost is attributed
 (partition.route_micros). These close gaps that previously left the engine's hottest costs invisible.
 """
@@ -8,25 +8,22 @@ from nautilus.core.time import TestClock
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.run import run_plan
-from nautilus.operators import InMemorySource, KeyedTumblingSum
+from nautilus.operators import InMemorySource, KeyedCount
 from nautilus.state import InMemoryStateBackend, StateScope
 from nautilus.telemetry.catalog import Tier
 from nautilus.telemetry.recorder import TelemetryConfig
-from nautilus.testing import data, wm
-from nautilus.windows import TumblingEventTimeWindows
+from nautilus.testing import data
 
 
-def _windowed():
-    # keys a,a,b in window [0,10); wm(10) fires it; a,b in [10,20); wm(20) fires it.
+def _keyed():
+    # Two distinct keys, each present in both batches. KeyedCount holds one count entry per key and
+    # flushes them all at end of stream — the on_eos work the timing/state assertions below observe.
     frames = [
-        data(key=["a", "a", "b"], val=[1, 2, 5], ts=[1, 5, 7]),
-        wm(10),
-        data(key=["a", "b"], val=[10, 3], ts=[12, 14]),
-        wm(20),
+        data(key=["a", "a", "b"]),
+        data(key=["a", "b"]),
         EOS_FRAME,
     ]
-    op = KeyedTumblingSum("key", "val", "ts", TumblingEventTimeWindows(10))
-    return InMemorySource(frames), [op]
+    return InMemorySource(frames), [KeyedCount("key")]
 
 
 def _gauge_max(op, name):
@@ -37,37 +34,38 @@ def _counter(op, name):
     return sum(p.value for p in op.counters if p.name == name)
 
 
-async def test_step_micros_includes_on_watermark_time():
-    src, ops = _windowed()
+async def test_step_micros_includes_on_eos_time():
+    src, ops = _keyed()
     rep = (await run_local_chain(src, ops, clock=TestClock())).telemetry
     op0 = rep.operator("op0")
     step = _counter(op0, "runtime.step_micros")
     proc = next(h for h in op0.histograms if h.name == "operator.process_micros")
-    wmk = next(h for h in op0.histograms if h.name == "operator.on_watermark_micros")
+    eos = next(h for h in op0.histograms if h.name == "operator.on_eos_micros")
     # busy/self-time covers both synchronous critical sections (catalog meaning). step accumulates in
     # nanoseconds and carries the sub-µs remainder, so it is at least the per-call histograms' truncated
     # sums and exceeds them by at most one microsecond per call.
-    assert proc.sum + wmk.sum <= step <= proc.sum + wmk.sum + proc.count + wmk.count
-    assert wmk.sum > 0  # this operator does real work in on_watermark (window flush)
+    assert proc.sum + eos.sum <= step <= proc.sum + eos.sum + proc.count + eos.count
+    assert eos.sum > 0  # this operator does real work in on_eos (the end-of-stream flush)
 
 
-async def test_state_entries_and_keys_track_open_windows():
-    src, ops = _windowed()
+async def test_state_entries_and_keys_track_keyed_state():
+    src, ops = _keyed()
     rep = (await run_local_chain(src, ops, clock=TestClock())).telemetry
     op0 = rep.operator("op0")
-    # At the wm(10) fire, both a and b have an open window in [0,10): 2 entries across 2 distinct keys.
+    # KeyedCount holds one count entry per distinct key; keys a and b -> 2 entries across 2 distinct
+    # keys, sampled at end of stream before on_eos clears them.
     assert _gauge_max(op0, "state.entries") == 2
     assert _gauge_max(op0, "state.keys") == 2
 
 
 async def test_state_gauges_absent_when_telemetry_off():
-    src, ops = _windowed()
+    src, ops = _keyed()
     rep = (await run_local_chain(src, ops, telemetry=TelemetryConfig(tier=Tier.OFF))).telemetry
     assert rep.operator("op0") is None  # OFF records nothing at all
 
 
 async def test_partition_route_micros_attributes_the_keyed_shuffle():
-    src, ops = _windowed()
+    src, ops = _keyed()
     graph = graph_from_pipeline(src, ops, 3)  # P=3 -> source->op0 is a keyed shuffle that routes
     rep = (await run_plan(graph, telemetry=TelemetryConfig(tier=Tier.COUNTERS))).telemetry
     src_op = next(o for o in rep.operators if o.operator_id == "source")
@@ -99,7 +97,7 @@ async def test_source_generation_time_is_recorded_as_self_time():
 
 
 async def test_queue_depth_histogram_records_a_distribution():
-    src, ops = _windowed()
+    src, ops = _keyed()
     rep = (await run_local_chain(src, ops, clock=TestClock())).telemetry
     # Every in-process edge with sends has a depth distribution (counts how often at each fill level),
     # not just the high-water gauge.
