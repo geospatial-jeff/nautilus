@@ -12,7 +12,7 @@ behavior demonstrated by word-count and keyed aggregation that flushes at end of
 
 ### Stage 0.5 — Tensor columns · **Done**
 
-N-D imagery and 1-D embeddings ride as Arrow `fixed_shape_tensor` columns, with numpy conversion
+Multidimensional imagery and 1-D embeddings ride as Arrow `fixed_shape_tensor` columns, with numpy conversion
 helpers and no changes to the core.
 
 ### Stage 1 — Credit backpressure across a process boundary · **Done**
@@ -24,7 +24,7 @@ through the `Connector`); on its own it does not yet exercise operator paralleli
 
 ### Stage 1.5 — Parallel topology and the keyed shuffle · **Done**
 
-An operator runs as N instances, each owning a key range, with the keyed shuffle (`HashPartitioner`,
+An operator runs as multiple instances, each owning a key range, with the keyed shuffle (`HashPartitioner`,
 generalized to `KeyGroupPartitioner` in Stage 2) routing each batch to the owning instance and `Mailbox`
 fan-in conserving rows. The per-instance report groups by `(operator_id, subtask_index, node)`. Stage 2
 subsumed the original single-process channel mesh into the compiler and executor, and `nautilus run
@@ -35,7 +35,7 @@ subsumed the original single-process channel mesh into the compiler and executor
 
 A `LogicalGraph` (`nautilus.api`) compiles to a serializable `PhysicalPlan` (`nautilus.compile`) and runs
 through a per-worker executor over an injected `Connector` (`nautilus.runtime`), single-process or across
-W worker processes via a coordinator — placement, two-phase bootstrap, launcher, key-group partitioning,
+many worker processes via a coordinator — placement, two-phase bootstrap, launcher, key-group partitioning,
 and symmetric EOS-draining teardown (`nautilus.cluster.deploy`). Co-located edges stay in-process; only a
 true shuffle crosses workers, over the Stage 1 `SocketChannel` reached by a node address. `nautilus run
 --workers/--parallelism` drives it; telemetry aggregates at the coordinator with per-worker attribution.

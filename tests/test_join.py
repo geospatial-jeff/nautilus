@@ -97,8 +97,9 @@ def test_join_rejects_unequal_key_arity() -> None:
 
 async def test_join_matches_by_value_and_type_consistently_across_parallelism() -> None:
     # int 1 and bool True collapse under Python equality but the shuffle (and now the join's grouping)
-    # keep them distinct, so an int key column never joins a bool one — and crucially the P=1 and P=2
-    # results agree (the bug was: int 1 matched bool True at P=1 but split at P>1).
+    # keep them distinct, so an int key column never joins a bool one — and crucially the
+    # parallelism-1 and parallelism-2 results agree (the bug was: int 1 matched bool True at
+    # parallelism 1 but split at parallelism above 1).
     left = [data(id=pa.array([1, 2], pa.int64()), lval=["a", "b"]), EOS_FRAME]
     right = [data(id=pa.array([True, False], pa.bool_()), rval=[10, 20]), EOS_FRAME]
 
@@ -153,8 +154,8 @@ async def test_join_runs_through_the_engine() -> None:
 
 
 async def test_parallel_join_co_partitions_both_sides() -> None:
-    # At P=2 each input is a keyed shuffle on the join value; a key's left and right rows must land on the
-    # same instance, so the multiset of matches is identical to the serial run.
+    # At parallelism 2 each input is a keyed shuffle on the join value; a key's left and right rows
+    # must land on the same instance, so the multiset of matches is identical to the serial run.
     serial = multiset(await run_plan(_join_graph(1)))
     parallel = multiset(await run_plan(_join_graph(2)))
     assert parallel == serial
@@ -191,7 +192,8 @@ def _two_source_join(
 
 async def test_composite_key_join_co_partitions_across_parallelism() -> None:
     # A two-column join key exercises the operator's multi-element tuple grouping AND the partitioner's
-    # multi-column mixed-radix fold together — the P=2 result must still equal the serial run.
+    # multi-column mixed-radix fold together — the parallelism-2 result must still equal the
+    # serial run.
     left = [data(a=[1, 1, 2], b=["x", "y", "x"], lval=["p", "q", "r"]), EOS_FRAME]
     right = [data(c=[1, 2], d=["x", "x"], rval=[10, 20]), EOS_FRAME]
     serial = multiset(await run_plan(_two_source_join(left, right, ["a", "b"], ["c", "d"], 1)))

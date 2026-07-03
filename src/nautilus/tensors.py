@@ -1,6 +1,6 @@
 """numpy-backed tensor columns for imagery and embeddings.
 
-Imagery (N-D arrays) and embeddings (1-D vectors) are carried as Arrow ``fixed_shape_tensor``
+Imagery (multidimensional arrays) and embeddings (1-D vectors) are carried as Arrow ``fixed_shape_tensor``
 extension columns (:class:`pyarrow.FixedShapeTensorArray`): one tensor per row, stored row-major as a
 ``fixed_size_list``, with the shape held in the column type. The column length is the batch
 dimension, so an ``(N, *shape)`` numpy array maps to an N-row column.

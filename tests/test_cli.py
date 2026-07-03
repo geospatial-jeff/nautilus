@@ -121,7 +121,8 @@ def test_dashboard_reports_capped_worker_count_honestly():
 def test_parallelism_defaults_to_workers():
     from nautilus.cli import _resolve_parallelism
 
-    assert _resolve_parallelism(None, 3) == 3  # unset → N workers means N-way work
+    # unset → parallelism matches the worker count (as many ways of work as workers)
+    assert _resolve_parallelism(None, 3) == 3
     assert _resolve_parallelism(1, 3) == 1  # explicit wins — the decouple case
     assert _resolve_parallelism(None, 1) == 1
 

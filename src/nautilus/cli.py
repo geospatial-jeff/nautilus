@@ -67,8 +67,9 @@ def _tier(name: str) -> Tier:
 
 
 def _resolve_parallelism(parallelism: int | None, workers: int) -> int:
-    """``--parallelism`` defaults to ``--workers``: asking for N workers should mean N-way work, or the
-    surplus would be capped away (deploy warns when it is). Pass ``--parallelism`` explicitly only to
+    """``--parallelism`` defaults to ``--workers``: asking for a given number of workers should mean that
+    much parallel work, or the surplus would be capped away (deploy warns when it is). Pass
+    ``--parallelism`` explicitly only to
     decouple them — fan out wider than the workers, or run parallel in a single process."""
     return workers if parallelism is None else parallelism
 
@@ -474,9 +475,9 @@ def bench(
         help="Baseline entry name (default: the pipeline). Use to keep a --workers variant alongside the single-process one.",
     ),
 ) -> None:
-    """Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to the
-    baseline if one exists, and optionally update it. This is how to produce the before/after numbers a
-    PERFORMANCE_CHANGELOG.md entry records."""
+    """Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-a-few), compare
+    to the baseline if one exists, and optionally update it. This is how to produce the before/after
+    numbers a PERFORMANCE_CHANGELOG.md entry records."""
     key = label or pipeline
     tier = _tier(telemetry)
     parallelism = _resolve_parallelism(parallelism, workers)
@@ -628,7 +629,7 @@ def dashboard(
         True, "--linger/--no-linger", help="Keep serving after a bounded run."
     ),
     max_seconds: float | None = typer.Option(
-        None, help="Stop after N seconds (caps unbounded runs)."
+        None, help="Stop after the given number of seconds (caps unbounded runs)."
     ),
     open_browser: bool = typer.Option(
         True,

@@ -84,8 +84,9 @@ def test_two_worker_keyed_wordcount_matches_serial() -> None:
 
 
 def test_bidirectional_shuffle_matches_serial_and_completes_promptly() -> None:
-    # tokenize(P=2) -> keyedCount(P=2) is a 2x2 shuffle: each worker holds both an outbound producer end
-    # and an inbound consumer end of the other — the layout where finish-then-close would deadlock.
+    # tokenize at parallelism 2 -> keyedCount at parallelism 2 is a two-into-two shuffle: each
+    # worker holds both an outbound producer end and an inbound consumer end of the other — the
+    # layout where finish-then-close would deadlock.
     # Symmetric teardown drains it, so the whole run finishes well under the 5s per-channel drain timeout.
     serial = asyncio.run(run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")]))
     graph = staged_graph(

@@ -1,4 +1,4 @@
-"""``deploy`` — run a graph across W spawned workers and aggregate one report.
+"""``deploy`` — run a graph across the spawned workers and aggregate one report.
 
 The coordinator is the control plane and nothing more. It compiles the graph once, computes placement,
 spawns the workers, drives the two-phase bootstrap, and waits at the job boundary for one ``Done`` per
@@ -63,7 +63,7 @@ def deploy(
     ``num_workers`` local worker processes; with ``daemons`` a roster of ``(host, port)`` worker-daemon
     control addresses it dials them instead (the multi-node path), assigning ``worker_id = roster index``
     and inferring the worker count from the roster. Either count is capped at the plan's maximum
-    parallelism (a wider W would only idle a worker).
+    parallelism (more workers would only idle a worker).
 
     For the local path, ``host`` is the interface every worker's listener binds (loopback by default;
     ``0.0.0.0`` to accept on a container's bridge) and ``advertise_host`` is the routable host peers dial

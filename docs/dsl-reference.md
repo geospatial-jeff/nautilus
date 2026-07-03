@@ -21,7 +21,7 @@ result = source(lines).tokenize("line", "word").count_by("word").run()
 
 ## Combinators
 
-Each returns a new `Stream`. `parallelism=N` (default 1) runs that operator as N instances; a keyed
+Each returns a new `Stream`. `parallelism` (default 1) runs that operator as that many instances; a keyed
 combinator shuffles its input on the key so each key's rows meet on one instance.
 
 | Method | What it adds |
@@ -49,7 +49,7 @@ joined = source(orders).join(source(customers), on="customer_id")
 
 | Method | What it does |
 |---|---|
-| `.run(workers=None, parallelism=None, key_groups=None, daemons=None, …)` | Synchronous: compile and run to completion, returning a `RunResult`. `workers > 1` deploys the *same* graph across that many spawned worker processes; `daemons=[(host, port), …]` deploys it across long-lived worker daemons instead (the multi-node path, worker count taken from the roster); `parallelism=N` sets every operator's instance count uniformly. |
+| `.run(workers=None, parallelism=None, key_groups=None, daemons=None, …)` | Synchronous: compile and run to completion, returning a `RunResult`. `workers > 1` deploys the *same* graph across that many spawned worker processes; `daemons=[(host, port), …]` deploys it across long-lived worker daemons instead (the multi-node path, worker count taken from the roster); `parallelism` sets every operator's instance count uniformly. |
 | `.run_async(…)` | The `await`-able single-process form, for use inside a running event loop. |
 | `.collect()` | Run and return the rows as `{column: value}` dicts (a convenience over `run().to_pylist()`). |
 | `.to_graph(parallelism=None)` | The `LogicalGraph` this stream describes, without running it. |

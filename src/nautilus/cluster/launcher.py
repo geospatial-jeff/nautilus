@@ -1,6 +1,6 @@
 """Spawn the worker processes and reap them.
 
-The two-process harness generalized to W workers under one ``spawn`` context. This module only starts
+The two-process harness generalized to many workers under one ``spawn`` context. This module only starts
 and stops processes and owns the control queues' creation; the coordinator drives the bootstrap over
 them. Reaping is unconditional (terminate, join, then kill as a last resort) so a worker never lingers
 as a zombie even when the job fails.

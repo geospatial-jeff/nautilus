@@ -11,7 +11,7 @@ catches an output change masquerading as a speed change — a correctness regres
 machine-independent and always fails.
 
 This is the sanctioned way to produce the before/after numbers the `perf-loop` skill and
-``PERFORMANCE_CHANGELOG.md`` record; an ad-hoc single run or best-of-N is not.
+``PERFORMANCE_CHANGELOG.md`` record; an ad-hoc single run or best-of-a-few is not.
 """
 
 from __future__ import annotations
@@ -67,8 +67,8 @@ def summarize(samples: Sequence[float]) -> Stats:
     if not s:
         raise ValueError("cannot summarize zero samples")
     median = statistics.median(s)
-    # Inclusive quartiles work for the small N a benchmark uses; IQR is the robust, outlier-tolerant
-    # spread (a single hiccuped run moves the max but not the median or the quartiles).
+    # Inclusive quartiles work for the small sample count a benchmark uses; IQR is the robust,
+    # outlier-tolerant spread (a single hiccuped run moves the max but not the median or the quartiles).
     if len(s) >= 2:
         q1, _q2, q3 = statistics.quantiles(s, n=4, method="inclusive")
         iqr = q3 - q1

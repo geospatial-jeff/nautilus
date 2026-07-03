@@ -117,7 +117,8 @@ async def test_cloudpickle_roundtrip_executes_equivalently() -> None:
 
 
 async def test_ops_bridge_matches_run_local_chain() -> None:
-    # The run_local_chain shape (source + operator instances, all P=1) compiles to the serial result.
+    # The run_local_chain shape (source + operator instances, all at parallelism 1) compiles to the
+    # serial result.
     frames = [data(line=["the cat the"]), data(line=["dog cat"]), EOS_FRAME]
     transforms = [Tokenize("line", "word"), KeyedCount("word")]
 
@@ -142,13 +143,15 @@ async def test_real_pipelines_example_round_trips() -> None:
     assert {"word", "count"} <= set(result.to_table().column_names)
 
 
-# --- key groups: G >= Q preserves the result; G == Q matches the direct-hash digest -------------
+# --- key groups: at least as many groups as instances preserves the result;
+# an equal count matches the direct-hash digest ---
 
 
 async def test_key_groups_preserve_results_for_g_ge_q() -> None:
-    # Routing keyed edges through G key groups (for any G >= Q) must not change the result: every key
-    # still lands on exactly one instance, so the output multiset equals the serial run. G is varied
-    # over multiples and non-multiples of Q (5 and 7 are not multiples of 3).
+    # Routing keyed edges through key groups (for at least as many groups as instances) must not
+    # change the result: every key still lands on exactly one instance, so the output multiset
+    # equals the serial run. The key-group count is varied over multiples and non-multiples of the
+    # parallelism (5 and 7 are not multiples of 3).
     frames = [
         data(line=["the cat sat the dog ran the fox"]),
         data(line=["a fox and a cat and a dog and a the"]),
@@ -161,7 +164,7 @@ async def test_key_groups_preserve_results_for_g_ge_q() -> None:
     )
     expected = multiset(serial)
     q = 3
-    for g in (3, 4, 5, 7, 12):  # all >= Q, mixing multiples and non-multiples
+    for g in (3, 4, 5, 7, 12):  # all at least the parallelism, mixing multiples and non-multiples
         graph = staged_graph(
             InMemorySource(list(frames)),
             [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), q, ("word",))],
@@ -171,10 +174,12 @@ async def test_key_groups_preserve_results_for_g_ge_q() -> None:
 
 
 async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
-    # An instance is (hash(k) % G) % Q, which equals the direct hash hash(k) % Q exactly when Q divides
-    # G. So the structural digest equals the default (G == Q) run at every multiple of Q and legitimately
-    # differs at a non-multiple — while the result multiset is preserved either way. This pins both
-    # halves of the Q|G boundary, so a different (still co-partitioning) group table can't slip through.
+    # An instance is the key's hash modulo the key-group count, then modulo the parallelism, which
+    # equals the direct hash (the key's hash modulo the parallelism) exactly when the parallelism
+    # divides the key-group count. So the structural digest equals the default run (key-group count
+    # equal to the parallelism) at every multiple of the parallelism and legitimately differs at a
+    # non-multiple — while the result multiset is preserved either way. This pins both halves of the
+    # divisibility boundary, so a different (still co-partitioning) group table can't slip through.
     frames = [data(line=["the cat the dog the fox a cat a dog ran sat jumped"]), EOS_FRAME]
     q = 3
 
@@ -184,8 +189,10 @@ async def test_digest_matches_direct_hash_exactly_when_q_divides_g() -> None:
             [(Tokenize("line", "word"), 1, None), (KeyedCount("word"), q, ("word",))],
         )
 
-    default = await run_plan(graph(), clock=TestClock())  # G defaults to Q -> identity table
+    # key-group count defaults to the parallelism -> identity table
+    default = await run_plan(graph(), clock=TestClock())
     for g, q_divides_g in [(3, True), (6, True), (12, True), (4, False), (5, False), (7, False)]:
         run = await run_plan(graph(), key_groups=g, clock=TestClock())
         assert multiset(run) == multiset(default), g  # co-partitioning: result always preserved
-        assert (_digest(run) == _digest(default)) is q_divides_g, g  # digest matches iff Q | G
+        # digest matches iff the parallelism divides the key-group count
+        assert (_digest(run) == _digest(default)) is q_divides_g, g

@@ -105,10 +105,10 @@ async def test_two_input_eos_after_both_inputs_close() -> None:
 
 
 async def test_two_input_drains_a_parallel_left_before_flush() -> None:
-    # The left port is fed by a P=2 map (two channels into the join), the right by one source. The join
-    # at P=1 therefore has left_input_count == 2: indices 0,1 are left, index 2 is right. A correct total
-    # proves the port-ordered mailbox routed both left channels to process_left and the run drained every
-    # input before the terminal flush.
+    # The left port is fed by a parallelism-2 map (two channels into the join), the right by one
+    # source. The join at parallelism 1 therefore has left_input_count == 2: indices 0,1 are left,
+    # index 2 is right. A correct total proves the port-ordered mailbox routed both left channels to
+    # process_left and the run drained every input before the terminal flush.
     g = LogicalGraph(
         vertices=(
             source("L", lambda: InMemorySource([data(v=[1, 2]), data(v=[3, 4]), EOS_FRAME])),

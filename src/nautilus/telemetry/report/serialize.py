@@ -281,9 +281,9 @@ def report_to_markdown(report: RunReport, *, token_budget: int = 4000) -> str:
         for e in report.errors:  # errors are never dropped
             errors.append(f"- {e.operator_id} {e.phase} {e.exc_type}: {e.message}")
 
-    # The send-wait ranking is bounded to a top-N so it cannot grow without limit on a wide parallel run
-    # (per_operator has one entry per subtask), and is then charged against the budget like the rest of
-    # the always-shown sections — so the final digest actually honors token_budget.
+    # The send-wait ranking is bounded to a fixed number of entries so it cannot grow without limit on
+    # a wide parallel run (per_operator has one entry per subtask), and is then charged against the
+    # budget like the rest of the always-shown sections — so the final digest actually honors token_budget.
     ranked = report.by_send_wait()
     top = ranked[:_MARKDOWN_RANK_TOP]
     order = ", ".join(f"{r.operator_id}#{r.subtask_index}" for r in top)

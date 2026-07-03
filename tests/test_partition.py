@@ -27,7 +27,7 @@ from nautilus.runtime.partition import (
 from nautilus.tensors import is_tensor, to_numpy
 from nautilus.testing import batch
 
-# A prime fan-out so the few type-distinctness keys are extremely unlikely to collide mod Q. The hash
+# A prime fan-out so the few type-distinctness keys are extremely unlikely to collide modulo the parallelism. The hash
 # is deterministic, so any collision would be a permanent (non-flaky) failure caught once here.
 _BIG_Q = 65521
 
@@ -123,8 +123,9 @@ def test_roundrobin_cursor_is_per_instance() -> None:
 
 
 def test_hash_q1_routes_whole_batch_but_validates_keys() -> None:
-    # Q == 1 sends the whole batch to instance 0 without bucketing, but still validates key types — so a
-    # float key (rejected at Q>1) is rejected at Q==1 too (fail-fast), not silently working until scaled.
+    # parallelism 1 sends the whole batch to instance 0 without bucketing, but still validates key
+    # types — so a float key (rejected at parallelism above 1) is rejected at parallelism 1 too
+    # (fail-fast), not silently working until scaled.
     valid = batch(key=["a", "b"])
     assert HashPartitioner(["key"]).route(valid, 1) == [(0, valid)]
     with pytest.raises(TypeError):
@@ -249,11 +250,12 @@ def test_route_matches_per_row_reference_byte_identical_under_fuzz() -> None:
         q = rng.choice([2, 3, 4, 5, 7])
         cols = {c: _random_key_column(rng, n, rng.choice(kinds)) for c in kc}
         b = batch(rid=list(range(n)), **cols)
-        # Direct hash: instance = stable_bucket(key, Q).
+        # Direct hash: the instance is stable_bucket of the key over the parallelism.
         assert _route_rid_map(HashPartitioner(kc), b, q) == _reference_rid_map(
             b, q, kc, lambda k, q=q: stable_bucket(k, q)
         )
-        # Key-group indirection (G >= Q): instance = table[stable_bucket(key, G)].
+        # Key-group indirection (at least as many groups as instances): the instance is the table
+        # entry at stable_bucket of the key over the key-group count.
         table = tuple(i % q for i in range(q + rng.randrange(0, 6)))
         assert _route_rid_map(KeyGroupPartitioner(kc, table), b, q) == _reference_rid_map(
             b, q, kc, lambda k, table=table: table[stable_bucket(k, len(table))]
@@ -318,8 +320,9 @@ def _route_map(partitioner: object, b: pa.RecordBatch, q: int) -> dict[int, int]
 
 
 def test_keygroup_identity_table_equals_hash_partitioner() -> None:
-    # G == Q with the identity table routes every row to the same instance as the direct hash. This is
-    # the equivalence that keeps 2a's compiled-vs-legacy digest oracle green.
+    # With the key-group count equal to the parallelism and the identity table, every row routes to
+    # the same instance as the direct hash. This is the equivalence that keeps 2a's
+    # compiled-vs-legacy digest oracle green.
     rng = random.Random(99)
     for _ in range(200):
         n = rng.randint(1, 40)
@@ -334,14 +337,16 @@ def test_keygroup_identity_table_equals_hash_partitioner() -> None:
 
 
 def test_keygroup_co_locates_and_conserves_for_g_ge_q() -> None:
-    # For any G >= Q (multiples and non-multiples of Q), the table routes every key to exactly one
-    # instance and conserves every row — the co-partitioning the keyed operators depend on.
+    # For at least as many key groups as instances (multiples and non-multiples of the parallelism),
+    # the table routes every key to exactly one instance and conserves every row — the
+    # co-partitioning the keyed operators depend on.
     rng = random.Random(7)
     for _ in range(200):
         n = rng.randint(1, 40)
         cardinality = rng.randint(1, 10)
         q = rng.choice([2, 3, 4, 5])
-        g = q + rng.randrange(0, 8)  # G >= Q, including non-multiples of Q
+        # at least as many key groups as instances, including non-multiples of the parallelism
+        g = q + rng.randrange(0, 8)
         table = tuple(i % q for i in range(g))
         keys = [f"k{rng.randrange(cardinality)}" for _ in range(n)]
         b = batch(rid=list(range(n)), key=keys)

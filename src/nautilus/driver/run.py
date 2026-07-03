@@ -94,7 +94,7 @@ async def run_compiled(
 async def run_plan(
     graph: LogicalGraph, *, key_groups: int | None = None, **kwargs: Any
 ) -> RunResult:
-    """Compile ``graph`` and run it single-process. ``key_groups`` (``G``) sets the number of key
+    """Compile ``graph`` and run it single-process. ``key_groups`` sets the number of key
     groups the keyed shuffles route through (``None`` defaults each to its parallelism). Otherwise
     accepts the same keyword arguments as :func:`run_compiled` (``capacity``, ``clock``, ``telemetry``,
     ``sink``, ``registry``)."""

@@ -1,5 +1,6 @@
 """The compiler lowers a LogicalGraph to a PhysicalPlan: physical ids by position, a synthesized sink,
-a partitioner spec per edge chosen from the downstream operator, and a fresh-factory check at P>1.
+a partitioner spec per edge chosen from the downstream operator,
+and a fresh-factory check at parallelism above 1.
 """
 
 from __future__ import annotations
@@ -39,9 +40,10 @@ def test_edge_specs_come_from_the_downstream_operator() -> None:
     plan = compile_graph(_graph())
     specs = {(e.src_operator_id, e.dst_operator_id): e.spec for e in plan.edges}
     assert isinstance(specs[("source", "op0")], ForwardSpec)  # op0 is a single instance
-    assert isinstance(specs[("op0", "op1")], KeyGroupSpec)  # op1 is keyed, P=3
+    assert isinstance(specs[("op0", "op1")], KeyGroupSpec)  # op1 is keyed, parallelism 3
     assert specs[("op0", "op1")].key_columns == ("word",)
-    assert specs[("op0", "op1")].group_table == (0, 1, 2)  # default G==Q is the identity table
+    # default (key-group count equals parallelism) is the identity table
+    assert specs[("op0", "op1")].group_table == (0, 1, 2)
     assert isinstance(specs[("op1", "sink")], ForwardSpec)  # the sink is one instance
 
 
@@ -100,7 +102,7 @@ def test_parallel_vertex_with_shared_instance_is_rejected() -> None:
 
 
 def test_keyed_operator_at_parallelism_one_forwards() -> None:
-    # Q==1 is Forward even when keyed — matches the legacy partitioner selection.
+    # parallelism 1 is Forward even when keyed — matches the legacy partitioner selection.
     g = linear_graph(
         lambda: InMemorySource([]),
         [LogicalVertex("op0", lambda: KeyedCount("word"), "one_input", 1, ("word",))],
@@ -109,7 +111,7 @@ def test_keyed_operator_at_parallelism_one_forwards() -> None:
     assert isinstance(plan.edges[0].spec, ForwardSpec)
 
 
-# --- key groups: G > Q builds a round-robin table; G < Q is rejected ----------------------------
+# --- key groups: more key groups than instances builds a round-robin table; fewer is rejected ---
 
 
 def _keyed_graph(parallelism: int):
@@ -134,7 +136,8 @@ def test_key_groups_below_parallelism_rejected_at_compile() -> None:
 def test_default_key_groups_is_the_identity_table() -> None:
     spec = compile_graph(_keyed_graph(4)).edges[0].spec
     assert isinstance(spec, KeyGroupSpec)
-    assert spec.group_table == (0, 1, 2, 3)  # G defaults to Q -> identity
+    # key-group count defaults to the parallelism -> identity
+    assert spec.group_table == (0, 1, 2, 3)
 
 
 # --- a two-input join: two sources shuffle into one two_input vertex on ports 0 and 1 -----------
@@ -164,8 +167,9 @@ def test_two_source_join_compiles_to_ported_keygroup_edges() -> None:
     )
     assert [e.dst_input_port for e in join_edges] == [0, 1]  # left = port 0, right = port 1
     assert all(isinstance(e.spec, KeyGroupSpec) for e in join_edges)
-    # both sides read the join's one parallelism + the run's one G, so the tables match exactly: an
-    # equal key co-partitions to the same join instance from the left and the right.
+    # both sides read the join's one parallelism + the run's one key-group count, so the
+    # tables match exactly: an equal key co-partitions to the same join instance from the
+    # left and the right.
     assert join_edges[0].spec.group_table == join_edges[1].spec.group_table
     assert (join_edges[0].spec.key_columns, join_edges[1].spec.key_columns) == (("lk",), ("rk",))
 

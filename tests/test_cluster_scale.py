@@ -1,9 +1,9 @@
-"""Stage 2e: scaling deploy to N workers — correctness, placement invariance, capping, telemetry.
+"""Stage 2e: scaling deploy to multiple workers — correctness, placement invariance, capping, telemetry.
 
 Distributed runs must equal the serial run by multiset across any worker count and parallelism, and the
 structural digest must be placement-invariant (the same plan routes the same way no matter how many
-workers host it). Hardware telemetry is attributed per worker (exactly W process rows). These tests
-spawn processes, so they use only importable (module-level) operators.
+workers host it). Hardware telemetry is attributed per worker (exactly one process row each). These
+tests spawn processes, so they use only importable (module-level) operators.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def _keyed_spec(p: int) -> _Spec:
     return (KeyedCount("key"), p, ("key",))
 
 
-# --- correctness across random W x parallelism --------------------------------------------------
+# --- correctness across random worker-count by parallelism --------------------------------------
 
 
 @pytest.mark.filterwarnings(
@@ -101,7 +101,8 @@ def _wordcount_graph():
 
 def test_structural_digest_is_placement_invariant_across_worker_counts() -> None:
     # The same plan at fixed parallelism routes the same way regardless of how many workers host it, so
-    # the structural digest is identical across W in {1, 2, 3} (different addresses, same routing).
+    # the structural digest is identical across 1, 2, and 3 workers
+    # (different addresses, same routing).
     digests = {
         deploy(_wordcount_graph(), num_workers=w).telemetry.structural_digest() for w in (1, 2, 3)
     }
@@ -157,6 +158,7 @@ def test_one_process_row_per_worker_and_rows_conserved() -> None:
         telemetry=TelemetryConfig(tier=Tier.COUNTERS, sample_system=True),
     )
     process_nodes = {o.node for o in result.telemetry.operators if o.kind == "process"}
-    assert process_nodes == {"worker-0", "worker-1", "worker-2"}  # exactly W process rows
+    # exactly one process row per worker
+    assert process_nodes == {"worker-0", "worker-1", "worker-2"}
     # Rows are conserved across the worker boundary: the summed output equals the serial run's.
     assert result.telemetry.summary.total_rows_out == serial.telemetry.summary.total_rows_out

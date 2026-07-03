@@ -231,7 +231,7 @@ def bench_join(parallelism: int = 1) -> LogicalGraph:
 
 def _bench_inflight(default: int) -> int:
     """The async benchmarks' ``max_in_flight`` (env ``NAUTILUS_BENCH_INFLIGHT``). Raising it is how the
-    async loop's wakeup mechanism is stressed: the cost of tracking N concurrent fetches per completion is
+    async loop's wakeup mechanism is stressed: the cost of tracking the in-flight fetches per completion is
     what separates an O(N)-per-wakeup loop from an O(1) one."""
     raw = os.environ.get("NAUTILUS_BENCH_INFLIGHT")
     return int(raw) if raw else default
@@ -243,8 +243,8 @@ def bench_async(parallelism: int = 1) -> LogicalGraph:
     (:func:`~nautilus.benchmarks.async_passthrough`, no real I/O) so the loop, not the I/O, is what is
     measured. The async analog of ``bench-linear``; a *graph* pipeline because the async kind needs
     explicit edges, so it is run via ``run_plan`` / ``deploy``. Scale via NAUTILUS_BENCH_*
-    (``NAUTILUS_BENCH_INFLIGHT`` sets ``max_in_flight``, default 8); ``--parallelism N`` fans the I/O out
-    N ways."""
+    (``NAUTILUS_BENCH_INFLIGHT`` sets ``max_in_flight``, default 8); raising ``--parallelism`` fans the
+    I/O out that many ways."""
     p = bench_params()
     source = SyntheticKeyedSource(
         num_batches=p["num_batches"],
@@ -264,7 +264,7 @@ def bench_async_io(parallelism: int = 1) -> LogicalGraph:
     default 1000). Where ``bench-async`` measures the loop's overhead with a free fetch, this measures the
     overlap the loop exists to deliver: with ``max_in_flight`` fetches in flight, throughput should reach
     ~``max_in_flight`` batches per fetch-latency, far above serial. ``NAUTILUS_BENCH_INFLIGHT`` (default
-    64) sets the concurrency; ``--parallelism N`` fans it out further. ``NAUTILUS_BENCH_ORDERED=0`` runs it
+    64) sets the concurrency; raising ``--parallelism`` fans it out further. ``NAUTILUS_BENCH_ORDERED=0`` runs it
     unordered (completion-order emission); paired with ``NAUTILUS_BENCH_SLOW_EVERY`` (skewed latency) that
     measures the unordered throughput win under head-of-line blocking. The stateless map's digest is
     identical either way, so the two runs stay comparable against one baseline."""

@@ -3,9 +3,9 @@
 These exercise the compiled parallel path at parallelism > 1 in one process — via ``run_local_chain``
 (uniform parallelism over the transforms) and the fluent ``Stream`` DSL (per-stage parallelism). The
 golden multiset-equality tests catch a co-partitioning bug: such a bug conserves rows while silently
-splitting a key's state, so only comparing the parallel result against the serial P=1 result as a
-multiset reveals it. Cross-instance sink interleave is nondeterministic, so every comparison is over a
-``collections.Counter`` of result tuples, never row or batch order.
+splitting a key's state, so only comparing the parallel result against the serial parallelism-1
+result as a multiset reveals it. Cross-instance sink interleave is nondeterministic, so every
+comparison is over a ``collections.Counter`` of result tuples, never row or batch order.
 """
 
 from __future__ import annotations
@@ -81,8 +81,9 @@ async def test_keyed_count_across_batches_matches_serial_multiset() -> None:
 
 
 async def test_deep_mesh_multi_input_matches_serial() -> None:
-    # A two-stage mesh: map(P=2) -> count_by(P=3). Each keyed-count instance fans in BOTH map instances,
-    # so its mailbox has two inputs — the multi-input fan-in a single-stage mesh never exercises. A key's
+    # A two-stage mesh: map at parallelism 2 -> count_by at parallelism 3. Each keyed-count instance
+    # fans in BOTH map instances, so its mailbox has two inputs — the multi-input fan-in a
+    # single-stage mesh never exercises. A key's
     # rows must still co-partition to one instance, so the parallel multiset matches serial.
     rng = random.Random(21)
     for trial in range(6):
@@ -109,8 +110,9 @@ async def test_deep_mesh_multi_input_matches_serial() -> None:
 
 
 async def test_null_keys_co_partition_like_serial() -> None:
-    # Regression: a null key cell is counted at P=1 (value_counts includes nulls), so the shuffle must
-    # route it and the parallel multiset must still match serial — not abort with a TypeError.
+    # Regression: a null key cell is counted at parallelism 1 (value_counts includes nulls), so the
+    # shuffle must route it and the parallel multiset must still match serial — not abort
+    # with a TypeError.
     frames = [
         data(word=["a", None, "a", None, "b", None]),
         data(word=["a", "b", None, "c"]),
@@ -127,8 +129,9 @@ async def test_null_keys_co_partition_like_serial() -> None:
 
 
 async def test_roundrobin_out_of_parallel_stage_conserves_rows() -> None:
-    # map(P=2) -> map(Q=2, keyless -> RoundRobin): the RoundRobin edge is fed by TWO upstream instances,
-    # each owning its own cursor. Rows must be conserved over that multi-upstream rebalance.
+    # map at parallelism 2 -> map at parallelism 2 (keyless -> RoundRobin): the RoundRobin edge is
+    # fed by TWO upstream instances, each owning its own cursor. Rows must be conserved over that
+    # multi-upstream rebalance.
     rng = random.Random(55)
     frames: list = []
     total = 0

@@ -66,7 +66,8 @@ async def test_state_gauges_absent_when_telemetry_off():
 
 async def test_partition_route_micros_attributes_the_keyed_shuffle():
     src, ops = _keyed()
-    graph = graph_from_pipeline(src, ops, 3)  # P=3 -> source->op0 is a keyed shuffle that routes
+    # parallelism 3 -> source->op0 is a keyed shuffle that routes
+    graph = graph_from_pipeline(src, ops, 3)
     rep = (await run_plan(graph, telemetry=TelemetryConfig(tier=Tier.COUNTERS))).telemetry
     src_op = next(o for o in rep.operators if o.operator_id == "source")
     routed = [h for h in src_op.histograms if h.name == "partition.route_micros"]
