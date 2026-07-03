@@ -44,17 +44,14 @@ starts from evidence, not a cold read.
   id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
   as diminishing returns next to the ~90–125× already shipped.
 
-- **No co-located (forward) edge between same-width keyless operators.** `_spec_for`
-  (`src/nautilus/compile/lower.py`) gives every keyless fan-out a `RoundRobinSpec`, so two keyless
-  operators at the same parallelism cannot be chained instance-to-instance — their edge always rebalances,
-  which is a network shuffle across workers. That is why the Sentinel-2 NDVI fix (2026-07-03) had to *fuse*
-  decode and reduce rather than keep them as two co-located stages: fusing removes the shuffle but costs the
-  I/O/CPU overlap two operators gave (see that entry's trade-off). A `ForwardSpec` for the `upstream Q ==
-  downstream Q`, keyless case (instance `i → i`, opt-in so load-rebalancing stays the default) would let a
-  pipeline keep both — no shuffle *and* overlapped stages — and would generalize to any decode→CPU chain,
-  not just this example. It is a framework change (a new partitioner that needs the sender's subtask index,
-  which `Forward` — routes-all-to-0 — does not take today; plus DSL surface and compiler selection), so it
-  is feature-sized, not a tweak.
+- **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
+  by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
+  stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
+  straight down the forwarded chain, with no way to re-spread it. Spark and Flink keep locality the default
+  and expose an explicit `repartition()` / `rebalance()` for exactly this case. A DSL `.rebalance()` that
+  forced a `RoundRobinSpec` on the next edge would restore that escape hatch; not built, because no current
+  workload needs it — the source's `1 → N` fan-out already balances the initial spread, and every built-in
+  keyless stage is roughly row-preserving.
 
 - **Sentinel-2 source lists STAC items serially.** `Sentinel2ItemSource.frames` awaits each item's STAC
   lookup one at a time, so `io.wait_micros` on the single source is ~0.28s × N (1.76s for 6 items). After
@@ -62,6 +59,36 @@ starts from evidence, not a cold read.
   lookups (a bounded `asyncio.gather` prefetch, or one STAC `/search` POST by id list instead of N GETs)
   would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
+
+---
+
+## 2026-07-03 — Forward equal-width keyless edges: data locality instead of always shuffling
+
+- **Commit:** `e41fae6`.
+- **Change:** `_spec_for` (`src/nautilus/compile/lower.py`) now selects an edge's partitioner from *both*
+  stages' widths, not only the downstream's. A keyless hop between two stages of the same width takes a
+  `ForwardSpec` — sender `i` to instance `i` — instead of a `RoundRobinSpec`; keyed edges (the key-group
+  shuffle) and the single-source `1 → N` fan-out (round-robin) are unchanged. `Forward`
+  (`src/nautilus/runtime/partition.py`) gained a sender index and routes `i → i` (collapsing to instance 0
+  for a single owner); `execute` threads each output's subtask index in. With same-index placement the
+  forwarded edge is a free in-process channel, so across workers it moves no bytes and does no Arrow-IPC
+  encode/decode. This is the narrow-vs-shuffle split Spark and Flink default to (`DESIGN.md` mechanism 9);
+  it resolves the "no co-located forward edge" open item above.
+- **Impact (two-stage keyless pipeline `source → map → map`, W=6, P=6, median of 5 trials; Linux x86_64 ·
+  Python 3.12.3; not in `bench-check` — see Correctness):** the targeted metric is the middle edge's
+  `transport.bytes_sent`, **eliminated entirely** — 95 MB → 0 at a 256-byte row payload, 353 MB → 0 at
+  1 KB, 1030 MB → 0 at 4 KB (the source's `1 → N` fan-out still moves the same volume, as it must).
+  Loopback throughput rose ~1.05–1.07× across those payloads: on one machine the shuffle crosses
+  memory-fast loopback sockets, so eliminating it saves mainly the IPC encode/decode CPU — a thin slice of
+  a passthrough pipeline. The win scales with the *cost* of the removed bytes: on a real network that
+  volume is the bottleneck, and the NDVI fusion entry below — which removed the same class of shuffle
+  (2537 MB → 0) on a live-S3 6-worker run — measured 1.41× there.
+- **Correctness:** a routing change, so the check is the **output multiset**, not the digest.
+  `test_forward_edge_conserves_rows_across_equal_width_keyless_stages` runs a two-stage keyless pipeline at
+  P=1 and P=4 and asserts every row is transformed exactly once — a downstream instance now reads data from
+  only its same-index upstream but EOS from all of them, so this pins termination too. No committed baseline
+  has an equal-width keyless edge (each is P=1, or keyed/join at P>1), so `bench-check` is unchanged: every
+  digest and throughput identical.
 
 ---
 
