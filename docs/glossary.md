@@ -62,32 +62,37 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   instances. It has a fixed capacity; a full channel blocks the sender (see **backpressure**).
   In-process it is an `asyncio.Queue` (`InProcChannel`); across processes it is a socket
   (`SocketChannel`), which uses credit-based flow control (below).
-- **Instance (subtask)** — One parallel copy of an operator. An operator with parallelism *N* runs
-  as *N* independent instances, each handling a subset of the data, numbered by `subtask_index`
-  (0…*N*−1).
+- **Instance (subtask)** — One parallel copy of an operator. An operator with a given parallelism runs
+  as that many independent instances, each handling a subset of the data, numbered from zero by
+  `subtask_index`.
 - **Parallelism** — The number of instances an operator is split into.
 - **Partitioner** — A pure function on the sending side that decides which downstream instance each
-  row of a batch goes to. The kinds the runtime builds are `Forward` (1:1), `KeyGroupPartitioner` (the
-  keyed shuffle — see below), and `RoundRobin` (rotates whole batches for keyless rebalancing). Control
-  frames skip the partitioner and are always broadcast.
+  row of a batch goes to. The kinds the runtime builds are `Forward` (co-located: sender `i` to the
+  same-index downstream instance, or to instance 0 for a single owner), `KeyGroupPartitioner` (the keyed
+  shuffle — see below), and `RoundRobin` (rotates whole batches for keyless rebalancing). Control frames
+  skip the partitioner and are always broadcast.
 - **Keyed shuffle** — Routing that sends every row with a given key to the same downstream instance,
   so a key's rows and state are never split across instances. The hash (`stable_bucket`) is process-,
   seed-, and platform-stable, so the same key maps to the same instance in any process. The runtime
   uses `KeyGroupPartitioner`, which adds a `group → instance` indirection over the hash; `HashPartitioner`
-  (direct `hash(key) mod Q`) is the form it generalizes, kept only as the `G == Q` test oracle.
-- **Key group** — One of *G* fixed buckets a key hashes to (`hash(key) mod G`) before being mapped to
-  an instance through a static `group → instance` table the plan carries (`KeyGroupPartitioner`). A key
-  never moves between groups, so rescaling the instance count is a table swap, not a re-hash of state.
-- **G (max parallelism)** — The fixed number of key groups a keyed edge hashes into, chosen once for
-  the job (the `key_groups` argument to `compile_graph` / `run_plan`, default *G == Q*; a `--key-groups`
-  CLI flag is **(planned)**). Because each group maps to one instance, *G* is the most instances the
-  edge can be rescaled to without re-hashing, so it must be *>= Q*.
-- **Q (stage parallelism)** — The number of instances of the operator an edge feeds (its parallelism).
-  The `group → instance` table maps the *G* groups onto these *Q* instances.
+  (which hashes each key straight to an instance, modulo the parallelism) is the form it generalizes,
+  kept only as the test oracle for when the key-group count equals the parallelism.
+- **Key group** — One of a fixed number of buckets a key hashes to (`hash(key)` modulo the key-group
+  count) before being mapped to an instance through a static `group → instance` table the plan carries
+  (`KeyGroupPartitioner`). A key never moves between groups, so rescaling the instance count is a table
+  swap, not a re-hash of state.
+- **Max parallelism (the key-group count)** — The fixed number of key groups a keyed edge hashes into,
+  chosen once for the job (the `key_groups` argument to `compile_graph` / `run_plan`, defaulting to the
+  stage parallelism; a `--key-groups` CLI flag is **(planned)**). Because each group maps to one instance,
+  it is the most instances the edge can be rescaled to without re-hashing, so it must be at least the
+  stage parallelism.
+- **Stage parallelism** — The number of instances of the operator an edge feeds (its parallelism). The
+  `group → instance` table maps the key groups onto these instances.
 - **Key range** — The set of keys one instance owns: the union of the key groups the `group → instance`
-  table assigns to it. At *G == Q* (the identity table) this is the direct-hash range
-  `{k : hash(k) mod Q == i}`; with *G > Q* an instance owns one or more groups. Each key belongs to
-  exactly one instance.
+  table assigns to it. When the key-group count equals the parallelism (the identity table) this is the
+  direct-hash range — the keys whose hash, modulo the parallelism, equals the instance's own index; with
+  more key groups than instances, an instance owns one or more groups. Each key belongs to exactly one
+  instance.
 
 ## From graph to run (compile)
 
@@ -99,8 +104,8 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   **logical graph** and nothing more — the readable, join-capable way to build one. Start one with
   `source(...)`.
 - **Combinator / terminal** — A combinator is a `Stream` method that adds an operator and returns a new
-  stream; a terminal (`run`/`collect`) is the method that compiles and runs the stream. `run(workers=N)`
-  deploys the same graph across N processes.
+  stream; a terminal (`run`/`collect`) is the method that compiles and runs the stream. `run(workers=…)`
+  deploys the same graph across that many processes.
 - **Logical graph** — The job as you describe it: operators with their parallelism and keying wired into
   a dataflow, and nothing physical — no instances, no channels, no operator ids (`LogicalGraph`). With no
   explicit edges it is the linear shape (a source then a chain, built with `linear_graph`); with explicit
@@ -212,7 +217,7 @@ the set of frame types is fixed.
 - **RunResult** — What a run returns: the final output batches plus the run's telemetry report
   (`nautilus.driver.RunResult`; `result.telemetry`).
 - **Worker process** — One spawned OS process running a slice of the plan, with its own event loop and
-  no shared memory. `deploy` runs W of them on a single machine; routing within and between them is local
+  no shared memory. `deploy` runs several of them on a single machine; routing within and between them is local
   to each sender.
 - **Worker daemon** — A long-lived `nautilus worker` process (one per container) that binds a control
   port, waits, and runs one job per coordinator connection on a fresh event loop, then returns to idle.
@@ -232,7 +237,7 @@ the set of frame types is fixed.
   per-operator round-robin over the workers, so same-index subtasks co-locate and only a real shuffle
   crosses workers.
 - **Compile and deploy** — Lowering the graph to a physical plan (`compile`) and running it across
-  workers (`deploy`), driven from the CLI by `nautilus run --workers W --parallelism P`.
+  workers (`deploy`), driven from the CLI by `nautilus run --workers <count> --parallelism <count>`.
 
 ## Cross-worker connections
 

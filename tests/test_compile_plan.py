@@ -46,6 +46,8 @@ def test_edge_specs_come_from_the_downstream_operator() -> None:
 
 
 def test_keyless_fanout_selects_round_robin() -> None:
+    # The source is always one instance, so its edge into a wider stage is a one-to-many width change:
+    # no one-to-one mapping, so it rebalances round-robin (the one keyless edge that cannot forward).
     g = linear_graph(
         lambda: InMemorySource([]),
         [LogicalVertex("op0", lambda: MapBatch(lambda b: b), "one_input", 2)],
@@ -53,6 +55,38 @@ def test_keyless_fanout_selects_round_robin() -> None:
     plan = compile_graph(g)
     specs = {(e.src_operator_id, e.dst_operator_id): e.spec for e in plan.edges}
     assert isinstance(specs[("source", "op0")], RoundRobinSpec)
+
+
+def test_equal_width_keyless_edge_forwards_for_locality() -> None:
+    # Two keyless stages of the same width: the edge between them forwards straight across (sender i ->
+    # instance i), keeping each row on its origin instance instead of shuffling. The source's 1 -> 3
+    # fan-out still rebalances (a width change).
+    g = linear_graph(
+        lambda: InMemorySource([]),
+        [
+            LogicalVertex("op0", lambda: MapBatch(lambda b: b), "one_input", 3),
+            LogicalVertex("op1", lambda: MapBatch(lambda b: b), "one_input", 3),
+        ],
+    )
+    plan = compile_graph(g)
+    specs = {(e.src_operator_id, e.dst_operator_id): e.spec for e in plan.edges}
+    assert isinstance(specs[("source", "op0")], RoundRobinSpec)  # 1 -> 3 fan-out
+    assert isinstance(specs[("op0", "op1")], ForwardSpec)  # 3 -> 3 keyless: co-located forward
+
+
+def test_keyless_width_change_between_stages_rebalances() -> None:
+    # A keyless edge whose two stages differ in width has no one-to-one mapping, so it rebalances even
+    # away from the source (here 4 -> 2).
+    g = linear_graph(
+        lambda: InMemorySource([]),
+        [
+            LogicalVertex("op0", lambda: MapBatch(lambda b: b), "one_input", 4),
+            LogicalVertex("op1", lambda: MapBatch(lambda b: b), "one_input", 2),
+        ],
+    )
+    plan = compile_graph(g)
+    specs = {(e.src_operator_id, e.dst_operator_id): e.spec for e in plan.edges}
+    assert isinstance(specs[("op0", "op1")], RoundRobinSpec)
 
 
 def test_parallel_vertex_with_shared_instance_is_rejected() -> None:

@@ -161,7 +161,7 @@ class Stream:
         """Apply an async ``batch -> batch`` function with overlapping I/O
         (:class:`~nautilus.operators.AsyncMapBatch`): up to ``max_in_flight`` calls run at once. The
         stateless async map — enrich a batch from an awaited lookup without crowding the I/O into the
-        source. Keyless, so a parallel run round-robins batches across instances (the I/O fan-out).
+        source. Keyless, so a parallel run spreads batches across instances to fan the I/O out.
 
         ``ordered=False`` emits in completion order instead of input order (lower latency), sound here
         because the map is stateless (see

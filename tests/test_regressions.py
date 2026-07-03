@@ -7,6 +7,7 @@ it closed cannot silently return.
 from __future__ import annotations
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from nautilus import from_batches, run
@@ -102,6 +103,29 @@ def test_run_with_in_process_parallelism():
     result = run(src, [Tokenize("line", "word"), KeyedCount("word")], parallelism=3)
     counts = {r["word"]: r["count"] for r in result.to_pylist()}
     assert counts == {"a": 3, "b": 2, "c": 1}  # keyed shuffle never splits a key across instances
+
+
+def test_forward_edge_conserves_rows_across_equal_width_keyless_stages():
+    # Two keyless stages at the same width forward i -> i (the data-locality default) instead of
+    # round-robining. A downstream instance then reads data only from its same-index upstream but EOS from
+    # every upstream, so this pins that termination and row conservation still hold: each row is
+    # transformed exactly once and none is lost or duplicated. (In-process parallelism exercises the same
+    # Forward partitioner the cross-worker path uses.)
+    from nautilus.operators import MapBatch
+
+    def add_ten(b: pa.RecordBatch) -> pa.RecordBatch:
+        return pa.record_batch({"n": pc.add(b.column("n"), 10)})
+
+    def negate(b: pa.RecordBatch) -> pa.RecordBatch:
+        return pa.record_batch({"n": pc.negate(b.column("n"))})
+
+    batches = [pa.record_batch({"n": list(range(i * 10, i * 10 + 10))}) for i in range(6)]
+    expected = sorted(-(v + 10) for i in range(6) for v in range(i * 10, i * 10 + 10))
+    for parallelism in (1, 4):
+        result = run(
+            from_batches(*batches), [MapBatch(add_ten), MapBatch(negate)], parallelism=parallelism
+        )
+        assert sorted(r["n"] for r in result.to_pylist()) == expected
 
 
 # --- C95: OperatorContext enumerates/clears keyed state without the raw backend -----------------

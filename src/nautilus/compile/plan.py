@@ -27,7 +27,8 @@ from typing import ClassVar
 
 @dataclass(frozen=True, slots=True)
 class ForwardSpec:
-    """1:1 forwarding to a single downstream instance (a non-fan-out edge)."""
+    """Co-located 1:1 forwarding — sender ``i`` to downstream instance ``i`` (a single owner collapses
+    to instance 0). The data-local edge: it moves no data off its origin instance."""
 
     #: The edge's partitioner label in the report topology. Selection of the runtime partitioner is by
     #: spec *type* (``partitioner_from_spec``), not by this string; it happens to equal the runtime
@@ -37,7 +38,7 @@ class ForwardSpec:
 
 @dataclass(frozen=True, slots=True)
 class RoundRobinSpec:
-    """Keyless N-way rebalancing across the downstream instances."""
+    """Keyless rebalancing: rotates whole batches across the downstream instances."""
 
     partitioner_name: ClassVar[str] = "RoundRobin"
 
@@ -46,8 +47,8 @@ class RoundRobinSpec:
 class KeyGroupSpec:
     """A keyed shuffle through key-group indirection: hash each key to one of ``len(group_table)``
     groups, then route by ``group_table[group]`` to an instance. The table is computed once at compile
-    from the chosen group count ``G`` and the operator's parallelism ``Q`` (``G == Q`` gives the identity
-    table); it carries no live state, so it serializes safely and is fixed for the run."""
+    from the chosen key-group count and the operator's parallelism (equal counts give the identity table);
+    it carries no live state, so it serializes safely and is fixed for the run."""
 
     key_columns: tuple[str, ...]
     group_table: tuple[int, ...]

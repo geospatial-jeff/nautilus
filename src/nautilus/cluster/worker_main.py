@@ -31,12 +31,13 @@ from typing import Any, cast
 import cloudpickle
 
 from nautilus.cluster.membership import AddressBook, edge_resolver
-from nautilus.cluster.protocol import Done, Failed, Register, encode_batches
+from nautilus.cluster.protocol import Done, Failed, Heartbeat, Register, encode_batches
 from nautilus.compile.plan import PhysicalPlan
 from nautilus.runtime.channel import Channel
 from nautilus.runtime.connector import ChannelId, Connector, Deployment, InProcessConnector
 from nautilus.runtime.execute import execute
 from nautilus.telemetry import TelemetryConfig
+from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.transport.connector import SocketConnector
 from nautilus.transport.listener import EdgeListener
 
@@ -165,10 +166,27 @@ async def run_worker_slice(
             node=node,
             hosted=frozenset(instance for instance, w in placement.items() if w == worker_id),
         )
+
         # Each worker samples its own process, attributed to its node, so the report has one process row
         # per worker; across machines the node carries the host so a reader sees which container it ran on.
         # The config is the coordinator's, minus its clock (see deploy()).
-        result = await execute(plan, connector, deployment, capacity=capacity, config=config)
+        #
+        # When the coordinator attached a dashboard it set config.heartbeat_interval_micros; push this
+        # worker's snapshot on that cadence over the same send_event the terminal Done uses. execute owns
+        # the timer and the registry — here we only wrap each snapshot as a Heartbeat and ship it.
+        def send_heartbeat(snaps: list[InstanceSnapshot]) -> None:
+            send_event(Heartbeat(worker_id, snaps))
+
+        interval = config.heartbeat_interval_micros
+        result = await execute(
+            plan,
+            connector,
+            deployment,
+            capacity=capacity,
+            config=config,
+            heartbeat=send_heartbeat if interval is not None else None,
+            heartbeat_interval_micros=interval or 500_000,
+        )
         send_event(Done(worker_id, result.snapshots, encode_batches(result.sink_batches)))
     except Exception:
         send_event(Failed(worker_id, traceback.format_exc()))

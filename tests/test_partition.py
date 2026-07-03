@@ -89,11 +89,20 @@ def test_encoder_is_length_prefixed() -> None:
 # --- Forward / RoundRobin ----------------------------------------------------------------------
 
 
-def test_forward_requires_single_downstream() -> None:
+def test_forward_single_owner_routes_to_instance_zero() -> None:
+    # One downstream instance (a fan-in, or the trivial 1:1 edge): every sender's batch goes to it,
+    # whatever the sender's own index.
     b = batch(x=[1, 2, 3])
     assert Forward().route(b, 1) == [(0, b)]
-    with pytest.raises(ValueError):
-        Forward().route(b, 2)
+    assert Forward(3).route(b, 1) == [(0, b)]
+
+
+def test_forward_equal_width_co_locates_sender_to_same_index() -> None:
+    # Equal-width keyless edge: sender i hands its whole batch straight to downstream instance i — the
+    # data-locality forward the compiler picks when the two stages are the same width.
+    b = batch(x=[1, 2, 3])
+    assert Forward(0).route(b, 4) == [(0, b)]
+    assert Forward(2).route(b, 4) == [(2, b)]
 
 
 def test_roundrobin_rotates_whole_batches() -> None:

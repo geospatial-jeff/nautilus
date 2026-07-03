@@ -44,6 +44,87 @@ starts from evidence, not a cold read.
   id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
   as diminishing returns next to the ~90–125× already shipped.
 
+- **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
+  by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
+  stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
+  straight down the forwarded chain, with no way to re-spread it. Spark and Flink keep locality the default
+  and expose an explicit `repartition()` / `rebalance()` for exactly this case. A DSL `.rebalance()` that
+  forced a `RoundRobinSpec` on the next edge would restore that escape hatch; not built, because no current
+  workload needs it — the source's fan-out to every instance already balances the initial spread, and every built-in
+  keyless stage is roughly row-preserving.
+
+- **Sentinel-2 source lists STAC items serially.** `Sentinel2ItemSource.frames` awaits each item's STAC
+  lookup one at a time, so `io.wait_micros` on the single source is ~0.28s per item (1.76s for 6 items).
+  After the decode/reduce fusion that is ~26% of the 6-worker wall (6.82s) — the next bottleneck. Coalescing
+  the lookups (a bounded `asyncio.gather` prefetch, or one STAC `/search` POST by id list instead of one GET
+  per item)
+  would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
+  fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
+
+---
+
+## 2026-07-03 — Forward equal-width keyless edges: data locality instead of always shuffling
+
+- **Commit:** `e41fae6`.
+- **Change:** `_spec_for` (`src/nautilus/compile/lower.py`) now selects an edge's partitioner from *both*
+  stages' widths, not only the downstream's. A keyless hop between two stages of the same width takes a
+  `ForwardSpec` — sender `i` to instance `i` — instead of a `RoundRobinSpec`; keyed edges (the key-group
+  shuffle) and the single source's fan-out to every instance (round-robin) are unchanged. `Forward`
+  (`src/nautilus/runtime/partition.py`) gained a sender index and routes `i → i` (collapsing to instance 0
+  for a single owner); `execute` threads each output's subtask index in. With same-index placement the
+  forwarded edge is a free in-process channel, so across workers it moves no bytes and does no Arrow-IPC
+  encode/decode. This is the narrow-vs-shuffle split Spark and Flink default to (`DESIGN.md` mechanism 9);
+  it resolves the "no co-located forward edge" open item above.
+- **Measured with** a new committed benchmark, `bench-chain` (two keyless stages `source → map → map`,
+  the shape `bench-linear`'s single stage cannot make; 256-byte payload so the inter-stage edge moves real
+  bytes). Its `bench-chain-dist` baseline entry (2 workers, parallelism 4) exercises the forward edge in CI.
+- **Impact (`nautilus bench bench-chain --workers 2 --parallelism 4 --rows 200000`, median of 7 trials;
+  Linux x86_64 · Python 3.12.3):** round-robin (the change reverted) **659k → 704k rows/s forward, 1.07×**.
+  The gain is modest because `--workers` here is loopback TCP, memory-fast, so eliminating the shuffle
+  mostly saves the Arrow-IPC encode/decode — a thin slice of a passthrough pipeline; the win scales with
+  the *cost* of the removed bytes, and on a real network the shuffled volume is the bottleneck (the NDVI
+  fusion entry below removed the same class of shuffle, 2537 MB → 0, for 1.41× on a live-S3 run). What the
+  forward edge removes is unambiguous: on a 2-worker A/B, the middle edge's data crossing a socket goes
+  from ~half the stream (66 KB on the guard test) to **zero** — only EOS control frames remain.
+- **Correctness:** a routing change, so the check is the **output multiset**, not the digest — and here
+  the digest is in fact *identical* under both routings (`0bc7cff84d2b`), because a same-width keyless edge
+  moves whole batches and each instance ends with the same row count either way. That is exactly why the
+  digest cannot guard this and `bench-check` cannot catch a revert; the guard is a transport assertion,
+  `test_equal_width_keyless_edge_co_locates_and_crosses_no_socket` (`tests/test_cluster_deploy.py`), which
+  deploys across two workers and fails if any data batch crosses the forward edge's sockets (verified: it
+  fails, 66 KB > threshold, when the edge is forced back to round-robin). Row conservation and termination
+  are pinned in-process by `test_forward_edge_conserves_rows_across_equal_width_keyless_stages`. Every
+  other committed baseline digest and throughput is unchanged.
+
+---
+
+## 2026-07-03 — Sentinel-2 NDVI: fuse the reduction into decode so raw pixels never shuffle
+
+- **Commit:** `8c41627`.
+- **Change:** the example (`examples/sentinel2_ndvi.py`) split scene decode (`AsyncOpenAndDecode`) from a
+  separate keyless `TileNdvi` that computed NDVI. Between two keyless operators the compiler picks a
+  `RoundRobinSpec`, so across workers that edge is a network shuffle — raw uint16 pixel tensors crossed the
+  wire only to be summed to two numbers per tile on the far side. Fused the two into one `AsyncNdviTiles`
+  whose `fetch` reduces each tile-row to its `(ndvi_sum, valid_count)` partials *as it reads it*, freeing
+  the row's pixels before the next loads; `integrate` emits only the accumulated partials. Peak memory per
+  scene drops from the whole decoded scene (~0.5 GB) to one tile-row (~tens of MB), and only the tiny
+  partials reach the keyed `MeanNdviByItem`. NDVI math is unchanged (extracted verbatim to `_ndvi_partials`).
+- **Impact (6 and 12 real `sentinel-2-l2a` scenes; Linux x86_64 · Python 3.12.3; median of 3 warm trials —
+  a live-S3 workload, so wider variance than the synthetic benches, and not in `bench-check`):** the metric
+  is `transport.bytes_sent`, **2537 MB → 0** at 6 scenes / 6 workers. Wall **9.62s → 6.82s (1.41×)** at 6
+  scenes / 6 workers; **16.18s → 10.78s (1.50×)** at 12 scenes / 6 workers (that run shuffled 5.1 GB before,
+  0.1 MB after). Six-way scaling over the single-worker baseline went from 1.06× to 2.0×. The default
+  one-scene single-process run is unchanged (5.37s → 5.82s, within noise).
+- **Trade-off (not a regression of the target):** many scenes on *one* worker lose the I/O/CPU overlap that
+  two separate operators gave — 6 scenes on a single worker went 10.24s → 13.70s — because a fused
+  operator's decode I/O and NDVI CPU no longer run as concurrent stages. This is the config `--workers`
+  exists to avoid; the reduction is not in the committed baseline, so `bench-check` does not gate it.
+- **Correctness:** topology changed (one fewer operator, and the intermediate edge now carries partials not
+  pixels), so the structural digest legitimately differs and is not the anchor here. Instead the **per-item
+  mean-NDVI output multiset is byte-identical** before vs after, on both a single worker and six (and
+  cross-checked the single-worker before-run against the six-worker after-run).
+  `tests/test_examples_sentinel2.py` green.
+
 ---
 
 ## 2026-07-01 — Unordered async-transform emission (completion order) for stateless maps

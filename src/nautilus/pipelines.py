@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import cloudpickle
 import numpy as np
 import pyarrow as pa
 
@@ -99,16 +100,22 @@ def _load_example_builder(filename: str, fn_name: str) -> Callable[..., Any]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module  # so the example's @dataclass can resolve its own annotations
     spec.loader.exec_module(module)
+    # A file-loaded example isn't importable by name, so cloudpickle would pickle its operators by
+    # reference to this synthetic module — and a spawned worker, which never loaded the file, couldn't
+    # resolve it (ModuleNotFoundError on plan load). Registering the module pickles those operators by
+    # value instead, so the plan is self-contained and runs on any worker, local or remote.
+    cloudpickle.register_pickle_by_value(module)
     builder: Callable[..., Any] = getattr(module, fn_name)
     return builder
 
 
 def sentinel2_ndvi(parallelism: int = 1) -> LogicalGraph:
     """Average NDVI over a Sentinel-2 L2A scene read straight from cloud COGs, as a *graph* pipeline: STAC
-    item ids -> async open + range-read + decode (the awaiting transform) -> NDVI per tile (fan-out) ->
-    average per scene (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is
-    an awaiting transform. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see
-    examples/sentinel2_ndvi.py."""
+    item ids -> async open + range-read + decode + NDVI reduce (the awaiting transform) -> average per scene
+    (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is an awaiting
+    transform; the NDVI reduction is fused into it so only per-tile partials, not raw pixels, cross to the
+    reduce. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see examples/sentinel2_ndvi.py.
+    """
     build = _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")
     graph: LogicalGraph = build(
         parallelism=parallelism
@@ -140,6 +147,24 @@ def bench_linear() -> Pipeline:
         key_cardinality=p["key_cardinality"],
     )
     return source, [MapBatch(passthrough)]
+
+
+def bench_chain() -> Pipeline:
+    """Benchmark: two keyless identity stages (source -> map -> map -> sink) — the shape whose middle
+    edge is a same-width keyless hop, which `bench-linear` (one stage) has not got. That edge forwards
+    (sender i -> instance i, co-located) rather than round-robining, so at `--workers` > 1 it crosses no
+    socket; round-robin would send half the rows over one. Run it distributed to exercise the forward
+    edge: `nautilus bench bench-chain --workers 2 --parallelism 4 --label bench-chain-dist`. Each row
+    carries a fixed 256-byte payload so the difference is real wire bytes, not just per-batch overhead —
+    the lever that separates the forward and round-robin cost on the inter-stage edge."""
+    p = bench_params()
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+        payload_bytes=256,  # fixed so bench-check reproduces the workload; makes the shuffle cost real
+    )
+    return source, [MapBatch(passthrough), MapBatch(passthrough)]
 
 
 def bench_fanout() -> Pipeline:
@@ -263,6 +288,7 @@ EXAMPLES: dict[str, Builder] = {
     "image-embed": image_embed,
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
+    "bench-chain": bench_chain,
     "bench-fanout": bench_fanout,
     "bench-skew": bench_skew,
     "bench-backpressure": bench_backpressure,

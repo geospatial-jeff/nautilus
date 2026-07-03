@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import threading
+import webbrowser
 from collections.abc import Callable
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,7 +32,7 @@ from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.run import plan_to_topology, run_compiled
 from nautilus.runtime.channel import DEFAULT_CAPACITY
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
-from nautilus.telemetry.report import RunMeta, Topology, build_report
+from nautilus.telemetry.report import RunMeta, RunReport, Topology, build_report
 
 _FALLBACK_HTML = b"""<!doctype html><html><head><meta charset=utf-8><title>nautilus</title></head>
 <body><h1>nautilus telemetry</h1><p>Live report at <a href="/api/telemetry.json">/api/telemetry.json</a>.
@@ -41,6 +42,13 @@ The full dashboard HTML is not packaged in this build.</p></body></html>"""
 def load_dashboard_html() -> bytes:
     path = Path(__file__).parent / "dashboard.html"
     return path.read_bytes() if path.exists() else _FALLBACK_HTML
+
+
+def open_in_browser(url: str) -> None:
+    """Best-effort: open ``url`` in a browser, but never fail the run for it — a headless host (SSH, CI,
+    no display) has no browser to launch, and the URL is printed regardless."""
+    with contextlib.suppress(Exception):
+        webbrowser.open(url)
 
 
 class Snapshotter(Protocol):
@@ -90,6 +98,39 @@ class SnapshotSource:
     def render_json(self, *, timeout: float = 2.0) -> str:
         future = asyncio.run_coroutine_threadsafe(self._snapshot(), self._loop)
         return future.result(timeout=timeout)
+
+
+class LiveAggregator:
+    """Serves the coordinator's latest live report — the cluster counterpart to :class:`SnapshotSource`.
+    ``update`` is called from the coordinator's thread on each heartbeat; ``render_json`` from the HTTP
+    thread. Neither blocks the other and neither locks: ``update`` swaps in a new immutable
+    :class:`~nautilus.telemetry.report.RunReport` behind a plain attribute (atomic under the GIL) and
+    ``render_json`` reads it. Unlike ``SnapshotSource`` there is no loop hop — the report handed in is
+    already frozen, so the HTTP thread only serializes it. ``mark_completed`` flips the served status when
+    the run ends, so the page shows ``completed`` while it lingers on the final report."""
+
+    def __init__(self) -> None:
+        self._report: RunReport | None = None
+        self._status = "live"
+
+    def update(self, report: RunReport) -> None:
+        self._report = report
+
+    def mark_completed(self) -> None:
+        self._status = "completed"
+
+    def render_json(self, *, timeout: float = 2.0) -> str:
+        report = self._report
+        if report is None:
+            # No worker has reported yet — a minimal body so the page can poll without erroring.
+            return json.dumps(
+                {"status": self._status, "sampled_at_micros": SystemClock().now_micros()},
+                sort_keys=True,
+            )
+        doc = report.to_dict()
+        doc["status"] = self._status
+        doc["sampled_at_micros"] = SystemClock().now_micros()
+        return json.dumps(doc, sort_keys=True)
 
 
 class _Server(ThreadingHTTPServer):
@@ -218,9 +259,7 @@ async def serve_graph(
     if on_ready is not None:
         on_ready(server.url)
     if open_browser:
-        import webbrowser
-
-        webbrowser.open(server.url)
+        open_in_browser(server.url)
 
     run_task = asyncio.create_task(
         run_compiled(plan, capacity=capacity, clock=clk, telemetry=config, registry=registry)

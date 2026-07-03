@@ -28,7 +28,7 @@ from nautilus.core.records import EOS_FRAME
 from nautilus.driver.local import run_local_chain
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import run_plan
-from nautilus.operators import InMemorySource, KeyedCount, Tokenize
+from nautilus.operators import InMemorySource, KeyedCount, MapBatch, Tokenize
 from nautilus.testing import data, op_counter, staged_graph
 
 # Ship this module's operator classes by value, so a spawned worker reconstructs them without importing
@@ -47,6 +47,10 @@ class _RaiseOnOpen(OneInputOperator):
 class _RaiseOnProcess(OneInputOperator):
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
         raise RuntimeError("boom at process")
+
+
+def _identity(batch: pa.RecordBatch) -> pa.RecordBatch:
+    return batch  # a keyless stateless stage, so its inbound edge routes by position, not key
 
 
 def _source() -> InMemorySource:
@@ -150,6 +154,42 @@ def test_cross_worker_run_records_transport_and_placement() -> None:
     assert sum(placements.values()) == len(
         instances
     )  # every instance is placed on exactly one worker
+
+
+def test_equal_width_keyless_edge_co_locates_and_crosses_no_socket() -> None:
+    # The regression guard for the forward-edge routing (data locality): source(1) -> op0(2) -> op1(2),
+    # both maps keyless. op0 -> op1 is a 2 -> 2 keyless edge, so it forwards (sender i -> instance i);
+    # with same-index placement across two workers op0[i] and op1[i] share a worker, so no DATA batch
+    # crosses that edge's sockets. The source's 1 -> 2 fan-out has no 1:1 mapping and does cross. A revert
+    # to round-robin on the middle edge would push half the data across a socket — caught here. (The
+    # structural digest can't guard this: forward and round-robin give the same per-instance row counts on
+    # a uniform stream, so only the bytes crossing a socket tell them apart.)
+    #
+    # transport.bytes_sent counts every frame over a socket, including the EOS each instance broadcasts to
+    # its remote peers — so a co-located data edge still shows a few bytes of control traffic. The signal
+    # is DATA, orders of magnitude larger: eight 4096-row int64 batches are ~32 KB each, so a data-carrying
+    # socket edge is >> 1 KB while a control-only one is a handful of bytes.
+    from nautilus.telemetry.catalog import Tier
+    from nautilus.telemetry.recorder import TelemetryConfig
+
+    src = InMemorySource(
+        [data(n=list(range(i * 4096, (i + 1) * 4096))) for i in range(8)] + [EOS_FRAME]
+    )
+    graph = staged_graph(src, [(MapBatch(_identity), 2, None), (MapBatch(_identity), 2, None)])
+    rep = deploy(graph, num_workers=2, telemetry=TelemetryConfig(tier=Tier.FULL)).telemetry
+
+    edge_bytes = {
+        (dict(p.labels)["edge_src"], dict(p.labels)["edge_dst"]): p.value
+        for o in rep.operators
+        for p in o.counters
+        if p.name == "transport.bytes_sent"
+    }
+    # The forward edge carried only control frames across its sockets — no data batch (which would be tens
+    # of KB) ever crossed. Round-robin here would push ~half the data over, blowing past this.
+    assert edge_bytes.get(("op0", "op1"), 0) < 1024
+    # Sanity that the run genuinely spans workers (so the check above means co-location, not disabled
+    # sockets): the source's 1 -> 2 fan-out did send real data over a socket.
+    assert edge_bytes.get(("source", "op0"), 0) > 10_000
 
 
 # --- fail-fast: re-raise the child traceback and reap every worker -----------------------------

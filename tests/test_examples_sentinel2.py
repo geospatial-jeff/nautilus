@@ -24,9 +24,7 @@ import pytest
 
 from nautilus.core.operator import ListCollector, OperatorContext
 from nautilus.core.records import Batch
-from nautilus.driver.local import run
 from nautilus.driver.run import run_plan
-from nautilus.operators import from_batches
 from nautilus.telemetry import TelemetryConfig, Tier
 
 _PATH = Path(__file__).resolve().parent.parent / "examples" / "sentinel2_ndvi.py"
@@ -50,7 +48,7 @@ class FakeReader:
     def __init__(self, scenes: dict[str, Scene]) -> None:
         self.scenes = scenes
 
-    async def open(self, href: str, level: int) -> Any:
+    async def open(self, href: str) -> Any:
         band, item = href.split("://")
         coords = list(
             self.scenes[item]["red"]
@@ -101,7 +99,7 @@ def test_mean_ndvi_is_pixel_weighted_and_masks_fill() -> None:
 
 
 def test_fanout_parallel_matches_serial() -> None:
-    # Decode and NDVI fan out and the mean shuffles by item; a parallel run must match a serial one.
+    # The fused decode+NDVI stage fans out and the mean shuffles by item; parallel must match serial.
     scenes = {"ITEM_A": _uniform_scene(4000, 2000, grid=3)}  # NDVI = 2000/6000 = 1/3
     serial = _run(scenes)
     parallel = _run(scenes, parallelism=3)
@@ -121,12 +119,11 @@ def test_multiple_items_each_get_their_own_mean() -> None:
     assert rows["WATER"]["mean_ndvi"] == pytest.approx(-200 / 2200)
 
 
-def test_tile_ndvi_all_fill_tile_contributes_nothing() -> None:
+def test_ndvi_all_fill_tile_contributes_nothing() -> None:
     # A fully-fill tile (both bands 0) reduces to sum 0, count 0 — no divide-by-zero, no NaN leak.
-    batch = s2._row_batch("X", [np.zeros((4, 4), np.uint16)], [np.zeros((4, 4), np.uint16)])
-    row = run(from_batches(batch), [s2.TileNdvi()]).to_pylist()[0]
-    assert row["valid_count"] == 0
-    assert row["ndvi_sum"] == 0.0
+    sums, counts = s2._ndvi_partials([np.zeros((4, 4), np.uint16)], [np.zeros((4, 4), np.uint16)])
+    assert counts.tolist() == [0]
+    assert sums.tolist() == [0.0]
 
 
 async def test_source_lists_one_row_per_item() -> None:
@@ -139,10 +136,11 @@ async def test_source_lists_one_row_per_item() -> None:
     assert batches[0].column("red_href")[0].as_py() == "red://ITEM_A"
 
 
-async def test_decode_stage_emits_one_batch_per_tile_row() -> None:
-    # The fan-out granularity moved from the source to AsyncOpenAndDecode: fetch reads a scene, integrate
-    # emits one (item_id, red, nir) tensor batch per tile-grid row (a 2x2 grid -> 2 batches of 2 tiles).
-    op = s2.AsyncOpenAndDecode(reader=FakeReader({"ITEM_A": _uniform_scene(3000, 1000)}))
+async def test_decode_stage_reduces_scene_to_ndvi_partials() -> None:
+    # The fused stage reads a scene and emits one (item_id, ndvi_sum, valid_count) batch per scene, one row
+    # per tile — the NDVI reduction happens here, so raw pixels never leave the operator. A 2x2 grid of 2x2
+    # tiles at NDVI 0.5 -> 4 partial rows, each summing 0.5 over its 4 valid pixels.
+    op = s2.AsyncNdviTiles(reader=FakeReader({"ITEM_A": _uniform_scene(3000, 1000)}))
     op.open(OperatorContext("op0"))
     src = pa.record_batch(
         {"item_id": ["ITEM_A"], "red_href": ["red://ITEM_A"], "nir_href": ["nir://ITEM_A"]}
@@ -151,9 +149,12 @@ async def test_decode_stage_emits_one_batch_per_tile_row() -> None:
     collector = ListCollector()
     op.integrate(src, result, OperatorContext("op0"), collector)
     batches = collector.drain()
-    assert len(batches) == 2  # two tile-rows
-    assert all(b.num_rows == 2 for b in batches)  # two tiles per row
-    assert s2.AsyncOpenAndDecode().key_columns() is None  # stateless — keyless, round-robin fan-out
+    assert len(batches) == 1  # one batch per scene
+    assert batches[0].num_rows == 4  # 2x2 grid -> one partial row per tile
+    assert set(batches[0].schema.names) == {"item_id", "ndvi_sum", "valid_count"}
+    assert batches[0].column("ndvi_sum").to_pylist() == [2.0, 2.0, 2.0, 2.0]  # 0.5 over 4 pixels
+    assert batches[0].column("valid_count").to_pylist() == [4, 4, 4, 4]
+    assert s2.AsyncNdviTiles().key_columns() is None  # stateless — keyless, round-robin fan-out
 
 
 def test_source_io_wait_and_decode_request_micros_recorded() -> None:
@@ -208,7 +209,7 @@ async def test_write_only_sink_writes_each_scene_and_returns_no_batches() -> Non
 
 @pytest.mark.network
 def test_real_sentinel2_scene_mean_is_in_range() -> None:
-    # End-to-end against the public bucket via async-geotiff, at the coarsest overview (a few tiles).
+    # End-to-end against the public bucket via async-geotiff, at full native resolution (a heavy scene).
     rows = asyncio.run(run_plan(s2.sentinel2_ndvi())).to_pylist()
     assert len(rows) == 1
     assert rows[0]["valid_count"] > 0

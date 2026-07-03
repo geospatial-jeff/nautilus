@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter_ns
 from typing import cast
@@ -81,12 +82,14 @@ class ExecuteResult:
     sink_batches: list[pa.RecordBatch]
 
 
-def partitioner_from_spec(spec: PartitionerSpec) -> Partitioner:
+def partitioner_from_spec(spec: PartitionerSpec, sender_index: int = 0) -> Partitioner:
     """Instantiate a fresh runtime partitioner from a plan spec. Fresh per call so each
     :class:`~nautilus.runtime.actor.Output` owns its own :class:`RoundRobin` cursor — the rotation
-    state the plan deliberately never carries."""
+    state the plan deliberately never carries. ``sender_index`` is the emitting instance's subtask
+    index: a :class:`Forward` on an equal-width edge routes to the same-index downstream instance, so
+    each output carries its own; the shuffles ignore it (they route by cursor or key)."""
     if isinstance(spec, ForwardSpec):
-        return Forward()
+        return Forward(sender_index)
     if isinstance(spec, KeyGroupSpec):
         return KeyGroupPartitioner(spec.key_columns, spec.group_table)
     if isinstance(spec, RoundRobinSpec):
@@ -130,8 +133,16 @@ async def execute(
     clock: Clock | None = None,
     config: TelemetryConfig | None = None,
     registry: RecorderRegistry | None = None,
+    heartbeat: Callable[[list[InstanceSnapshot]], None] | None = None,
+    heartbeat_interval_micros: int = 500_000,
 ) -> ExecuteResult:
-    """Run the instances this worker hosts to completion and return their snapshots + sink batches."""
+    """Run the instances this worker hosts to completion and return their snapshots + sink batches.
+
+    ``heartbeat``, when given, is called about every ``heartbeat_interval_micros`` with a fresh
+    ``registry.snapshot_all()`` so a live dashboard can rebuild the cross-worker report mid-run; the
+    snapshot in the returned result is still the authoritative final one. The caller supplies the
+    transport (a spawned worker puts a ``Heartbeat`` on its queue, a daemon writes it to its control
+    socket), so the executor never names a control message."""
     clk = clock or SystemClock()
     cfg = config or TelemetryConfig(clock=clk)
     registry = registry or RecorderRegistry()
@@ -172,7 +183,7 @@ async def execute(
             outs.append(
                 Output(
                     channels,
-                    partitioner_from_spec(edge.spec),
+                    partitioner_from_spec(edge.spec, subtask),
                     recorder=recorder,
                     edge_src=operator_id,
                     edge_dst=edge.dst_operator_id,
@@ -351,11 +362,36 @@ async def execute(
                 sampler = SystemSampler(proc_rec, interval_micros=cfg.sample_interval_micros)
                 sampler_task = asyncio.create_task(sampler.run())
 
+        # A telemetry heartbeat, when a live dashboard is attached: push this worker's snapshot to the
+        # coordinator on a fixed cadence so the dashboard rebuilds the cross-worker report mid-run. Like
+        # the sampler it runs OUTSIDE the data TaskGroup — it can neither delay completion nor cancel a
+        # data task — and reads the registry between actor steps (the single-reader-on-the-loop safety
+        # snapshot_all documents). The terminal snapshot is still authoritative, so a dropped heartbeat
+        # only delays a refresh.
+        heartbeat_task: asyncio.Task[None] | None = None
+        if heartbeat is not None:
+            cb = heartbeat
+            reg = registry
+
+            async def _heartbeat_loop() -> None:
+                # Fire once immediately so a worker appears on the dashboard the instant it starts, then on
+                # the interval. The first snapshot reads the recorders Phase A/B just registered.
+                interval_s = heartbeat_interval_micros / 1_000_000
+                while True:
+                    cb(reg.snapshot_all())
+                    await asyncio.sleep(interval_s)
+
+            heartbeat_task = asyncio.create_task(_heartbeat_loop())
+
         try:
             async with asyncio.TaskGroup() as tg:
                 for coro in coros:
                     tg.create_task(coro)
         finally:
+            if heartbeat_task is not None:
+                heartbeat_task.cancel()  # cancel FIRST so no snapshot ships during teardown
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
             if sampler_task is not None and sampler is not None:
                 sampler_task.cancel()  # cancel FIRST so no pending tick fires after the final reading
                 with contextlib.suppress(asyncio.CancelledError):
