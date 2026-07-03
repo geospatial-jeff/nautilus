@@ -152,7 +152,8 @@ invariants are `DESIGN.md` mechanism 8; the loop mechanics are the `run_async_tr
   **completion order** (`ordered=False`) — a slow batch no longer blocks a finished one — with EOS still a
   hard barrier; rejected for keyed stages so the digest stays reproducible. The
   Sentinel-2 example is reworked into a `Stream` graph that moves COG open + range-read + decode out of
-  the source into an `AsyncOpenAndDecode` async transform, with an opt-in `--write` async sink.
+  the source into an async transform (`AsyncNdviTiles`, which also reduces each tile to its NDVI partial so
+  raw pixels never cross the shuffle), with an opt-in `--write` async sink.
 
 ## Telemetry · **Done**
 

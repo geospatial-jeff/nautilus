@@ -111,10 +111,10 @@ def _load_example_builder(filename: str, fn_name: str) -> Callable[..., Any]:
 
 def sentinel2_ndvi(parallelism: int = 1) -> LogicalGraph:
     """Average NDVI over a Sentinel-2 L2A scene read straight from cloud COGs, as a *graph* pipeline: STAC
-    item ids -> async open + range-read + decode (the awaiting transform) -> NDVI per tile (fan-out) ->
-    average per scene (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is
-    an awaiting transform. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see
-    examples/sentinel2_ndvi.py."""
+    item ids -> async open + range-read + decode + NDVI reduce (the awaiting transform) -> average per scene
+    (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is an awaiting
+    transform; the NDVI reduction is fused into it so only per-tile partials, not raw pixels, cross to the
+    reduce. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see examples/sentinel2_ndvi.py."""
     build = _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")
     graph: LogicalGraph = build(
         parallelism=parallelism
