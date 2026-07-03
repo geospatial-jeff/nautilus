@@ -49,7 +49,7 @@ nautilus run PIPELINE [options]
 | `--capacity` | `16` | channel capacity (backpressure bound) |
 | `--head` | `5` | rows of pipeline output to preview |
 | `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
-| `--parallelism` | `--workers` | instances per operator (keyed operators shuffle by key); defaults to `--workers`, so `--workers N` is N-way. Set it below `--workers` and the surplus workers are capped away (with a warning) |
+| `--parallelism` | `--workers` | instances per operator (keyed operators shuffle by key); defaults to `--workers`, so asking for some number of workers gives that many ways of parallel work. Set it below `--workers` and the surplus workers are capped away (with a warning) |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); runs multi-node instead of spawning locally |
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`
@@ -149,7 +149,7 @@ nautilus dashboard PIPELINE [options]
 | `--parallelism` | `--workers` | instances per operator (keyed ops shuffle by key); defaults to `--workers` |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); serves multi-node instead of spawning locally |
 | `--linger` / `--no-linger` | `--linger` | keep serving after a bounded run completes |
-| `--max-seconds` | none | stop after N seconds (caps unbounded runs) |
+| `--max-seconds` | none | stop after the given number of seconds (caps unbounded runs) |
 | `--open` / `--no-open` | `--open` | open the dashboard in a browser (best-effort; a no-op on a headless host) |
 
 Example (single process): `uv run nautilus dashboard image-embed --open`
@@ -181,7 +181,7 @@ nautilus version
 
 ### bench
 
-Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-N), compare to a
+Measure a pipeline's throughput over repeated trials (median + IQR, not best-of-a-few), compare to a
 baseline if one exists, and optionally update it. Telemetry must be at least `counters` (the structural
 digest is the correctness anchor). This produces the before/after numbers a `PERFORMANCE_CHANGELOG.md`
 entry records.

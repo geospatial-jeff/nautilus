@@ -438,8 +438,8 @@ def build_report(
     topology: Topology | None = None,
 ) -> RunReport:
     """Aggregate per-instance snapshots into one immutable :class:`RunReport`."""
-    # node joins the grouping key so each worker's hardware ("process") row stays distinct — there are
-    # exactly W of them across W workers. For a dataflow row this is a no-op: an operator instance lives
+    # node joins the grouping key so each worker's hardware ("process") row stays distinct — there is
+    # exactly one per worker. For a dataflow row this is a no-op: an operator instance lives
     # on exactly one node, so adding node never splits it.
     groups: dict[tuple[str, int, str], list[InstanceSnapshot]] = {}
     for s in snapshots:

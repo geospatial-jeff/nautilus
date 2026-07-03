@@ -41,7 +41,7 @@ result = source(lines).tokenize("line", "word").count_by("word").run()
 print(result.to_pylist())              # [{'word': 'the', 'count': 2}, ...]
 ```
 
-`.run(workers=N)` deploys the *same* graph across N worker processes — the only change from the
+`.run(workers=…)` deploys the *same* graph across that many worker processes — the only change from the
 single-process run. `.join` combines two streams into an inner equi-join (both sides shuffled on the key,
 so rows with the same key are routed to one instance):
 

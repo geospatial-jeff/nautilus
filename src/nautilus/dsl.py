@@ -4,7 +4,7 @@ A :class:`Stream` is an immutable handle on a dataflow under construction: every
 *new* Stream that adds one operator, so a Stream value is reusable and side-effect-free. :func:`source`
 starts one; ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by`` / ``.apply`` extend
 it; ``.join`` combines two; and ``.run`` / ``.collect`` execute it. The same graph runs in one process or
-across workers — ``.run(workers=N)`` is the only thing that changes.
+across workers — ``.run(workers=…)`` is the only thing that changes.
 
 This is a value layer that sits *above* :mod:`nautilus.api`: it knows the concrete operators (so it can
 build them for you) but it only ever produces a :class:`~nautilus.api.LogicalGraph`. The runners live at
@@ -138,7 +138,7 @@ class Stream:
         deep-copied per subtask, so it must be deep-copyable.
 
         Because a parallelism-1 ``apply`` shares the single given instance, a later uniform
-        ``run(parallelism=N)`` / ``to_graph(parallelism=N)`` cannot scale *this* vertex up (the shared
+        ``run(parallelism=…)`` / ``to_graph(parallelism=…)`` cannot scale *this* vertex up (the shared
         instance cannot be replicated). To run an applied operator in parallel, pass its ``parallelism``
         here. The verb combinators build a fresh operator per subtask, so they have no such limit.
         """

@@ -145,8 +145,9 @@ the set of frame types is fixed.
   pass between processes.
 - **Micro-batch** — Carrying many rows per frame instead of one row at a time, to reduce per-record
   overhead. One `Batch` is one micro-batch.
-- **Tensor column** — An Arrow `fixed_shape_tensor` column whose rows are fixed-shape N-D arrays (for
-  example an `H×W×C` image), stored row-major as a `fixed_size_list`; the shape is type metadata and
+- **Tensor column** — An Arrow `fixed_shape_tensor` column whose rows are fixed-shape multidimensional
+  arrays (for example an `H×W×C` image), stored row-major as a `fixed_size_list`; the shape is type
+  metadata and
   the column length is the batch dimension. `nautilus.tensors` builds these from numpy and reads them
   back (`tensor_array` / `embedding_array` / `to_numpy`).
 - **Embedding** — A 1-D float vector per row, held as a tensor column of shape `(dim,)`. Its

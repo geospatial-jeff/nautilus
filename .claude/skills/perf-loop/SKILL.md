@@ -36,8 +36,9 @@ imbalance, the classic distributed killer — read per-subtask `operator.rows_in
 `bench-backpressure` (a deliberately slow stage → the channel saturates so `edge.queue_depth_hist` /
 `edge.send_wait_micros` / `edge.credit_wait_micros` finally populate). The `SyntheticKeyedSource` knobs
 (`skew`, `value_spread`, `null_fraction`, `payload_bytes`) compose these if you need a custom
-mix. Add `--parallelism N` to run N instances (the keyed shuffle then routes by key); add `--workers W`
-to spawn W processes (a true shuffle then crosses a TCP socket — `benchmarks/baseline.json` carries a
+mix. Add `--parallelism <n>` to run that many instances (the keyed shuffle then routes by key); add
+`--workers <n>` to spawn that many processes (a true shuffle then crosses a TCP socket —
+`benchmarks/baseline.json` carries a
 `bench-keyed-dist` entry that does exactly this). Keep total rows fixed when sweeping a knob so throughput
 is comparable.
 

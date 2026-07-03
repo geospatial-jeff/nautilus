@@ -66,8 +66,9 @@ async def async_io_wait(batch: pa.RecordBatch) -> pa.RecordBatch:
     async transform exists for — *overlapping* awaited I/O — so throughput should approach
     ``max_in_flight`` batches per fetch-latency, far above the serial `1 / latency`.
 
-    ``NAUTILUS_BENCH_SLOW_EVERY`` (default 0 = uniform) makes roughly one batch in N sleep
-    ``NAUTILUS_BENCH_SLOW_FACTOR``× longer (default 20), keyed off the batch's first key so it stays
+    ``NAUTILUS_BENCH_SLOW_EVERY`` (default 0 = uniform) makes roughly one batch in every
+    ``NAUTILUS_BENCH_SLOW_EVERY`` sleep ``NAUTILUS_BENCH_SLOW_FACTOR``× longer (default 20), keyed off the
+    batch's first key so it stays
     deterministic. That skew is the head-of-line blocking that separates ordered from unordered emission:
     under ordered a slow head pins buffer slots that finished tails could reuse, so ``ordered=False``
     (completion order) reads further ahead and runs faster. Identity output keeps the structural digest
@@ -137,7 +138,7 @@ class SyntheticKeyedSource(SourceOperator):
     * ``null_fraction`` — > 0 makes that fraction of keys null (a real stream has missing keys).
     * ``payload_bytes`` — > 0 adds a fixed-width ``payload`` string column, widening the schema and the
       bytes an Arrow-IPC frame carries across a socket.
-    * ``extra_value_cols`` — adds N constant int columns (cheap schema width).
+    * ``extra_value_cols`` — adds that many constant int columns (cheap schema width).
 
     Randomized knobs draw from a fixed-seed generator, so the stream is still byte-for-byte reproducible
     and the structural digest remains a valid correctness gate."""

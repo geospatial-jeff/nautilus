@@ -9,8 +9,8 @@ The fluent :class:`~nautilus.dsl.Stream` DSL is the readable way to build and ru
     result = source(lines).tokenize("line", "word").count_by("word").run()
     print(result.to_pylist())
 
-``.run(workers=N)`` deploys the *same* graph across N worker processes; ``.join`` combines two streams
-into an inner equi-join::
+``.run(workers=…)`` deploys the *same* graph across that many worker processes; ``.join`` combines two
+streams into an inner equi-join::
 
     joined = source(orders).join(source(customers), on="customer_id").run()
 
