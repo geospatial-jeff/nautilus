@@ -117,6 +117,44 @@
       },
       "trials": 5
     },
+    "bench-chain-dist": {
+      "deterministic": true,
+      "environment": {
+        "commit": "96afef9",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1017-aws-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.12.3"
+      },
+      "pipeline": "bench-chain",
+      "recorded_at": "2026-07-03T06:28:08+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 4,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 2
+      },
+      "structural_digest": "0bc7cff84d2b28b3a791835aeac36a0e7c8f2e0c447edcfb474879701a16cf9d",
+      "throughput_rows_per_sec": {
+        "iqr": 18030.070626729983,
+        "max": 726386.573275394,
+        "median": 698788.7207233555,
+        "min": 679940.7364579192,
+        "rel_spread": 0.025801891318546245,
+        "samples": [
+          679940.7364579192,
+          683408.1877956013,
+          696094.5032636366,
+          698788.7207233555,
+          699439.7391412432,
+          716123.0931714546,
+          726386.573275394
+        ]
+      },
+      "trials": 7
+    },
     "bench-fanout": {
       "deterministic": true,
       "environment": {

@@ -74,21 +74,26 @@ starts from evidence, not a cold read.
   forwarded edge is a free in-process channel, so across workers it moves no bytes and does no Arrow-IPC
   encode/decode. This is the narrow-vs-shuffle split Spark and Flink default to (`DESIGN.md` mechanism 9);
   it resolves the "no co-located forward edge" open item above.
-- **Impact (two-stage keyless pipeline `source → map → map`, W=6, P=6, median of 5 trials; Linux x86_64 ·
-  Python 3.12.3; not in `bench-check` — see Correctness):** the targeted metric is the middle edge's
-  `transport.bytes_sent`, **eliminated entirely** — 95 MB → 0 at a 256-byte row payload, 353 MB → 0 at
-  1 KB, 1030 MB → 0 at 4 KB (the source's `1 → N` fan-out still moves the same volume, as it must).
-  Loopback throughput rose ~1.05–1.07× across those payloads: on one machine the shuffle crosses
-  memory-fast loopback sockets, so eliminating it saves mainly the IPC encode/decode CPU — a thin slice of
-  a passthrough pipeline. The win scales with the *cost* of the removed bytes: on a real network that
-  volume is the bottleneck, and the NDVI fusion entry below — which removed the same class of shuffle
-  (2537 MB → 0) on a live-S3 6-worker run — measured 1.41× there.
-- **Correctness:** a routing change, so the check is the **output multiset**, not the digest.
-  `test_forward_edge_conserves_rows_across_equal_width_keyless_stages` runs a two-stage keyless pipeline at
-  P=1 and P=4 and asserts every row is transformed exactly once — a downstream instance now reads data from
-  only its same-index upstream but EOS from all of them, so this pins termination too. No committed baseline
-  has an equal-width keyless edge (each is P=1, or keyed/join at P>1), so `bench-check` is unchanged: every
-  digest and throughput identical.
+- **Measured with** a new committed benchmark, `bench-chain` (two keyless stages `source → map → map`,
+  the shape `bench-linear`'s single stage cannot make; 256-byte payload so the inter-stage edge moves real
+  bytes). Its `bench-chain-dist` baseline entry (W=2, P=4) exercises the forward edge in CI.
+- **Impact (`nautilus bench bench-chain --workers 2 --parallelism 4 --rows 200000`, median of 7 trials;
+  Linux x86_64 · Python 3.12.3):** round-robin (the change reverted) **659k → 704k rows/s forward, 1.07×**.
+  The gain is modest because `--workers` here is loopback TCP, memory-fast, so eliminating the shuffle
+  mostly saves the Arrow-IPC encode/decode — a thin slice of a passthrough pipeline; the win scales with
+  the *cost* of the removed bytes, and on a real network the shuffled volume is the bottleneck (the NDVI
+  fusion entry below removed the same class of shuffle, 2537 MB → 0, for 1.41× on a live-S3 run). What the
+  forward edge removes is unambiguous: on a 2-worker A/B, the middle edge's data crossing a socket goes
+  from ~half the stream (66 KB on the guard test) to **zero** — only EOS control frames remain.
+- **Correctness:** a routing change, so the check is the **output multiset**, not the digest — and here
+  the digest is in fact *identical* under both routings (`0bc7cff84d2b`), because a same-width keyless edge
+  moves whole batches and each instance ends with the same row count either way. That is exactly why the
+  digest cannot guard this and `bench-check` cannot catch a revert; the guard is a transport assertion,
+  `test_equal_width_keyless_edge_co_locates_and_crosses_no_socket` (`tests/test_cluster_deploy.py`), which
+  deploys across two workers and fails if any data batch crosses the forward edge's sockets (verified: it
+  fails, 66 KB > threshold, when the edge is forced back to round-robin). Row conservation and termination
+  are pinned in-process by `test_forward_edge_conserves_rows_across_equal_width_keyless_stages`. Every
+  other committed baseline digest and throughput is unchanged.
 
 ---
 

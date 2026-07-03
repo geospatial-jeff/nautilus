@@ -114,7 +114,8 @@ def sentinel2_ndvi(parallelism: int = 1) -> LogicalGraph:
     item ids -> async open + range-read + decode + NDVI reduce (the awaiting transform) -> average per scene
     (keyed reduce). A graph, not a linear ``(source, transforms)``, because the decode is an awaiting
     transform; the NDVI reduction is fused into it so only per-tile partials, not raw pixels, cross to the
-    reduce. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see examples/sentinel2_ndvi.py."""
+    reduce. Needs the geo extra (``pip install 'nautilus[geo]'``) and network; see examples/sentinel2_ndvi.py.
+    """
     build = _load_example_builder("sentinel2_ndvi.py", "sentinel2_ndvi")
     graph: LogicalGraph = build(
         parallelism=parallelism
@@ -146,6 +147,24 @@ def bench_linear() -> Pipeline:
         key_cardinality=p["key_cardinality"],
     )
     return source, [MapBatch(passthrough)]
+
+
+def bench_chain() -> Pipeline:
+    """Benchmark: two keyless identity stages (source -> map -> map -> sink) — the shape whose middle
+    edge is a same-width keyless hop, which `bench-linear` (one stage) has not got. That edge forwards
+    (sender i -> instance i, co-located) rather than round-robining, so at `--workers` > 1 it crosses no
+    socket; round-robin would send half the rows over one. Run it distributed to exercise the forward
+    edge: `nautilus bench bench-chain --workers 2 --parallelism 4 --label bench-chain-dist`. Each row
+    carries a fixed 256-byte payload so the difference is real wire bytes, not just per-batch overhead —
+    the lever that separates the forward and round-robin cost on the inter-stage edge."""
+    p = bench_params()
+    source = SyntheticKeyedSource(
+        num_batches=p["num_batches"],
+        batch_rows=p["batch_rows"],
+        key_cardinality=p["key_cardinality"],
+        payload_bytes=256,  # fixed so bench-check reproduces the workload; makes the shuffle cost real
+    )
+    return source, [MapBatch(passthrough), MapBatch(passthrough)]
 
 
 def bench_fanout() -> Pipeline:
@@ -269,6 +288,7 @@ EXAMPLES: dict[str, Builder] = {
     "image-embed": image_embed,
     "bench-keyed": bench_keyed,
     "bench-linear": bench_linear,
+    "bench-chain": bench_chain,
     "bench-fanout": bench_fanout,
     "bench-skew": bench_skew,
     "bench-backpressure": bench_backpressure,
