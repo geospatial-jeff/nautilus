@@ -6,11 +6,13 @@ This is where logical intent becomes a physical layout. It does these jobs the I
   the order is reproducible across machines, then **names them by that position** — not by the vertices'
   logical ids, so two graphs that differ only in naming compile to the same plan: a lone source is
   ``"source"``, the ``j``-th transform/join is ``"op{j}"``, and the synthesized sink is ``"sink"``.
-* **Selects a partitioner spec for every edge** from the *downstream* operator's shape and the *edge's*
-  key columns — a single instance takes :class:`ForwardSpec`, a keyed fan-out a :class:`KeyGroupSpec`
-  shuffle, a keyless fan-out :class:`RoundRobinSpec`. A join's two edges both read the join vertex's one
-  parallelism ``Q`` and the run's one ``G``, so their group tables match and a key co-partitions to the
-  same join instance from both sides.
+* **Selects a partitioner spec for every edge** from the two stages' widths and the *edge's* key columns,
+  keeping data local unless the work forces a shuffle (``_spec_for`` has the rule; ``DESIGN.md`` the
+  decision): a keyed fan-out is a :class:`KeyGroupSpec` shuffle, a keyless *same-width* hop forwards
+  straight across (:class:`ForwardSpec`, sender ``i`` to instance ``i``), a keyless *width change* — the
+  source's ``1 → N`` fan-out — rebalances (:class:`RoundRobinSpec`), and a single downstream instance
+  forwards. A join's two edges both read the join vertex's one parallelism ``Q`` and the run's one ``G``,
+  so their group tables match and a key co-partitions to the same join instance from both sides.
 * **Synthesizes the sink.** The user describes only the work; the collecting sink that gathers the graph's
   single leaf is the compiler's, pinned to one instance.
 
@@ -61,19 +63,34 @@ def _group_table(num_groups: int, parallelism: int) -> tuple[int, ...]:
 
 
 def _spec_for(
-    parallelism: int, key_columns: tuple[str, ...] | None, key_groups: int | None
+    upstream: int,
+    downstream: int,
+    key_columns: tuple[str, ...] | None,
+    key_groups: int | None,
 ) -> PartitionerSpec:
-    """Select the routing spec for an edge feeding a stage of the given width: a single owner forwards
-    (even when keyed), a keyed fan-out is a key-group shuffle, a keyless fan-out rebalances round-robin.
-    ``key_groups`` is the chosen group count ``G`` (``None`` defaults to ``Q``); it must be ``>= Q``.
+    """Select the routing spec for an edge from a stage of width ``upstream`` into one of width
+    ``downstream``. The rule is data locality: an edge redistributes rows only when the work forces it.
+
+    * A **single downstream owner** takes them all — forward to instance 0 (even when keyed).
+    * A **keyed** fan-out must group each key onto one instance, so it shuffles by key
+      (:class:`KeyGroupSpec`).
+    * A **keyless same-width** hop forwards straight across — sender ``i`` to instance ``i`` — because a
+      keyless stage is indifferent to which instance a row lands on, so keeping it on its origin instance
+      moves no data (:class:`ForwardSpec`).
+    * A **keyless width change** has no 1:1 mapping and rebalances round-robin (:class:`RoundRobinSpec`).
+      For nautilus this is the single-instance source's ``1 → N`` fan-out — the one keyless edge that
+      cannot forward.
+
+    ``key_groups`` is the chosen group count ``G`` (``None`` defaults to ``Q == downstream``); it must be
+    ``>= downstream``.
     """
-    if parallelism == 1:
-        return ForwardSpec()
+    if downstream == 1:
+        return ForwardSpec()  # one owner: every sender routes to instance 0
     if key_columns:
-        num_groups = parallelism if key_groups is None else key_groups
-        if num_groups < parallelism:
+        num_groups = downstream if key_groups is None else key_groups
+        if num_groups < downstream:
             raise ValueError(
-                f"key groups G={num_groups} is below the operator parallelism Q={parallelism}; "
+                f"key groups G={num_groups} is below the operator parallelism Q={downstream}; "
                 "G must be >= Q so every instance owns at least one key group"
             )
         if num_groups > MAX_KEY_GROUPS:
@@ -81,8 +98,10 @@ def _spec_for(
                 f"key groups G={num_groups} exceeds the maximum {MAX_KEY_GROUPS} (it sizes the routing "
                 "table the plan ships); choose a smaller rescale ceiling"
             )
-        return KeyGroupSpec(key_columns, _group_table(num_groups, parallelism))
-    return RoundRobinSpec()
+        return KeyGroupSpec(key_columns, _group_table(num_groups, downstream))
+    if upstream == downstream:
+        return ForwardSpec()  # equal-width keyless: co-locate sender i -> instance i, no shuffle
+    return RoundRobinSpec()  # keyless width change (the source fan-out): rebalance across instances
 
 
 def _op_class(vertex: LogicalVertex) -> str:
@@ -160,12 +179,14 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
     # CollectSink and its leaf -> sink Forward edge, so its plan and structural digest are unchanged.
     leaf_is_async_sink = by_id[leaves[0]].kind == _ASYNC_SINK
 
-    # One physical edge per logical edge (spec from the downstream operator's width and the edge's keys).
+    # One physical edge per logical edge (spec from the two stages' widths and the edge's keys).
     physical_edges = [
         PhysicalEdge(
             phys[e.src],
             phys[e.dst],
-            _spec_for(by_id[e.dst].parallelism, e.key_columns, key_groups),
+            _spec_for(
+                by_id[e.src].parallelism, by_id[e.dst].parallelism, e.key_columns, key_groups
+            ),
             e.dst_input_port,
         )
         for e in edges
@@ -173,7 +194,12 @@ def compile_graph(graph: LogicalGraph, *, key_groups: int | None = None) -> Phys
     if not leaf_is_async_sink:
         operators.append(PhysicalOperator(SINK_ID, SINK_CLASS, "sink", 1, None))
         physical_edges.append(
-            PhysicalEdge(phys[leaves[0]], SINK_ID, _spec_for(1, None, key_groups), 0)
+            PhysicalEdge(
+                phys[leaves[0]],
+                SINK_ID,
+                _spec_for(by_id[leaves[0]].parallelism, 1, None, key_groups),
+                0,
+            )
         )
 
     if key_groups is not None and not any(isinstance(e.spec, KeyGroupSpec) for e in physical_edges):

@@ -118,6 +118,15 @@ dimension. `nautilus.tensors` converts these to and from numpy.
    sink takes the leaf's place and every existing graph lowers byte-for-byte unchanged. The exact
    per-batch contract is on the `AsyncOneInputOperator` / `AsyncSink` ABCs; how each loop bounds,
    reorders, drains, and fails fast is on `run_async_sink` / `run_async_transform`.
+9. **Edge routing keeps data local by default** (`compile.lower._spec_for`, `runtime.partition`) — an edge
+   redistributes rows across instances only when the work requires it. A keyless hop between two stages of
+   the *same* width forwards straight across, sender *i* to instance *i*: a keyless stage is indifferent to
+   which instance a row lands on, so keeping each row on its origin instance moves no data (and, with
+   same-index placement, crosses no worker — see Placement). Only two edges must redistribute: a **keyed**
+   edge, which groups each key onto one instance (mechanism 6), and the **width-changing** fan-out from the
+   single-instance source (`1 → N`), which has no 1:1 mapping and so rebalances round-robin. A shuffle is
+   therefore something a stage opts into by keying — never the default for a same-width hop. This is the
+   narrow-vs-shuffle split batch engines settle on (Spark's narrow dependencies, Flink's `forward`).
 
 ## Deployment (`nautilus.cluster`)
 

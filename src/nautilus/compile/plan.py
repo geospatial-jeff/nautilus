@@ -27,7 +27,8 @@ from typing import ClassVar
 
 @dataclass(frozen=True, slots=True)
 class ForwardSpec:
-    """1:1 forwarding to a single downstream instance (a non-fan-out edge)."""
+    """Co-located 1:1 forwarding — sender ``i`` to downstream instance ``i`` (a single owner collapses
+    to instance 0). The data-local edge: it moves no data off its origin instance."""
 
     #: The edge's partitioner label in the report topology. Selection of the runtime partitioner is by
     #: spec *type* (``partitioner_from_spec``), not by this string; it happens to equal the runtime

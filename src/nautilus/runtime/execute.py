@@ -82,12 +82,14 @@ class ExecuteResult:
     sink_batches: list[pa.RecordBatch]
 
 
-def partitioner_from_spec(spec: PartitionerSpec) -> Partitioner:
+def partitioner_from_spec(spec: PartitionerSpec, sender_index: int = 0) -> Partitioner:
     """Instantiate a fresh runtime partitioner from a plan spec. Fresh per call so each
     :class:`~nautilus.runtime.actor.Output` owns its own :class:`RoundRobin` cursor — the rotation
-    state the plan deliberately never carries."""
+    state the plan deliberately never carries. ``sender_index`` is the emitting instance's subtask
+    index: a :class:`Forward` on an equal-width edge routes to the same-index downstream instance, so
+    each output carries its own; the shuffles ignore it (they route by cursor or key)."""
     if isinstance(spec, ForwardSpec):
-        return Forward()
+        return Forward(sender_index)
     if isinstance(spec, KeyGroupSpec):
         return KeyGroupPartitioner(spec.key_columns, spec.group_table)
     if isinstance(spec, RoundRobinSpec):
@@ -181,7 +183,7 @@ async def execute(
             outs.append(
                 Output(
                     channels,
-                    partitioner_from_spec(edge.spec),
+                    partitioner_from_spec(edge.spec, subtask),
                     recorder=recorder,
                     edge_src=operator_id,
                     edge_dst=edge.dst_operator_id,

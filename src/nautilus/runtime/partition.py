@@ -4,10 +4,14 @@ A partitioner decides, on the *sender*, which downstream instance(s) each row go
 function of the batch and the downstream fan-out — no central entity is consulted. Routing each batch
 is therefore a local decision, which is what "no central scheduler on the data path" means here.
 
-Stage 0 ships :class:`Forward` (1:1). Stage 1.5 added :class:`RoundRobin` rebalancing and the keyed
-shuffle, generalized in Stage 2 to :class:`KeyGroupPartitioner` — the keyed shuffle with a
-``group → instance`` indirection table that is the rescale seam (its class docstring has the mechanism;
-``DESIGN.md`` has the decision). :class:`HashPartitioner` is the direct ``hash(key) mod Q`` form it
+The three cover the routing choices the compiler makes (``compile.lower._spec_for``; ``DESIGN.md`` has
+the decision). :class:`Forward` co-locates — sender ``i`` to downstream ``i`` — so a same-width keyless
+hop moves no data; it is what an edge uses unless the work forces a redistribution. :class:`RoundRobin`
+(Stage 1.5) rebalances a keyless batch across the downstream when the widths differ (the source's
+``1 → N`` fan-out). The keyed shuffle (Stage 1.5, generalized in Stage 2 to :class:`KeyGroupPartitioner`)
+groups each key onto one instance through a ``group → instance`` indirection table that is the rescale
+seam (its class docstring has the mechanism). :class:`HashPartitioner` is the direct ``hash(key) mod Q``
+form it
 generalizes; it is kept only as the ``G == Q`` equivalence oracle for tests and is not wired into the
 runtime (the compiler emits a :class:`~nautilus.compile.plan.KeyGroupSpec`, never a hash spec).
 """
@@ -189,13 +193,27 @@ class _KeyedPartitioner(Partitioner):
 
 
 class Forward(Partitioner):
-    """1:1 forwarding. Requires a single downstream instance (upstream P == downstream Q == 1 in
-    Stage 0); the whole batch goes to instance 0."""
+    """Co-located 1:1 forwarding: sender ``i`` hands its whole batch straight to downstream instance
+    ``i``, moving nothing off its origin instance — the data-locality edge. A single downstream owner
+    (a fan-in, or the trivial one-to-one edge) collapses that to instance 0, since every sender then
+    has the same one destination.
+
+    The compiler picks this for a keyless edge whose two stages are the same width (so ``i`` is always a
+    valid downstream index) and for any edge into a single instance — never when a width change would
+    leave ``sender_index`` past the downstream range. With same-index placement (subtask ``i`` of every
+    operator on worker ``i mod W``) a forwarded edge is a free in-process channel even across workers,
+    where :class:`RoundRobin` and the keyed shuffles cross the network. Constructed per
+    :class:`~nautilus.runtime.actor.Output` with that output's own sender index.
+    """
+
+    def __init__(self, sender_index: int = 0) -> None:
+        self._sender_index = sender_index
 
     def route(self, batch: pa.RecordBatch, num_downstream: int) -> list[tuple[int, pa.RecordBatch]]:
-        if num_downstream != 1:
-            raise ValueError(f"Forward requires a single downstream instance, got {num_downstream}")
-        return [(0, batch)]
+        # One owner: every sender routes to instance 0. Otherwise the widths match by construction, so
+        # sender i co-locates onto downstream i (sender_index is < num_downstream — the compiler only
+        # emits a forward edge for equal widths or a single owner).
+        return [(0 if num_downstream == 1 else self._sender_index, batch)]
 
 
 class HashPartitioner(_KeyedPartitioner):
