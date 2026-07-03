@@ -167,6 +167,9 @@ def test_dashboard_html_renders_per_worker_hardware() -> None:
     # It reads every process row, not just the first — the single-process assumption this stage removes.
     assert '.find(o=>o.kind==="process")' not in html
     assert 'filter(o=>o.kind==="process")' in html
+    # Each node's group carries the full hardware set: process resources + the host it runs on.
+    for card in ("open fds", "threads", "host CPU %", "host mem %"):
+        assert card in html
 
 
 def test_dashboard_html_makes_completion_obvious() -> None:

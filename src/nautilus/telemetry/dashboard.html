@@ -74,6 +74,7 @@ const LABELS = {
   operator:"operator", class:"class", node:"node", rows_in:"rows in", rows_out:"rows out",
   busy:"busy µs", wait:"wait µs", queue:"queue", p50:"p50 µs", p99:"p99 µs",
   cpu:"CPU %", rss:"memory (RSS, MB)", lag:"event-loop lag (µs)",
+  fds:"open fds", threads:"threads", host_cpu:"host CPU %", host_mem:"host mem %",
 };
 const CAP = 120;           // rolling history length per series
 const hist = new Map();    // id -> [values]
@@ -139,14 +140,26 @@ function render(doc) {
     const g = gauges(p);
     const cpu = g["process.cpu_percent"];
     const rss = g["process.rss_bytes"]!=null ? g["process.rss_bytes"]/1e6 : null;
+    const fds = g["process.num_fds"];
+    const threads = g["process.num_threads"];
+    const hostCpu = g["host.cpu_percent"];
+    const hostMem = g["host.mem_percent"];
     const lag = pct(hgram(p,"runtime.loop_lag_micros"),0.99);
     if (cpu!=null) push("cpu:"+p.node,cpu);
     if (rss!=null) push("rss:"+p.node,rss);
+    if (fds!=null) push("fds:"+p.node,fds);
+    if (threads!=null) push("threads:"+p.node,threads);
+    if (hostCpu!=null) push("hcpu:"+p.node,hostCpu);
+    if (hostMem!=null) push("hmem:"+p.node,hostMem);
     if (lag!=null) push("lag:"+p.node,lag);
     const cards = [
       card(LABELS.cpu, fmt(cpu,0), hist.get("cpu:"+p.node), 100),
       card(LABELS.rss, fmt(rss,0), hist.get("rss:"+p.node)),
+      card(LABELS.fds, fmt(fds,0), hist.get("fds:"+p.node)),
+      card(LABELS.threads, fmt(threads,0), hist.get("threads:"+p.node)),
       card(LABELS.lag, fmt(lag,0), hist.get("lag:"+p.node)),
+      card(LABELS.host_cpu, fmt(hostCpu,0), hist.get("hcpu:"+p.node), 100),
+      card(LABELS.host_mem, fmt(hostMem,0), hist.get("hmem:"+p.node), 100),
     ].join("");
     return showNode
       ? `<div class="worker"><div class="worker-label">${esc(p.node)}</div><div class="hw">${cards}</div></div>`

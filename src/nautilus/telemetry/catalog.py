@@ -562,9 +562,10 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             "psutil.Process.num_threads(): OS threads in this process at the sample.",
             stability=Stability.EXPERIMENTAL,
         ),
-        # host-wide metrics are sampled only when SystemSampler(host=True); no shipped caller enables
-        # that yet (host rollups are a multi-node seam), so they are marked since_stage=1 (reserved),
-        # not advertised as live stage-0 facts.
+        # host-wide metrics: every worker's SystemSampler runs with host=True, so these are live per
+        # node. A machine hosting several workers reports the same host reading on each of their nodes
+        # (they are not summed) — collapsing co-located workers into one physical-host rollup needs a
+        # shared hostname identity and is future work.
         MetricSpec(
             "host.cpu_percent",
             MetricKind.GAUGE,

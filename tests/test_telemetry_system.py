@@ -35,6 +35,24 @@ class _FakeProc:
         return 42.0
 
 
+class _FakeVM:
+    percent = 55.5
+
+
+class _FakePsutil:
+    """Stands in for the psutil module for host sampling: cpu_percent + virtual_memory."""
+
+    def cpu_percent(self, interval):
+        return 88.0
+
+    def virtual_memory(self):
+        return _FakeVM()
+
+
+def _gauges(snap):
+    return {name: last for (name, _labels), (last, _mn, _mx) in snap.gauges.items()}
+
+
 def _proc_recorder():
     return InstanceRecorder(
         operator_id="process",
@@ -135,6 +153,50 @@ async def test_hardware_row_present_with_sampling_absent_when_off():
         telemetry=TelemetryConfig(tier=Tier.OFF),
     )
     assert off.telemetry.operator("process") is None
+
+
+def test_sample_once_records_host_metrics_when_enabled():
+    rec = _proc_recorder()
+    SystemSampler(rec, proc=_FakeProc(), psutil_mod=_FakePsutil(), host=True).sample_once(
+        loop_lag_micros=1
+    )
+    gauges = _gauges(rec.snapshot())
+    assert gauges["host.cpu_percent"] == 88.0
+    assert gauges["host.mem_percent"] == 55.5
+    assert gauges["process.num_fds"] == 11.0  # process resources recorded alongside the host ones
+
+
+def test_host_mem_taken_on_teardown_sample_but_host_cpu_is_not():
+    # The guaranteed final reading passes sample_cpu=False. host.mem_percent is a point value and is
+    # still recorded (like process.rss_bytes); the interval-based cpu gauges are skipped.
+    rec = _proc_recorder()
+    SystemSampler(rec, proc=_FakeProc(), psutil_mod=_FakePsutil(), host=True).sample_once(
+        sample_cpu=False
+    )
+    gauges = _gauges(rec.snapshot())
+    assert gauges["host.mem_percent"] == 55.5
+    assert "host.cpu_percent" not in gauges
+    assert "process.cpu_percent" not in gauges
+
+
+def test_no_host_metrics_when_host_disabled():
+    rec = _proc_recorder()
+    SystemSampler(rec, proc=_FakeProc(), psutil_mod=_FakePsutil()).sample_once(loop_lag_micros=1)
+    gauges = _gauges(rec.snapshot())
+    assert "host.cpu_percent" not in gauges and "host.mem_percent" not in gauges
+
+
+async def test_host_metric_present_on_process_row():
+    # An end-to-end run enables host=True; the guaranteed teardown reading records host.mem_percent on
+    # the process row even on a run too short for a periodic (interval) sample to fire.
+    on = await run_local_chain(
+        InMemorySource(list(WORDS)),
+        [Tokenize("line", "word")],
+        telemetry=TelemetryConfig(sample_system=True, clock=TestClock()),
+    )
+    proc = on.telemetry.operator("process")
+    assert proc is not None
+    assert any(g.name == "host.mem_percent" for g in proc.gauges)
 
 
 async def test_sampler_does_not_block_fail_fast():

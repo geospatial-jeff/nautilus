@@ -1,8 +1,8 @@
 """Process and host resource sampling: each process samples itself.
 
-A :class:`SystemSampler` periodically writes process CPU/memory/fd/thread gauges and an event-loop-lag
-histogram into one dedicated recorder (``operator_id="process"``), which the registry snapshots like any
-other — so the readings reach the report with no special-casing.
+A :class:`SystemSampler` periodically writes process CPU/memory/fd/thread gauges, host CPU/memory gauges,
+and an event-loop-lag histogram into one dedicated recorder (``operator_id="process"``), which the
+registry snapshots like any other — so the readings reach the report with no special-casing.
 
 ``psutil`` is imported lazily and every call is guarded: if it is absent or a reading is denied, that
 gauge is omitted (not zeroed) and sampling continues. Event-loop lag needs no psutil and is always
@@ -70,10 +70,12 @@ class SystemSampler:
         try:
             self._proc = psutil.Process()
             self._proc.cpu_percent(None)  # prime: the first call always returns 0.0
-            if self._host:
-                psutil.cpu_percent(None)
         except Exception:
             self._proc = None
+        if self._host:
+            # Prime host CPU independently of the process probe, so a host-reading failure never disables
+            # process sampling (host=True is now on for every worker).
+            _guard(lambda: psutil.cpu_percent(None))
 
     def sample_once(self, *, loop_lag_micros: int | None = None, sample_cpu: bool = True) -> None:
         """One fully-guarded sample. Records loop lag if given, plus whatever psutil readings succeed."""
@@ -88,10 +90,14 @@ class SystemSampler:
             _guard(lambda: rec.set_gauge("process.num_fds", float(proc.num_fds())))
             if sample_cpu:
                 _guard(lambda: rec.set_gauge("process.cpu_percent", float(proc.cpu_percent(None))))
-        if self._host and self._psutil is not None and sample_cpu:
+        if self._host and self._psutil is not None:
             ps = self._psutil
-            _guard(lambda: rec.set_gauge("host.cpu_percent", float(ps.cpu_percent(None))))
+            # mem_percent is a point reading — valid on the final teardown sample (like rss). cpu_percent
+            # is an interval reading, so it is taken only on periodic ticks (sample_cpu), like the process
+            # one; a bare teardown call would return a meaningless instant.
             _guard(lambda: rec.set_gauge("host.mem_percent", float(ps.virtual_memory().percent)))
+            if sample_cpu:
+                _guard(lambda: rec.set_gauge("host.cpu_percent", float(ps.cpu_percent(None))))
 
     async def run(self) -> None:
         """Sample on a fixed cadence until cancelled. Created outside the data TaskGroup so it can never

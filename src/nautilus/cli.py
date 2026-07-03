@@ -161,6 +161,10 @@ def _hardware_line(report: RunReport) -> str | None:
         parts.append(f"RSS {gauges['process.rss_bytes'] / 1_000_000:.0f} MB")
     if "process.num_fds" in gauges:
         parts.append(f"fds {gauges['process.num_fds']:.0f}")
+    if "host.cpu_percent" in gauges:
+        parts.append(f"host CPU {gauges['host.cpu_percent']:.0f}%")
+    if "host.mem_percent" in gauges:
+        parts.append(f"host mem {gauges['host.mem_percent']:.0f}%")
     lag = next((h for h in proc.histograms if h.name == "runtime.loop_lag_micros"), None)
     if lag is not None and lag.max is not None:
         parts.append(f"loop-lag max {lag.max} µs")
