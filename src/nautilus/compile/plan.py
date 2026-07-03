@@ -38,7 +38,7 @@ class ForwardSpec:
 
 @dataclass(frozen=True, slots=True)
 class RoundRobinSpec:
-    """Keyless N-way rebalancing across the downstream instances."""
+    """Keyless rebalancing: rotates whole batches across the downstream instances."""
 
     partitioner_name: ClassVar[str] = "RoundRobin"
 
@@ -47,8 +47,8 @@ class RoundRobinSpec:
 class KeyGroupSpec:
     """A keyed shuffle through key-group indirection: hash each key to one of ``len(group_table)``
     groups, then route by ``group_table[group]`` to an instance. The table is computed once at compile
-    from the chosen group count ``G`` and the operator's parallelism ``Q`` (``G == Q`` gives the identity
-    table); it carries no live state, so it serializes safely and is fixed for the run."""
+    from the chosen key-group count and the operator's parallelism (equal counts give the identity table);
+    it carries no live state, so it serializes safely and is fixed for the run."""
 
     key_columns: tuple[str, ...]
     group_table: tuple[int, ...]

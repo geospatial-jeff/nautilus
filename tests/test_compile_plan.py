@@ -46,8 +46,8 @@ def test_edge_specs_come_from_the_downstream_operator() -> None:
 
 
 def test_keyless_fanout_selects_round_robin() -> None:
-    # The source is always one instance, so its edge into a wider stage is a 1 -> N width change: no 1:1
-    # mapping, so it rebalances round-robin (the one keyless edge that cannot forward).
+    # The source is always one instance, so its edge into a wider stage is a one-to-many width change:
+    # no one-to-one mapping, so it rebalances round-robin (the one keyless edge that cannot forward).
     g = linear_graph(
         lambda: InMemorySource([]),
         [LogicalVertex("op0", lambda: MapBatch(lambda b: b), "one_input", 2)],
@@ -75,8 +75,8 @@ def test_equal_width_keyless_edge_forwards_for_locality() -> None:
 
 
 def test_keyless_width_change_between_stages_rebalances() -> None:
-    # A keyless edge whose two stages differ in width has no 1:1 mapping, so it rebalances even away from
-    # the source (here 4 -> 2).
+    # A keyless edge whose two stages differ in width has no one-to-one mapping, so it rebalances even
+    # away from the source (here 4 -> 2).
     g = linear_graph(
         lambda: InMemorySource([]),
         [

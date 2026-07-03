@@ -50,13 +50,14 @@ starts from evidence, not a cold read.
   straight down the forwarded chain, with no way to re-spread it. Spark and Flink keep locality the default
   and expose an explicit `repartition()` / `rebalance()` for exactly this case. A DSL `.rebalance()` that
   forced a `RoundRobinSpec` on the next edge would restore that escape hatch; not built, because no current
-  workload needs it — the source's `1 → N` fan-out already balances the initial spread, and every built-in
+  workload needs it — the source's fan-out to every instance already balances the initial spread, and every built-in
   keyless stage is roughly row-preserving.
 
 - **Sentinel-2 source lists STAC items serially.** `Sentinel2ItemSource.frames` awaits each item's STAC
-  lookup one at a time, so `io.wait_micros` on the single source is ~0.28s × N (1.76s for 6 items). After
-  the decode/reduce fusion that is ~26% of the 6-worker wall (6.82s) — the next bottleneck. Coalescing the
-  lookups (a bounded `asyncio.gather` prefetch, or one STAC `/search` POST by id list instead of N GETs)
+  lookup one at a time, so `io.wait_micros` on the single source is ~0.28s per item (1.76s for 6 items).
+  After the decode/reduce fusion that is ~26% of the 6-worker wall (6.82s) — the next bottleneck. Coalescing
+  the lookups (a bounded `asyncio.gather` prefetch, or one STAC `/search` POST by id list instead of one GET
+  per item)
   would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
 
@@ -68,7 +69,7 @@ starts from evidence, not a cold read.
 - **Change:** `_spec_for` (`src/nautilus/compile/lower.py`) now selects an edge's partitioner from *both*
   stages' widths, not only the downstream's. A keyless hop between two stages of the same width takes a
   `ForwardSpec` — sender `i` to instance `i` — instead of a `RoundRobinSpec`; keyed edges (the key-group
-  shuffle) and the single-source `1 → N` fan-out (round-robin) are unchanged. `Forward`
+  shuffle) and the single source's fan-out to every instance (round-robin) are unchanged. `Forward`
   (`src/nautilus/runtime/partition.py`) gained a sender index and routes `i → i` (collapsing to instance 0
   for a single owner); `execute` threads each output's subtask index in. With same-index placement the
   forwarded edge is a free in-process channel, so across workers it moves no bytes and does no Arrow-IPC
@@ -76,7 +77,7 @@ starts from evidence, not a cold read.
   it resolves the "no co-located forward edge" open item above.
 - **Measured with** a new committed benchmark, `bench-chain` (two keyless stages `source → map → map`,
   the shape `bench-linear`'s single stage cannot make; 256-byte payload so the inter-stage edge moves real
-  bytes). Its `bench-chain-dist` baseline entry (W=2, P=4) exercises the forward edge in CI.
+  bytes). Its `bench-chain-dist` baseline entry (2 workers, parallelism 4) exercises the forward edge in CI.
 - **Impact (`nautilus bench bench-chain --workers 2 --parallelism 4 --rows 200000`, median of 7 trials;
   Linux x86_64 · Python 3.12.3):** round-robin (the change reverted) **659k → 704k rows/s forward, 1.07×**.
   The gain is modest because `--workers` here is loopback TCP, memory-fast, so eliminating the shuffle
@@ -115,13 +116,14 @@ starts from evidence, not a cold read.
   0.1 MB after). Six-way scaling over the single-worker baseline went from 1.06× to 2.0×. The default
   one-scene single-process run is unchanged (5.37s → 5.82s, within noise).
 - **Trade-off (not a regression of the target):** many scenes on *one* worker lose the I/O/CPU overlap that
-  two separate operators gave — 6 scenes at W=1 went 10.24s → 13.70s — because a fused operator's decode
-  I/O and NDVI CPU no longer run as concurrent stages. This is the config `--workers` exists to avoid; the
-  reduction is not in the committed baseline, so `bench-check` does not gate it.
+  two separate operators gave — 6 scenes on a single worker went 10.24s → 13.70s — because a fused
+  operator's decode I/O and NDVI CPU no longer run as concurrent stages. This is the config `--workers`
+  exists to avoid; the reduction is not in the committed baseline, so `bench-check` does not gate it.
 - **Correctness:** topology changed (one fewer operator, and the intermediate edge now carries partials not
   pixels), so the structural digest legitimately differs and is not the anchor here. Instead the **per-item
-  mean-NDVI output multiset is byte-identical** before vs after at both W=1 and W=6 (and cross-checked
-  W=1-before against W=6-after). `tests/test_examples_sentinel2.py` green.
+  mean-NDVI output multiset is byte-identical** before vs after, on both a single worker and six (and
+  cross-checked the single-worker before-run against the six-worker after-run).
+  `tests/test_examples_sentinel2.py` green.
 
 ---
 

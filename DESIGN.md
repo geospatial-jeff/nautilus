@@ -79,18 +79,19 @@ dimension. `nautilus.tensors` converts these to and from numpy.
    through a `KeyContext` captured by each handle (no shared mutable "current key" cursor).
    `snapshot`/`restore` are in the ABC from day one so a spilling/checkpointing backend is additive.
 6. **Key groups and the rescale boundary** (`runtime.partition.KeyGroupPartitioner`) — a keyed edge
-   hashes each key to one of a fixed number of key groups `G` (chosen once for the job, `G >= Q`) and
-   routes by a static `group → instance` table the plan carries, rather than hashing straight to an
-   instance. The indirection is the rescale seam: a key's group is fixed by the hash, and only the
-   table maps groups to instances, so changing the instance count `Q` is a new table over the same
-   groups — no key changes group. Stage 2 never moves live state: a rescale is a new job, not an online
-   migration, so the table is computed once at compile and immutable for the run. At `G == Q` the table
-   is the identity (the routing-level equivalence to a direct hash lives on `KeyGroupPartitioner`).
+   hashes each key to one of a fixed number of key groups (chosen once for the job, and at least the
+   downstream parallelism) and routes by a static `group → instance` table the plan carries, rather than
+   hashing straight to an instance. The indirection is the rescale seam: a key's group is fixed by the
+   hash, and only the table maps groups to instances, so changing the instance count is a new table over
+   the same groups — no key changes group. Stage 2 never moves live state: a rescale is a new job, not an
+   online migration, so the table is computed once at compile and immutable for the run. When the number
+   of key groups equals the parallelism the table is the identity (the routing-level equivalence to a
+   direct hash lives on `KeyGroupPartitioner`).
 7. **Two-input join** (`core.operator.TwoInputOperator`) — the logical graph is an explicit-edge DAG, not
    only a linear chain, so an operator can have two inputs. A join is a two-input vertex fed by two keyed
    edges on distinct ports (port 0 left, port 1 right); both edges read the *join's* one parallelism and
-   the run's one `G`, so their group tables are identical and an equal key co-partitions to the same join
-   instance from either side. It forwards EOS only after *both* inputs close — the existing termination
+   the run's one key-group count, so their group tables are identical and an equal key co-partitions to
+   the same join instance from either side. It forwards EOS only after *both* inputs close — the existing termination
    rule (mechanism 3), unchanged for a second input. (A linear graph carries no edges; the compiler reads
    its positional adjacency, so it lowers byte-for-byte as before.) The built-in `HashJoin` is an inner
    equi-join whose result is independent of the order the two sides arrive; like the keyed aggregations it
@@ -124,14 +125,14 @@ dimension. `nautilus.tensors` converts these to and from numpy.
    which instance a row lands on, so keeping each row on its origin instance moves no data (and, with
    same-index placement, crosses no worker — see Placement). Only two edges must redistribute: a **keyed**
    edge, which groups each key onto one instance (mechanism 6), and the **width-changing** fan-out from the
-   single-instance source (`1 → N`), which has no 1:1 mapping and so rebalances round-robin. A shuffle is
+   single-instance source to every instance, which has no one-to-one mapping and so rebalances round-robin. A shuffle is
    therefore something a stage opts into by keying — never the default for a same-width hop. This is the
    narrow-vs-shuffle split batch engines settle on (Spark's narrow dependencies, Flink's `forward`).
 
 ## Deployment (`nautilus.cluster`)
 
-`deploy(graph, num_workers=W)` runs a graph across W spawned worker processes, coordinated by a control
-plane that never touches the data path. The coordinator compiles once, computes placement, spawns the
+`deploy(graph, num_workers=…)` runs a graph across that many spawned worker processes, coordinated by a
+control plane that never touches the data path. The coordinator compiles once, computes placement, spawns the
 workers, then only moves control messages and waits at the job boundary; it reads no data channel and
 grants no credit, so "no central scheduler on the data path" still holds with a coordinator present.
 
@@ -157,7 +158,7 @@ probes) so a silent partition during a job — which sends no FIN — surfaces a
 rather than indefinite silence, since the completion wait is otherwise unbounded.
 
 **Placement** is per-operator round-robin over the workers: subtask *i* of every operator goes to worker
-*i mod W*. Same-index subtasks co-locate, so a forward or diagonal edge stays a free in-process channel
+*i* modulo the worker count. Same-index subtasks co-locate, so a forward or diagonal edge stays a free in-process channel
 and only a genuine shuffle crosses workers. Each worker therefore runs a *hybrid* connector — in-process
 for co-located edges, a socket for cross-worker ones — wired by the same `execute` code as a
 single-process run.

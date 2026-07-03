@@ -7,13 +7,13 @@ is therefore a local decision, which is what "no central scheduler on the data p
 The three cover the routing choices the compiler makes (``compile.lower._spec_for``; ``DESIGN.md`` has
 the decision). :class:`Forward` co-locates — sender ``i`` to downstream ``i`` — so a same-width keyless
 hop moves no data; it is what an edge uses unless the work forces a redistribution. :class:`RoundRobin`
-(Stage 1.5) rebalances a keyless batch across the downstream when the widths differ (the source's
-``1 → N`` fan-out). The keyed shuffle (Stage 1.5, generalized in Stage 2 to :class:`KeyGroupPartitioner`)
+(Stage 1.5) rebalances a keyless batch across the downstream when the widths differ (the source's fan-out
+to every instance). The keyed shuffle (Stage 1.5, generalized in Stage 2 to :class:`KeyGroupPartitioner`)
 groups each key onto one instance through a ``group → instance`` indirection table that is the rescale
-seam (its class docstring has the mechanism). :class:`HashPartitioner` is the direct ``hash(key) mod Q``
-form it
-generalizes; it is kept only as the ``G == Q`` equivalence oracle for tests and is not wired into the
-runtime (the compiler emits a :class:`~nautilus.compile.plan.KeyGroupSpec`, never a hash spec).
+seam (its class docstring has the mechanism). :class:`HashPartitioner` hashes each key straight to an
+instance (modulo the parallelism), the form it generalizes; it is kept only as the equivalence oracle for
+when the key-group count equals the parallelism, and is not wired into the runtime (the compiler emits a
+:class:`~nautilus.compile.plan.KeyGroupSpec`, never a hash spec).
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ import pyarrow.compute as pc
 #: None`` under the state backend's dict equality, with no ``-0.0``/``NaN`` ambiguity. ``float`` (and
 #: Arrow ``timestamp`` / ``decimal``, which surface from ``to_pylist`` as ``datetime`` / ``Decimal``)
 #: are rejected: the backend keys state by Python dict equality (where ``-0.0 == 0.0`` collapse and
-#: ``NaN != NaN``), which disagrees with the shuffle's msgpack bytes, so a key counted once at P=1
-#: could split across instances at P=N.
+#: ``NaN != NaN``), which disagrees with the shuffle's msgpack bytes, so a key counted once at parallelism
+#: 1 could split across instances at a higher parallelism.
 _ALLOWED_KEY_SCALARS = (str, bytes, int, type(None))
 
 
@@ -201,7 +201,8 @@ class Forward(Partitioner):
     The compiler picks this for a keyless edge whose two stages are the same width (so ``i`` is always a
     valid downstream index) and for any edge into a single instance — never when a width change would
     leave ``sender_index`` past the downstream range. With same-index placement (subtask ``i`` of every
-    operator on worker ``i mod W``) a forwarded edge is a free in-process channel even across workers,
+    operator on worker ``i`` modulo the worker count) a forwarded edge is a free in-process channel even
+    across workers,
     where :class:`RoundRobin` and the keyed shuffles cross the network. Constructed per
     :class:`~nautilus.runtime.actor.Output` with that output's own sender index.
     """
@@ -217,11 +218,12 @@ class Forward(Partitioner):
 
 
 class HashPartitioner(_KeyedPartitioner):
-    """The direct keyed shuffle: route each row to the instance that owns ``hash(key) mod Q``, so every
-    row with a given key lands on the same instance (co-location) and that instance owns the whole key
-    range ``{k : stable_bucket(k, Q) == i}``. :class:`KeyGroupPartitioner` generalizes it with a
-    ``group → instance`` indirection table and is what the runtime actually builds; this class is kept
-    only as the ``G == Q`` equivalence oracle for tests (no spec maps to it).
+    """The direct keyed shuffle: route each row to the instance that owns its key (``stable_bucket`` of
+    the key, modulo the parallelism), so every row with a given key lands on the same instance
+    (co-location) and that instance owns the whole range of keys that hash to its own index.
+    :class:`KeyGroupPartitioner` generalizes it with a ``group → instance`` indirection table and is what
+    the runtime actually builds; this class is kept only as the equivalence oracle for when the key-group
+    count equals the parallelism (no spec maps to it).
     """
 
     def __init__(self, key_columns: Sequence[str]) -> None:
@@ -237,7 +239,7 @@ class HashPartitioner(_KeyedPartitioner):
         if num_downstream == 1:
             _validate_batch_keys(
                 batch, self._key_columns
-            )  # fail fast on a bad key type even at Q==1
+            )  # fail fast on a bad key type even at parallelism 1
             return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
         return _route_keyed(
             batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
@@ -245,14 +247,16 @@ class HashPartitioner(_KeyedPartitioner):
 
 
 class KeyGroupPartitioner(_KeyedPartitioner):
-    """The keyed shuffle with group indirection: hash each key to one of ``G`` key groups
-    (``stable_bucket(key, G)``), then route by a static ``group → instance`` table. The table is fixed
-    for the run — this never migrates live state (a rescale is a new job; see ``DESIGN.md``) — and at
-    ``G == Q`` with the identity table it routes byte-for-byte like :class:`HashPartitioner`.
+    """The keyed shuffle with group indirection: hash each key to one of the key groups
+    (``stable_bucket(key, num_groups)``), then route by a static ``group → instance`` table. The table is
+    fixed for the run — this never migrates live state (a rescale is a new job; see ``DESIGN.md``) — and
+    when the key-group count equals the parallelism, with the identity table, it routes byte-for-byte like
+    :class:`HashPartitioner`.
 
-    ``group_table`` has length ``G`` and maps each group to an instance index; every value must be a
-    valid instance (``0 <= group_table[g] < Q``). The compiler guarantees this when it builds the table
-    from the chosen ``G`` and the operator's parallelism ``Q``, so ``route`` does not re-check it.
+    ``group_table``'s length is the key-group count, and it maps each group to an instance index; every
+    value must be a valid instance (at least 0 and below the parallelism). The compiler guarantees this
+    when it builds the table from the chosen key-group count and the operator's parallelism, so ``route``
+    does not re-check it.
     """
 
     def __init__(self, key_columns: Sequence[str], group_table: Sequence[int]) -> None:
@@ -274,7 +278,7 @@ class KeyGroupPartitioner(_KeyedPartitioner):
         if num_downstream == 1:
             _validate_batch_keys(
                 batch, self._key_columns
-            )  # fail fast on a bad key type even at Q==1
+            )  # fail fast on a bad key type even at parallelism 1
             return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
         return _route_keyed(
             batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
@@ -282,7 +286,7 @@ class KeyGroupPartitioner(_KeyedPartitioner):
 
 
 class RoundRobin(Partitioner):
-    """Rotates whole batches across downstream instances (keyless N-way rebalancing). It carries a
+    """Rotates whole batches across downstream instances (keyless rebalancing). It carries a
     rotation cursor, so each :class:`~nautilus.runtime.actor.Output` builds its own instance and the
     cursor is never shared across senders.
     """
