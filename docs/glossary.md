@@ -67,9 +67,10 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   (0…*N*−1).
 - **Parallelism** — The number of instances an operator is split into.
 - **Partitioner** — A pure function on the sending side that decides which downstream instance each
-  row of a batch goes to. The kinds the runtime builds are `Forward` (1:1), `KeyGroupPartitioner` (the
-  keyed shuffle — see below), and `RoundRobin` (rotates whole batches for keyless rebalancing). Control
-  frames skip the partitioner and are always broadcast.
+  row of a batch goes to. The kinds the runtime builds are `Forward` (co-located: sender `i` to the
+  same-index downstream instance, or to instance 0 for a single owner), `KeyGroupPartitioner` (the keyed
+  shuffle — see below), and `RoundRobin` (rotates whole batches for keyless rebalancing). Control frames
+  skip the partitioner and are always broadcast.
 - **Keyed shuffle** — Routing that sends every row with a given key to the same downstream instance,
   so a key's rows and state are never split across instances. The hash (`stable_bucket`) is process-,
   seed-, and platform-stable, so the same key maps to the same instance in any process. The runtime

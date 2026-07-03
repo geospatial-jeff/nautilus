@@ -448,7 +448,8 @@ class AsyncSink(ABC):
     def key_columns(self) -> tuple[str, ...] | None:
         """The columns this sink's input is co-partitioned on, or ``None`` if keyless. A keyed sink
         declares its key so a parallel run routes each key to one instance (e.g. for per-key upsert);
-        keyless, a parallel run round-robins batches across instances — the write fan-out."""
+        keyless, its input is not routed by key, so a parallel run spreads batches across the writer
+        instances — the write fan-out."""
         return None
 
     def max_in_flight(self) -> int:

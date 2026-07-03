@@ -221,11 +221,11 @@ class LogicalGraph:
                 and v.parallelism > 1
                 and any(e.key_columns is None for e in ins)
             ):
-                # A keyless edge into a parallel stage fans out round-robin, which scatters a key across
-                # instances — fine for a stateless one-input rebalance, but for a join it splits a key's
-                # two sides onto different instances so they never meet and matches vanish silently. Both
-                # join inputs must be keyed so equal keys co-partition. (Harmless at parallelism 1, where
-                # a single instance owns everything.)
+                # A keyless edge into a parallel stage routes by position, not key (a forward or a
+                # round-robin), so it scatters a key across instances — fine for a stateless one-input
+                # stage, but for a join it splits a key's two sides onto different instances so they never
+                # meet and matches vanish silently. Both join inputs must be keyed so equal keys
+                # co-partition. (Harmless at parallelism 1, where a single instance owns everything.)
                 raise ValueError(
                     f"two_input vertex {v.id!r} runs at parallelism {v.parallelism} but an input edge is "
                     "keyless; both inputs must carry key_columns so equal keys co-partition to the same "
