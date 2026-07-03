@@ -44,6 +44,53 @@ starts from evidence, not a cold read.
   id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
   as diminishing returns next to the ~90–125× already shipped.
 
+- **No co-located (forward) edge between same-width keyless operators.** `_spec_for`
+  (`src/nautilus/compile/lower.py`) gives every keyless fan-out a `RoundRobinSpec`, so two keyless
+  operators at the same parallelism cannot be chained instance-to-instance — their edge always rebalances,
+  which is a network shuffle across workers. That is why the Sentinel-2 NDVI fix (2026-07-03) had to *fuse*
+  decode and reduce rather than keep them as two co-located stages: fusing removes the shuffle but costs the
+  I/O/CPU overlap two operators gave (see that entry's trade-off). A `ForwardSpec` for the `upstream Q ==
+  downstream Q`, keyless case (instance `i → i`, opt-in so load-rebalancing stays the default) would let a
+  pipeline keep both — no shuffle *and* overlapped stages — and would generalize to any decode→CPU chain,
+  not just this example. It is a framework change (a new partitioner that needs the sender's subtask index,
+  which `Forward` — routes-all-to-0 — does not take today; plus DSL surface and compiler selection), so it
+  is feature-sized, not a tweak.
+
+- **Sentinel-2 source lists STAC items serially.** `Sentinel2ItemSource.frames` awaits each item's STAC
+  lookup one at a time, so `io.wait_micros` on the single source is ~0.28s × N (1.76s for 6 items). After
+  the decode/reduce fusion that is ~26% of the 6-worker wall (6.82s) — the next bottleneck. Coalescing the
+  lookups (a bounded `asyncio.gather` prefetch, or one STAC `/search` POST by id list instead of N GETs)
+  would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
+  fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
+
+---
+
+## 2026-07-03 — Sentinel-2 NDVI: fuse the reduction into decode so raw pixels never shuffle
+
+- **Commit:** `8c41627`.
+- **Change:** the example (`examples/sentinel2_ndvi.py`) split scene decode (`AsyncOpenAndDecode`) from a
+  separate keyless `TileNdvi` that computed NDVI. Between two keyless operators the compiler picks a
+  `RoundRobinSpec`, so across workers that edge is a network shuffle — raw uint16 pixel tensors crossed the
+  wire only to be summed to two numbers per tile on the far side. Fused the two into one `AsyncNdviTiles`
+  whose `fetch` reduces each tile-row to its `(ndvi_sum, valid_count)` partials *as it reads it*, freeing
+  the row's pixels before the next loads; `integrate` emits only the accumulated partials. Peak memory per
+  scene drops from the whole decoded scene (~0.5 GB) to one tile-row (~tens of MB), and only the tiny
+  partials reach the keyed `MeanNdviByItem`. NDVI math is unchanged (extracted verbatim to `_ndvi_partials`).
+- **Impact (6 and 12 real `sentinel-2-l2a` scenes; Linux x86_64 · Python 3.12.3; median of 3 warm trials —
+  a live-S3 workload, so wider variance than the synthetic benches, and not in `bench-check`):** the metric
+  is `transport.bytes_sent`, **2537 MB → 0** at 6 scenes / 6 workers. Wall **9.62s → 6.82s (1.41×)** at 6
+  scenes / 6 workers; **16.18s → 10.78s (1.50×)** at 12 scenes / 6 workers (that run shuffled 5.1 GB before,
+  0.1 MB after). Six-way scaling over the single-worker baseline went from 1.06× to 2.0×. The default
+  one-scene single-process run is unchanged (5.37s → 5.82s, within noise).
+- **Trade-off (not a regression of the target):** many scenes on *one* worker lose the I/O/CPU overlap that
+  two separate operators gave — 6 scenes at W=1 went 10.24s → 13.70s — because a fused operator's decode
+  I/O and NDVI CPU no longer run as concurrent stages. This is the config `--workers` exists to avoid; the
+  reduction is not in the committed baseline, so `bench-check` does not gate it.
+- **Correctness:** topology changed (one fewer operator, and the intermediate edge now carries partials not
+  pixels), so the structural digest legitimately differs and is not the anchor here. Instead the **per-item
+  mean-NDVI output multiset is byte-identical** before vs after at both W=1 and W=6 (and cross-checked
+  W=1-before against W=6-after). `tests/test_examples_sentinel2.py` green.
+
 ---
 
 ## 2026-07-01 — Unordered async-transform emission (completion order) for stateless maps
