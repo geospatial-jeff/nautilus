@@ -17,9 +17,7 @@ import pickle
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar, cast
-
-T = TypeVar("T")
+from typing import cast
 
 Key = tuple[object, ...]
 Namespace = object | None
@@ -168,7 +166,7 @@ class _Handle:
         return StateScope(self._operator_id, self._name, self._kctx.key, self._kctx.namespace)
 
 
-class ValueState(_Handle, Generic[T]):
+class ValueState[T](_Handle):
     """A single value per key/namespace."""
 
     def value(self) -> T | None:
@@ -181,7 +179,7 @@ class ValueState(_Handle, Generic[T]):
         self._backend.clear(self._scope())
 
 
-class ReducingState(_Handle, Generic[T]):
+class ReducingState[T](_Handle):
     """A value folded with an associative ``reducer`` as elements are added."""
 
     def __init__(

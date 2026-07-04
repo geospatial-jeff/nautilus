@@ -63,6 +63,33 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-04 — Run on Python 3.14 (GIL): faster interpreter, +8–37% across the suite
+
+- **Commit:** `a688a10`.
+- **Change:** the project now runs on CPython 3.14 (GIL build), up from 3.12 — `requires-python`, the CI
+  and compose workflows, the `Dockerfile`, the README, `uv.lock`, and a new `.python-version`. No engine
+  code changed; the speedup is the 3.14 interpreter itself. The bump's incidental code changes are
+  behavior-preserving: PEP 695 type parameters for `ValueState`/`ReducingState` (`state/__init__.py`, ruff
+  UP046) and an `isinstance` narrowing in `tensors._stack` (3.14 lets mypy type-check numpy, so the
+  stub-parse workaround was dropped, which flagged the old `hasattr` guard). black targets py313 so it keeps
+  parenthesized `except` tuples.
+- **Impact (`nautilus bench-check` at the committed baseline scales, median of 5–9 trials; Linux x86_64,
+  the baseline machine; 3.12.3 → 3.14.6):** the keyed shuffle+state paths gain most — `bench-keyed`
+  **1.54M → 2.11M rows/s, 1.37×**, `bench-skew` **1.78M → 2.31M, 1.30×** — because that path spends the
+  most wall in Python orchestrating the per-key route and state, so a faster interpreter helps it most. The
+  rest: async transforms 1.10–1.13×, fanout and the cross-worker chain 1.08×, linear/join/backpressure
+  1.03–1.06× (within noise but positive). Nothing regressed. The baseline was re-measured on 3.14 in this
+  change, so `bench-check` now gates against the 3.14 normal.
+- **Free-threaded 3.14t was evaluated and rejected:** on the same workloads no-GIL *regressed* throughput
+  ~11–13% (`bench-keyed` 1.12M → 974k rows/s at 2M rows) with no offsetting gain. nautilus parallelizes
+  across processes and runs one cooperative event-loop thread per process, so there is no multi-threaded
+  Python bytecode for no-GIL to accelerate — confirmed directly (four instances on one event loop are
+  slower than one; two worker processes are faster than one) and by a pure-Python-thread ceiling test
+  (no-GIL scales 7.45× at eight threads, which nautilus never exercises). gilknocker also ships no
+  free-threaded wheel, so the FULL-tier `runtime.gil_percent` gauge would be absent there anyway.
+- **Correctness:** every `bench-check` structural digest is identical across 3.12 / 3.14 / 3.14t (a pure
+  speed change alters no output), and the hermetic suite (401 tests) passes on 3.14.
+
 ## 2026-07-03 — Forward equal-width keyless edges: data locality instead of always shuffling
 
 - **Commit:** `e41fae6`.
