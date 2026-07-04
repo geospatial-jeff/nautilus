@@ -63,6 +63,26 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-04 — HashJoin nested key intern: up to 1.5× on high-cardinality joins
+
+- **Commit:** `d9459f3`.
+- **Change:** `HashJoin._encode` (`operators.py`) interned each distinct single-column key by building a
+  `((type, value),)` tuple and looking it up in one dict — a tuple allocation per distinct key per batch,
+  the residual per-key cost left after the earlier vectorizations. It now interns through a nested
+  value-type → value → id map (`_intern_single`), so the common single-key join builds no per-key tuple;
+  composite keys keep the tuple form (`_intern_multi`). Both draw ids from one dense counter, so the ids
+  stay 0..n-1 for the vectorized probe.
+- **Impact (`nautilus bench bench-join --rows 2000000`, median of 5 trials; Linux x86_64, the baseline
+  machine):** the win scales with the distinct-key count, since the removed tuple build is per distinct
+  key — at **100k keys 2.17M → 2.58M rows/s (1.19×)** and at **1M keys 1.37M → 2.10M (1.53×)**. At the
+  low-cardinality baseline (500–1000 keys) it is ~+5% (within noise, so `bench-join` reads unchanged), and
+  every existing baseline entry is unchanged. A new `bench-join-wide` entry (100k keys) is the committed
+  guard — reverting the change reads REGRESSED −15%.
+- **Correctness:** the id is an internal label — equal keys still intern to equal ids and distinct keys to
+  distinct ids, and the value+type distinction the keyed shuffle draws is preserved (`int` 1 and `bool`
+  `True` stay separate; `int32` 1 and `int64` 1 share an id) — so the join output multiset and the
+  structural digest are identical (`d6f80bc9b5` at 200k). The 402-test suite passes.
+
 ## 2026-07-04 — Keyed shuffle: single-pass partition, sender cost stops scaling with width
 
 - **Commit:** `c337c7a`.
