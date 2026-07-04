@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pickle
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -70,6 +70,24 @@ class StateBackend(ABC):
         cheaply returns ``{}`` (the default) rather than walking its store on the hot path."""
         return {}
 
+    def reduce_all(
+        self,
+        operator_id: str,
+        name: str,
+        items: Iterable[tuple[Key, object]],
+        reducer: Callable[[object, object], object],
+    ) -> None:
+        """Fold many ``(key, value)`` pairs into reducing state in one pass, at namespace ``None`` (the
+        only namespace the built-ins use) — the bulk form of :meth:`ReducingState.add` for a whole batch,
+        so a keyed aggregation folds a batch's per-key partials without a ``KeyContext`` and a handle per
+        distinct key. The default routes through :meth:`get`/:meth:`put`; a backend overrides it for a
+        tighter loop (see :class:`InMemoryStateBackend`). A ``None`` current is a first write, matching
+        :meth:`ReducingState.add`."""
+        for key, value in items:
+            scope = StateScope(operator_id, name, key, None)
+            cur = self.get(scope)
+            self.put(scope, value if cur is None else reducer(cur, value))
+
     @abstractmethod
     def snapshot(self) -> bytes: ...
 
@@ -102,6 +120,27 @@ class InMemoryStateBackend(StateBackend):
         ):  # a new slot — update the size counters (existing folds skip this)
             self._track_add(scope)
         self._store[scope] = value
+
+    def reduce_all(
+        self,
+        operator_id: str,
+        name: str,
+        items: Iterable[tuple[Key, object]],
+        reducer: Callable[[object, object], object],
+    ) -> None:
+        # The keyed-aggregation hot path: inline get + reducer + set against the raw store so a batch
+        # folds without a KeyContext or ReducingState handle per key. Only a new slot touches the size
+        # counters (as put does). Semantics match ReducingState.add — a None current is a first write.
+        store = self._store
+        for key, value in items:
+            scope = StateScope(operator_id, name, key, None)
+            cur = store.get(scope)
+            if cur is None:
+                if scope not in store:  # new slot (not merely a stored None) — keep sizes() correct
+                    self._track_add(scope)
+                store[scope] = value
+            else:
+                store[scope] = reducer(cur, value)
 
     def clear(self, scope: StateScope) -> None:
         if scope in self._store:

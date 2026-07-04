@@ -175,10 +175,11 @@ class KeyedCount(OneInputOperator):
         if self._key_type is None:
             self._key_type = batch.column(self.key_col).type
         counts = pc.value_counts(batch.column(self.key_col))
-        for value, count in zip(
-            counts.field("values").to_pylist(), counts.field("counts").to_pylist(), strict=True
-        ):
-            self._ctx.reducing_state(self._STATE, KeyContext((value,)), _add).add(int(count))
+        # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
+        keys = ((v,) for v in counts.field("values").to_pylist())
+        self._ctx.reduce_all(
+            self._STATE, zip(keys, counts.field("counts").to_pylist(), strict=True), _add
+        )
 
     def on_eos(self, out: Collector) -> None:
         keys: list[object] = []

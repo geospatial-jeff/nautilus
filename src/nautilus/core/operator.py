@@ -22,7 +22,7 @@ mechanism 8).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from time import perf_counter_ns
 from typing import Any
@@ -131,6 +131,16 @@ class _GuardedStateBackend(StateBackend):
         self._check()
         return self._inner.entries(operator_id, name)
 
+    def reduce_all(
+        self,
+        operator_id: str,
+        name: str,
+        items: Iterable[tuple[Any, object]],
+        reducer: Callable[[object, object], object],
+    ) -> None:
+        self._check()
+        self._inner.reduce_all(operator_id, name, items, reducer)
+
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         return self._inner.sizes()
 
@@ -214,6 +224,13 @@ class OperatorContext:
 
     def reducing_state(self, name: str, kctx: KeyContext, reducer: Any) -> ReducingState[Any]:
         return ReducingState(self.state_backend, self.operator_id, name, kctx, reducer)
+
+    def reduce_all(self, name: str, items: Iterable[tuple[Any, object]], reducer: Any) -> None:
+        """Bulk fold of ``(key, value)`` pairs into named reducing state — one call per batch, the
+        aggregate form of :meth:`reducing_state` at namespace ``None``. Removes the per-key ``KeyContext``
+        and handle allocation the ``reducing_state(...).add(...)`` per-key loop pays; a keyed aggregation
+        folds a whole batch's partials in one pass (see :meth:`StateBackend.reduce_all`)."""
+        self.state_backend.reduce_all(self.operator_id, name, items, reducer)
 
     def entries(self, name: str) -> Iterator[tuple[KeyContext, object]]:
         """Iterate ``(KeyContext, value)`` for every entry of this operator's named state — the

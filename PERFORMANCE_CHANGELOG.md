@@ -63,6 +63,30 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-04 — KeyedCount bulk state fold: 1.47× keyed, 1.36× skew
+
+- **Commit:** `4b08176`.
+- **Change:** `KeyedCount.process` (`operators.py`) folded a batch by looping over every distinct key,
+  calling `reducing_state(KeyContext((v,)), _add).add(count)` — building a `KeyContext` and a
+  `ReducingState` handle, and hashing a `StateScope` three times (get + membership + set), per distinct
+  key per batch. It now folds the batch's `pc.value_counts` in one call to a new bulk primitive,
+  `OperatorContext.reduce_all` → `StateBackend.reduce_all` (the default routes through `get`/`put`;
+  `InMemoryStateBackend` overrides it with an inlined get + reducer + set), so no `KeyContext` or handle
+  is built per key. On the keyed-shuffle workloads KeyedCount is the gate, and that per-key churn
+  dominated it. The primitive is reusable by every keyed aggregation.
+- **Impact (`nautilus bench-check`, baseline scale — 200k rows, batch 4096, 500 keys, median of 5 trials;
+  Linux x86_64, the baseline machine):** `bench-keyed` **2.11M → 3.10M rows/s, 1.47×**; `bench-skew`
+  **2.31M → 3.14M, 1.36×**. Every other baseline entry is unchanged — the fold touches only the keyed
+  aggregation. Isolated before/after at the harder 1000-key scale (2M rows) is larger, where more distinct
+  keys mean more per-key churn removed: `bench-keyed` 1.11M → 1.69M (1.53×), `bench-skew` 1.80M → 2.53M
+  (1.41×), `bench-keyed` at parallelism 4 846k → 1.16M (1.37×). The baseline was re-measured on this
+  change so `bench-check` gates the new normal.
+- **Correctness:** `reduce_all` matches `ReducingState.add` semantics exactly (a `None` current is a first
+  write), so the stored state, `sizes()` (state.entries/keys), and the structural digest are identical
+  (`8a736e5dde` at 2M) and the 401-test suite passes. A unit test,
+  `test_reduce_all_matches_per_key_fold_and_tracks_sizes`, pins that the bulk fold lands the same state
+  and size counts as the per-key loop it replaced.
+
 ## 2026-07-04 — Run on Python 3.14 (GIL): faster interpreter, +8–37% across the suite
 
 - **Commit:** `a688a10`.
