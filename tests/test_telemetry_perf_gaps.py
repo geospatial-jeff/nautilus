@@ -119,3 +119,30 @@ def test_backend_sizes_count_entries_and_distinct_keys():
     be.clear(StateScope("op", "acc", ("a",), "w0"))
     be.clear(StateScope("op", "acc", ("a",), "w1"))  # key 'a' now fully gone
     assert be.sizes() == {("op", "acc"): (1, 1)}
+
+
+def test_reduce_all_matches_per_key_fold_and_tracks_sizes():
+    # KeyedCount's hot path is the bulk fold; it must land exactly the state the per-key
+    # reducing_state().add() loop it replaced does, and keep sizes() (state.entries/keys) correct.
+    from nautilus.core.operator import OperatorContext
+    from nautilus.state import KeyContext
+
+    def add(a: object, b: object) -> object:
+        return a + b  # type: ignore[operator]
+
+    per_key = InMemoryStateBackend()
+    ctx = OperatorContext("op", state_backend=per_key)
+    for key, count in [("a", 2), ("b", 1), ("a", 3), ("b", 4)]:  # the loop reduce_all replaces
+        ctx.reducing_state("count", KeyContext((key,)), add).add(count)
+
+    bulk = InMemoryStateBackend()
+    bulk_ctx = OperatorContext("op", state_backend=bulk)
+    bulk_ctx.reduce_all("count", [(("a",), 2), (("b",), 1)], add)  # first fold: writes each key
+    bulk_ctx.reduce_all("count", [(("a",), 3), (("b",), 4)], add)  # second fold: reduces existing
+
+    folded = {kctx.key: value for kctx, value in bulk_ctx.entries("count")}
+    assert folded == {("a",): 5, ("b",): 5}
+    assert folded == {
+        kctx.key: value for kctx, value in ctx.entries("count")
+    }  # identical to per-key
+    assert bulk.sizes() == per_key.sizes() == {("op", "count"): (2, 2)}  # sizes bookkeeping intact
