@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 
 import msgpack
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
@@ -110,21 +111,28 @@ def _route_keyed(
     key_columns: tuple[str, ...],
     bucket_of: Callable[[tuple[object, ...]], int],
 ) -> list[tuple[int, pa.RecordBatch]]:
-    """The shared core of the keyed partitioners: compute each row's owning instance, then ``filter`` the
-    batch once per instance into its sub-batch.
+    """The shared core of the keyed partitioners: compute each row's owning instance, then group the batch
+    by instance in a single ``take`` and hand out each instance's rows as a zero-copy slice.
 
-    ``filter`` keeps the surviving rows in their original order, so a sub-batch holds its rows in input
-    order — matching the per-key co-location the keyed operators downstream rely on, and conserving every
-    row exactly once across the instances.
+    The rows for one instance are gathered by ``np.flatnonzero``, which preserves their input order, so a
+    sub-batch holds its rows in input order — matching the per-key co-location the keyed operators
+    downstream rely on, and conserving every row exactly once across the instances. This replaces a
+    ``filter`` per instance (``num_downstream`` full-batch rescans) with one reorder, so the cost stops
+    growing with the downstream width.
     """
     if batch.num_rows == 0:
         return []
-    bucket_per_row = _bucket_per_row(batch, key_columns, bucket_of)
+    bucket_per_row = _bucket_per_row(batch, key_columns, bucket_of).to_numpy(zero_copy_only=False)
+    per_instance = [np.flatnonzero(bucket_per_row == i) for i in range(num_downstream)]
+    ordered = batch.take(pa.array(np.concatenate(per_instance)))
     out: list[tuple[int, pa.RecordBatch]] = []
-    for i in range(num_downstream):
-        sub = batch.filter(pc.equal(bucket_per_row, pa.scalar(i, pa.int32())))
-        if sub.num_rows:
-            out.append((i, sub))
+    start = 0
+    for i, rows in enumerate(per_instance):
+        count = len(rows)
+        # skip an instance that owns no rows in this batch (as the per-instance filter did)
+        if count:
+            out.append((i, ordered.slice(start, count)))
+            start += count
     return out
 
 
