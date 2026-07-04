@@ -347,8 +347,9 @@ async def execute(
                 raise ValueError(f"unknown operator kind {op.kind!r} for {op.operator_id!r}")
 
         # The hardware sampler runs OUTSIDE the data TaskGroup so it can
-        # neither delay completion nor cancel the data tasks if a psutil call raises. Each worker
-        # samples itself, attributing its readings to its own node.
+        # neither delay completion nor cancel the data tasks if a psutil call raises. Each worker samples
+        # its own process and the host it runs on, attributing both to its own node (so several workers on
+        # one machine each report that machine's host readings — the catalog notes the no-dedup caveat).
         sampler = None
         sampler_task: asyncio.Task[None] | None = None
         if cfg.tier > Tier.OFF:
@@ -359,7 +360,14 @@ async def execute(
             # per-process recorder (independent of system sampling) so it lands in this node's row.
             proc_rec.set_gauge("placement.instances_per_worker", len(hosted), node=deployment.node)
             if cfg.sample_system:
-                sampler = SystemSampler(proc_rec, interval_micros=cfg.sample_interval_micros)
+                sampler = SystemSampler(
+                    proc_rec,
+                    interval_micros=cfg.sample_interval_micros,
+                    host=True,
+                    # GIL monitoring runs a continuous thread, so gate it to FULL (like transport
+                    # byte-accounting) — a default run pays nothing for it.
+                    enable_gil=cfg.tier >= Tier.FULL,
+                )
                 sampler_task = asyncio.create_task(sampler.run())
 
         # A telemetry heartbeat, when a live dashboard is attached: push this worker's snapshot to the
