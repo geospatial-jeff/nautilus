@@ -263,6 +263,42 @@
       },
       "trials": 5
     },
+    "bench-join-wide": {
+      "deterministic": true,
+      "environment": {
+        "commit": "afadbe9",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1017-aws-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-join",
+      "recorded_at": "2026-07-04T21:39:28+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 100000,
+        "parallelism": 1,
+        "rows": 2000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "e0fae4e3de4318d7252861a4765e5e7514af59834526bf24477598a56d338f46",
+      "throughput_rows_per_sec": {
+        "iqr": 37258.28382640099,
+        "max": 2612610.996045343,
+        "median": 2611401.3100611656,
+        "min": 2571926.648605478,
+        "rel_spread": 0.014267544280862871,
+        "samples": [
+          2571926.648605478,
+          2575194.7912661764,
+          2611401.3100611656,
+          2612453.0750925774,
+          2612610.996045343
+        ]
+      },
+      "trials": 5
+    },
     "bench-keyed": {
       "deterministic": true,
       "environment": {
