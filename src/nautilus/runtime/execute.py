@@ -361,7 +361,12 @@ async def execute(
             proc_rec.set_gauge("placement.instances_per_worker", len(hosted), node=deployment.node)
             if cfg.sample_system:
                 sampler = SystemSampler(
-                    proc_rec, interval_micros=cfg.sample_interval_micros, host=True
+                    proc_rec,
+                    interval_micros=cfg.sample_interval_micros,
+                    host=True,
+                    # GIL monitoring runs a continuous thread, so gate it to FULL (like transport
+                    # byte-accounting) — a default run pays nothing for it.
+                    enable_gil=cfg.tier >= Tier.FULL,
                 )
                 sampler_task = asyncio.create_task(sampler.run())
 

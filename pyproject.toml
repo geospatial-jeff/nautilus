@@ -24,8 +24,10 @@ nautilus = "nautilus.cli:main"
 
 [project.optional-dependencies]
 fast = ["uvloop>=0.19; sys_platform != 'win32'"]
-# Hardware/resource telemetry (process CPU, memory, fds). loop-lag works without it.
-system = ["psutil>=5.9"]
+# Hardware/resource telemetry: psutil for process/host CPU, memory, fds, and network; gilknocker for the
+# FULL-tier GIL-contention gauge. Both optional — loop-lag works without either, and each gauge is
+# omitted when its library is absent.
+system = ["psutil>=5.9", "gilknocker>=0.4"]
 # Cloud-Optimized GeoTIFF imagery (the Sentinel-2 NDVI example): async, range-request COG reads with
 # no GDAL/rasterio in the stack. async-geotiff (over async-tiff) does the decoding; obstore does the I/O.
 geo = ["async-geotiff>=0.5", "obstore>=0.11"]
@@ -37,6 +39,7 @@ dev = [
   "mypy>=1.10",
   "import-linter>=2.0",
   "psutil>=5.9",
+  "gilknocker>=0.4",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -87,7 +90,7 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 # pyarrow ships a py.typed marker but its compute functions (pc.max/value_counts/cast) are generated
 # dynamically and absent from the stubs; treat these libraries as untyped rather than fight it.
-module = ["pyarrow.*", "msgpack.*", "cloudpickle.*", "uvloop.*", "typer.*", "rich.*", "click.*", "psutil.*"]
+module = ["pyarrow.*", "msgpack.*", "cloudpickle.*", "uvloop.*", "typer.*", "rich.*", "click.*", "psutil.*", "gilknocker.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

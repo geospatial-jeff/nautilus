@@ -589,6 +589,30 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             stability=Stability.EXPERIMENTAL,
         ),
         MetricSpec(
+            "host.net_bytes_sent",
+            MetricKind.GAUGE,
+            "bytes",
+            (),
+            Reduction.LAST,
+            "Bytes sent across all host network interfaces since the previous sample "
+            "(psutil.net_io_counters delta). Host-wide, not summed across co-located workers; the "
+            "OS-level counterpart to the per-edge transport.bytes_sent, which counts application payload.",
+            relates_to=("transport.bytes_sent",),
+            since_stage=1,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "host.net_bytes_recv",
+            MetricKind.GAUGE,
+            "bytes",
+            (),
+            Reduction.LAST,
+            "Bytes received across all host network interfaces since the previous sample "
+            "(psutil.net_io_counters delta). Host-wide, not summed across co-located workers.",
+            since_stage=1,
+            stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
             "runtime.loop_lag_micros",
             MetricKind.HISTOGRAM,
             "microseconds",
@@ -599,6 +623,20 @@ METRIC_SPECS: dict[str, MetricSpec] = {
             relates_to=("runtime.step_micros",),
             boundaries=DURATION_US_BUCKETS,
             stability=Stability.EXPERIMENTAL,
+        ),
+        MetricSpec(
+            "runtime.gil_percent",
+            MetricKind.GAUGE,
+            "percent",
+            (),
+            Reduction.LAST,
+            "Fraction of the sampling interval the interpreter's global interpreter lock was held under "
+            "contention, from the gilknocker monitor thread (100 means fully contended). Per process; "
+            "recorded only at the FULL tier, and omitted when gilknocker is not installed.",
+            relates_to=("runtime.loop_lag_micros", "runtime.step_micros"),
+            since_stage=1,
+            stability=Stability.EXPERIMENTAL,
+            min_tier=Tier.FULL,
         ),
         # --- cross-process edges and placement (emitted by the socket channel + executor) --------
         MetricSpec(
