@@ -63,6 +63,28 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-04 — Keyed shuffle: single-pass partition, sender cost stops scaling with width
+
+- **Commit:** `c337c7a`.
+- **Change:** `_route_keyed` (`runtime/partition.py`) — the sender-side split every keyed shuffle runs —
+  filtered the batch once per downstream instance (`pc.equal` + `filter`), rescanning the whole batch
+  `num_downstream` times. It now groups the rows by owning instance in a single reorder: numpy
+  `flatnonzero` collects each instance's row indices (input order preserved), one `take` lays the batch
+  out in instance order, and each instance receives a zero-copy slice. The per-instance rescan is gone,
+  so the cost no longer grows with the downstream width.
+- **Impact (`nautilus bench bench-keyed --parallelism 16 --rows 2000000`, median of 5 trials; Linux
+  x86_64, the baseline machine):** a wide, 16-way keyed shuffle **914k → 988k rows/s, 1.08×**. The gain
+  scales with the shuffle width (the removed rescans are `O(width)`): at parallelism 4–8 it is within
+  noise, and every existing baseline entry is unchanged (`bench-check`: no regressions). This is a
+  scale-out win, not a common-case one — the single-instance source (nautilus fans one source out to
+  every instance) is still the ceiling for a parallel keyed pipeline; this only trims the route cost on
+  top of it. A new `bench-keyed-wide` baseline entry (parallelism 16) is the committed guard — reverting
+  the change reads REGRESSED −7.1%.
+- **Correctness:** a pure routing change — each instance keeps exactly its rows, in input order
+  (`np.flatnonzero` preserves order), so the per-key co-location the downstream keyed operators rely on is
+  unchanged and the structural digest is identical (`9a9dbf867d` at parallelism 4). The 402-test suite
+  passes.
+
 ## 2026-07-04 — KeyedCount bulk state fold: 1.47× keyed, 1.36× skew
 
 - **Commit:** `4b08176`.

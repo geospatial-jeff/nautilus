@@ -335,6 +335,42 @@
       },
       "trials": 5
     },
+    "bench-keyed-wide": {
+      "deterministic": true,
+      "environment": {
+        "commit": "7cde1ee",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1017-aws-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-07-04T21:28:57+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 16,
+        "rows": 2000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "4597615e387add25587562e37efb83300b19a0df53c813a6a80e25747ba9f1b7",
+      "throughput_rows_per_sec": {
+        "iqr": 4978.133652557386,
+        "max": 983101.8515111689,
+        "median": 979911.7370203299,
+        "min": 976036.2760545406,
+        "rel_spread": 0.005080185760091683,
+        "samples": [
+          976036.2760545406,
+          977761.1668666318,
+          979911.7370203299,
+          982739.3005191892,
+          983101.8515111689
+        ]
+      },
+      "trials": 5
+    },
     "bench-linear": {
       "deterministic": true,
       "environment": {
