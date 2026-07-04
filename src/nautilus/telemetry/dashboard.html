@@ -42,8 +42,18 @@
   .hw .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
   .hw .num { font-size:20px; font-weight:600; }
   .hw .lbl { color:var(--dim); font-size:11px; }
-  .topo { display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--dim); }
-  .node { background:#1f2630; border:1px solid var(--line); border-radius:6px; padding:5px 10px; color:var(--fg); }
+  .flow { overflow-x:auto; }
+  .flow svg { width:100%; height:auto; min-width:460px; }
+  .flow .edge { fill:none; stroke:var(--accent); stroke-linecap:round; }
+  .flow .parts circle { pointer-events:none; }
+  .flow .elabel { fill:var(--dim); font-size:10px; }
+  .flow .fnode rect { fill:#1f2630; stroke:var(--line); stroke-width:1.4; }
+  .flow .fnode.src rect { stroke:var(--live); }
+  .flow .fnode.snk rect { stroke:var(--accent); }
+  .flow .fnode .nid { fill:var(--fg); font-weight:600; font-size:12px; }
+  .flow .fnode .ncls { fill:var(--dim); font-size:10px; }
+  .flow .fnode .nrate { fill:var(--accent); font-size:11px; }
+  .flegend { color:var(--dim); font-size:11px; margin-top:10px; line-height:1.6; }
   .errors td { color:#f0a; text-align:left; white-space:normal; }
   svg { display:block; }
   .foot { color:var(--dim); padding:0 18px 18px; }
@@ -61,7 +71,10 @@
 <main>
   <section class="panel"><h2>hardware</h2><div id="hw" class="workers"></div></section>
   <section class="panel"><h2>operators</h2><table id="ops"><thead></thead><tbody></tbody></table></section>
-  <section class="panel"><h2>topology</h2><div id="topo" class="topo"></div></section>
+  <section class="panel"><h2>flow</h2><div id="flow" class="flow"></div>
+    <div class="flegend">dots trace rows moving through each channel right now · line weight = rows carried so far ·
+      stroke turns amber as a channel's queue fills toward capacity ·
+      shuffle / rebalance / forward = how each edge routes rows onward</div></section>
   <section class="panel errors" id="errpanel" style="display:none"><h2>errors</h2>
     <table id="errs"><tbody></tbody></table></section>
 </main>
@@ -80,6 +93,9 @@ const LABELS = {
 const CAP = 120;           // rolling history length per series
 const hist = new Map();    // id -> [values]
 let meanings = {};         // metric name -> catalog meaning (for header tooltips)
+// Live flow graph state. `prev` holds each series' cumulative value at the last poll so a rate is the
+// delta since then; `model` caches the built SVG so a poll only updates styling, never the DOM shape.
+const flow = { sig:null, model:null, prev:new Map(), prevT:null, maxRate:1 };
 
 function push(id, v) {
   const a = hist.get(id) || [];
@@ -206,10 +222,7 @@ function render(doc) {
     }).join("") + "</tr>";
   }).join("");
 
-  // topology
-  document.getElementById("topo").innerHTML =
-    (doc.topology?doc.topology.nodes:[]).map(n=>`<span class="node">${n.operator_id}</span>`)
-      .join('<span>→</span>');
+  renderFlow(doc);
 
   // errors
   const errs = doc.errors||[];
@@ -223,6 +236,153 @@ function headerMetric(c){return {rows_in:"operator.rows_in",rows_out:"operator.r
 function card(lbl,num,h,max){return `<div class="card"><div class="num">${num}</div>
   <div class="lbl">${lbl}</div>${spark(h||[],max)}</div>`;}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
+
+// --- live flow graph -----------------------------------------------------------------------------
+// A service-mesh-style view (in the spirit of Istio/Kiali): operators are nodes, channels are edges,
+// and dots ride each edge at the rate rows are moving through it right now. Line weight encodes the
+// rows carried so far and the stroke warms toward amber as a channel's queue nears capacity. All three
+// are facts already in the report — operator.rows_out, edge.rows_sent_total, edge.max_queue_depth — read
+// as deltas between polls. render() rebuilds the SVG only when the topology changes; each poll just
+// restyles it, and one requestAnimationFrame loop carries the dots.
+const PART_CAP=18, SPAWN_MAX=16, PART_SPEED=0.55, SVGNS="http://www.w3.org/2000/svg";
+let flowLast=null;
+
+function fmtRows(n){ n=Number(n)||0;
+  if(n>=1e6) return (n/1e6).toFixed(1)+"M";
+  if(n>=1e3) return (n/1e3).toFixed(1)+"k";
+  return String(Math.round(n)); }
+function clip(s,n){ s=String(s); return s.length>n ? s.slice(0,n-1)+"…" : s; }
+function partTag(p){ if(!p) return ""; p=String(p).toLowerCase();  // partitioner name -> streaming term
+  if(p.includes("key")) return "shuffle";
+  if(p.includes("round")||p.includes("rebalance")) return "rebalance";
+  if(p.includes("forward")||p.includes("identity")) return "forward";
+  return ""; }
+function lerpColor(t){ const a=[88,166,255], b=[210,153,34];   // accent -> amber, by queue fill fraction
+  t=Math.max(0,Math.min(1,t)); const c=a.map((v,i)=>Math.round(v+(b[i]-v)*t));
+  return `rgb(${c[0]},${c[1]},${c[2]})`; }
+
+function layoutFlow(nodes, edges){
+  // Layered left-to-right: a node's column is its longest hop-distance from a source, so every edge
+  // points rightward. Relaxing over all edges |nodes| times settles that longest path (the graph is a DAG).
+  const rank=new Map(); nodes.forEach(n=>rank.set(n.operator_id,0));
+  for(let it=0; it<nodes.length; it++)
+    for(const e of edges) rank.set(e.dst, Math.max(rank.get(e.dst), rank.get(e.src)+1));
+  const byRank=new Map();
+  nodes.forEach(n=>{ const r=rank.get(n.operator_id);
+    if(!byRank.has(r)) byRank.set(r,[]); byRank.get(r).push(n); });
+  const W=140,H=54,colGap=200,rowGap=28,mx=14,my=16;
+  let maxRank=0,maxCol=1; rank.forEach(r=>{ if(r>maxRank) maxRank=r; });
+  byRank.forEach(a=>{ if(a.length>maxCol) maxCol=a.length; });
+  const colH=maxCol*H+(maxCol-1)*rowGap, pos=new Map();
+  byRank.forEach((arr,r)=>{ const h=arr.length*H+(arr.length-1)*rowGap, y0=my+(colH-h)/2;
+    arr.forEach((n,i)=>pos.set(n.operator_id,{x:mx+r*colGap, y:y0+i*(H+rowGap)})); });
+  return {pos, w:mx*2+maxRank*colGap+W, h:my*2+colH, nodeW:W, nodeH:H};
+}
+
+function buildFlowSvg(nodes, edges, lay){
+  const pos=lay.pos, W=lay.nodeW, H=lay.nodeH;
+  const eSvg=edges.map(e=>{ const a=pos.get(e.src), b=pos.get(e.dst);
+    const sx=a.x+W, sy=a.y+H/2, dx=b.x, dy=b.y+H/2, mx=(sx+dx)/2;
+    return `<path class="edge" marker-end="url(#ah)" d="M${sx},${sy} C${mx},${sy} ${mx},${dy} ${dx},${dy}"/>`
+      + `<g class="parts"></g>`
+      + `<text class="elabel" x="${mx}" y="${((sy+dy)/2-7).toFixed(1)}" text-anchor="middle"></text>`;
+  }).join("");
+  const nSvg=nodes.map(n=>{ const p=pos.get(n.operator_id);
+    const cls=n.kind==="source" ? "src" : (n._sink ? "snk" : "");
+    return `<g class="fnode ${cls}">`
+      + `<rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="7"/>`
+      + `<text class="nid" x="${p.x+11}" y="${p.y+19}">${esc(n.operator_id)}</text>`
+      + `<text class="ncls" x="${p.x+11}" y="${p.y+34}">${esc(clip(n.op_class||"",18))}</text>`
+      + `<text class="nrate" x="${p.x+11}" y="${p.y+48}">—</text></g>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${lay.w} ${lay.h}" preserveAspectRatio="xMinYMin meet" role="img" aria-label="dataflow graph">`
+    + `<defs><marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">`
+    + `<path d="M0,0 L6,3 L0,6 Z" fill="var(--dim)"/></marker></defs>${eSvg}${nSvg}</svg>`;
+}
+
+function bindFlowModel(flowEl, nodes, edges){
+  const svg=flowEl.querySelector("svg");
+  const paths=svg.querySelectorAll(".edge"), parts=svg.querySelectorAll(".parts"),
+        labels=svg.querySelectorAll(".elabel"), nrates=svg.querySelectorAll(".nrate");
+  flow.model={ edges: edges.map((e,i)=>({ src:e.src, dst:e.dst, partitioner:e.partitioner,
+      path:paths[i], group:parts[i], label:labels[i], len:paths[i].getTotalLength(),
+      particles:[], spawnAcc:0, rate:0, total:0, qfrac:0, color:"rgb(88,166,255)" })),
+    nodeById:new Map() };
+  nodes.forEach((n,i)=>flow.model.nodeById.set(n.operator_id, nrates[i]));
+  flow.prev.clear(); flow.prevT=null;   // a structural rebuild is a fresh run: drop stale cumulatives
+}
+
+function renderFlow(doc){
+  const flowEl=document.getElementById("flow"), topo=doc.topology;
+  if(!topo || !topo.nodes || !topo.nodes.length){
+    flowEl.innerHTML='<div class="meta">no topology yet</div>'; flow.sig=null; return; }
+  const nodes=topo.nodes, emap=new Map();     // collapse an operator's parallel channels to one edge
+  (topo.edges||[]).forEach(e=>{ const k=e.src_operator_id+">"+e.dst_operator_id;
+    if(!emap.has(k)) emap.set(k,{src:e.src_operator_id,dst:e.dst_operator_id,partitioner:e.partitioner}); });
+  const edges=[...emap.values()], srcSet=new Set(edges.map(e=>e.src));
+  nodes.forEach(n=>{ n._sink=!srcSet.has(n.operator_id); });
+
+  const sig=nodes.map(n=>n.operator_id).join(",")+"|"+edges.map(e=>e.src+">"+e.dst).join(",");
+  if(sig!==flow.sig){ flow.sig=sig;
+    flowEl.innerHTML=buildFlowSvg(nodes,edges,layoutFlow(nodes,edges)); bindFlowModel(flowEl,nodes,edges); }
+
+  const now=(window.performance&&performance.now)?performance.now():Date.now();
+  const dt=flow.prevT!=null ? Math.max(1e-3,(now-flow.prevT)/1000) : null; flow.prevT=now;
+  const rate=(key,cur)=>{ const prev=flow.prev.get(key); flow.prev.set(key,cur);
+    return (dt!=null && prev!=null) ? Math.max(0,(cur-prev)/dt) : 0; };
+
+  // Each node's number is the rows it takes in — its processing load — summed over its parallel
+  // instances and workers. A source has no input, so it shows what it produces instead; the edges
+  // (rows_sent) carry the transfers between nodes, so a selectivity collapse reads as a fat edge into a
+  // node whose thin outgoing edge leaves it.
+  const outNow=new Map();
+  doc.operators.forEach(o=>{ if(o.kind==="process") return;
+    const hasIn=(o.counters||[]).some(c=>c.name==="operator.rows_in");
+    const v=counter(o, hasIn ? "operator.rows_in" : "operator.rows_out");
+    outNow.set(o.operator_id,(outNow.get(o.operator_id)||0)+v); });
+  const eNow=new Map();         // rows_sent + deepest queue + capacity per edge, summed over channels
+  (doc.edges||[]).forEach(e=>{ const k=e.src_operator_id+">"+e.dst_operator_id, c=eNow.get(k)||{rows:0,q:0,cap:0};
+    c.rows+=e.rows_sent_total||0; c.q=Math.max(c.q,e.max_queue_depth||0); c.cap+=e.capacity||0; eNow.set(k,c); });
+
+  let maxTotal=1, maxRate=1;
+  flow.model.edges.forEach(m=>{ const c=eNow.get(m.src+">"+m.dst)||{rows:0,q:0,cap:0};
+    m.total=c.rows; m.rate=rate("e:"+m.src+">"+m.dst,c.rows); m.qfrac=c.cap>0?Math.min(1,c.q/c.cap):0;
+    if(m.total>maxTotal) maxTotal=m.total; if(m.rate>maxRate) maxRate=m.rate; });
+  flow.maxRate=maxRate;
+  flow.model.edges.forEach(m=>{ const relT=m.total/maxTotal; m.color=lerpColor(m.qfrac);
+    m.path.setAttribute("stroke",m.color);
+    m.path.setAttribute("stroke-width",(1.5+5*relT).toFixed(2));
+    m.path.setAttribute("stroke-opacity",(0.22+0.5*relT).toFixed(2));
+    const tag=partTag(m.partitioner);
+    m.label.textContent=(tag?tag+" · ":"")+fmtRows(m.total)+(m.rate>0?" · "+fmtRows(m.rate)+"/s":""); });
+  flow.model.nodeById.forEach((el,id)=>{ const cur=outNow.has(id)?outNow.get(id):null;
+    const rt=rate("o:"+id, cur||0);
+    el.textContent = cur==null ? "—" : (rt>0 ? fmtRows(rt)+" rows/s" : fmtRows(cur)+" rows"); });
+}
+
+function animateFlow(ts){
+  if(flow.model){
+    const dt = flowLast!=null ? Math.min(0.1,(ts-flowLast)/1000) : 0;
+    for(const m of flow.model.edges){
+      if(m.len>0 && m.rate>0 && flow.maxRate>0){
+        m.spawnAcc += SPAWN_MAX*(m.rate/flow.maxRate)*dt;   // busier edge spawns more dots per second
+        while(m.spawnAcc>=1){ m.spawnAcc-=1;
+          if(m.particles.length>=PART_CAP){ m.spawnAcc=0; break; }   // cap: never burst when it frees up
+          const c=document.createElementNS(SVGNS,"circle"); c.setAttribute("r","2.6");
+          m.group.appendChild(c); m.particles.push({t:0,el:c}); }
+      }
+      for(let i=m.particles.length-1;i>=0;i--){ const p=m.particles[i]; p.t+=PART_SPEED*dt;
+        if(p.t>=1){ p.el.remove(); m.particles.splice(i,1); continue; }
+        const pt=m.path.getPointAtLength(p.t*m.len);
+        p.el.setAttribute("cx",pt.x.toFixed(1)); p.el.setAttribute("cy",pt.y.toFixed(1));
+        p.el.setAttribute("fill",m.color); }
+    }
+  }
+  flowLast=ts; requestAnimationFrame(animateFlow);
+}
+// Respect prefers-reduced-motion: skip the dots entirely; edge weight, color, and labels still convey it.
+if(!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches))
+  requestAnimationFrame(animateFlow);
 
 let completed = false;   // sticky once the run reports done, so a later poll miss stays "complete"
 let fails = 0;           // consecutive failed polls → the run's process went away
