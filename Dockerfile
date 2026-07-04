@@ -2,7 +2,7 @@
 # a daemon cloudpickle.loads the plan and any operator pickled by reference must be importable wherever it
 # lands, so every container needs the same installed package. pyarrow/numpy/psutil ship manylinux wheels,
 # so the install needs no compiler on the slim base.
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 # Only what the wheel build (hatchling) reads: the metadata, the README it references, and the package

@@ -92,7 +92,7 @@ def is_tensor(type_: Any) -> bool:
 
 
 def _stack(arrays: NDArray[Any] | Sequence[NDArray[Any]]) -> NDArray[Any]:
-    if hasattr(arrays, "ndim"):  # already an (N, *shape) ndarray
+    if isinstance(arrays, np.ndarray):  # already an (N, *shape) ndarray
         return arrays
     items = list(arrays)
     if not items:

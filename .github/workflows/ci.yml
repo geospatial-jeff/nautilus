@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv venv --python 3.12
+      - run: uv venv --python 3.14
       - run: uv pip install -e ".[dev,fast,geo]"   # geo: the Sentinel-2 example + its hermetic tests
       - run: uv run ruff check src tests
       - run: uv run black --check src tests

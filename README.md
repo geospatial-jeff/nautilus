@@ -112,7 +112,7 @@ has been optimized and by how much.
 ## Development
 
 ```bash
-uv venv --python 3.12
+uv venv --python 3.14
 uv pip install -e ".[dev,fast]"
 uv run pytest -q
 ```
