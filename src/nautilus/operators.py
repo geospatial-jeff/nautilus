@@ -289,8 +289,13 @@ class HashJoin(TwoInputOperator):
         # grow until close() — the documented unbounded-state tradeoff.
         self._left_buf = _SideBuffer()
         self._right_buf = _SideBuffer()
-        # One id map shared by both sides, so equal keys on left and right get the same integer id.
-        self._key_ids: dict[tuple[tuple[type, object], ...], int] = {}
+        # One id space shared by both sides, so equal keys on left and right get the same integer id.
+        # A single-column key (the common case) interns through a nested value-type -> value -> id map,
+        # which needs no per-value tuple; a composite key falls back to one tuple per row. Both draw ids
+        # from one dense counter, so the ids stay 0..n-1 for the vectorized probe.
+        self._single_ids: dict[type, dict[object, int]] = {}
+        self._multi_ids: dict[tuple[tuple[type, object], ...], int] = {}
+        self._num_ids = 0
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
         self._left_names: list[str] | None = None
         self._right_value_cols: list[str] | None = None
@@ -318,7 +323,9 @@ class HashJoin(TwoInputOperator):
     def close(self) -> None:
         self._left_buf.clear()
         self._right_buf.clear()
-        self._key_ids.clear()
+        self._single_ids.clear()
+        self._multi_ids.clear()
+        self._num_ids = 0
 
     def _check_columns(self) -> None:
         """Once both input schemas are known, reject a right non-key column that collides with a left
@@ -349,7 +356,8 @@ class HashJoin(TwoInputOperator):
         if len(key_columns) == 1:
             enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
             local_to_global = np.array(
-                [self._intern(((type(v), v),)) for v in enc.dictionary.to_pylist()], dtype=np.int64
+                [self._intern_single(type(v), v) for v in enc.dictionary.to_pylist()],
+                dtype=np.int64,
             )
             indices = enc.indices.to_numpy(zero_copy_only=False)
             return cast(np.ndarray, local_to_global[indices])
@@ -357,16 +365,29 @@ class HashJoin(TwoInputOperator):
         cols = [batch.column(c).to_pylist() for c in key_columns]
         out = np.empty(batch.num_rows, dtype=np.int64)
         for r in range(batch.num_rows):
-            out[r] = self._intern(tuple((type(col[r]), col[r]) for col in cols))
+            out[r] = self._intern_multi(tuple((type(col[r]), col[r]) for col in cols))
         return out
 
-    def _intern(self, key: tuple[tuple[type, object], ...]) -> int:
-        """The shared global id for a key tuple, assigning the next free id on first sight."""
-        ids = self._key_ids
-        gid = ids.get(key)
+    def _intern_single(self, value_type: type, value: object) -> int:
+        """Global id for a single-column key, interned by (value type, value) with no tuple built — the
+        hot path of a single-key join. A new (type, value) pair takes the next free id."""
+        by_value = self._single_ids.get(value_type)
+        if by_value is None:
+            by_value = self._single_ids[value_type] = {}
+        gid = by_value.get(value)
         if gid is None:
-            gid = len(ids)
-            ids[key] = gid
+            gid = self._num_ids
+            self._num_ids += 1
+            by_value[value] = gid
+        return gid
+
+    def _intern_multi(self, key: tuple[tuple[type, object], ...]) -> int:
+        """Global id for a composite (multi-column) key tuple, assigning the next free id on first sight."""
+        gid = self._multi_ids.get(key)
+        if gid is None:
+            gid = self._num_ids
+            self._num_ids += 1
+            self._multi_ids[key] = gid
         return gid
 
     def _probe_and_emit(
@@ -384,7 +405,7 @@ class HashJoin(TwoInputOperator):
         Python loop."""
         if other.empty:
             return
-        grouped, start, count = other.grouped(len(self._key_ids))
+        grouped, start, count = other.grouped(self._num_ids)
         nq = len(ids)
         within = ids < count.shape[0]  # a key id unseen on the other side has no run there
         qstart = np.zeros(nq, dtype=np.int64)
