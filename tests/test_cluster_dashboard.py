@@ -180,6 +180,23 @@ def test_dashboard_html_renders_per_worker_hardware() -> None:
         assert card in html
 
 
+def test_dashboard_html_renders_live_flow_graph() -> None:
+    html = load_dashboard_html().decode()
+    # The flow panel replaces the static topology list with a live, animated dataflow graph.
+    assert 'id="flow"' in html
+    assert "renderFlow" in html
+    assert 'id="topo"' not in html  # the old static node-chain is gone
+    # It is driven by facts already in the report: per-operator rows_out, per-edge rows_sent + queue depth.
+    for fact in ("operator.rows_out", "rows_sent_total", "max_queue_depth"):
+        assert fact in html
+    # Dots ride each edge (getPointAtLength along the path), and the motion yields to reduced-motion.
+    for anim in ("requestAnimationFrame", "getPointAtLength", "prefers-reduced-motion"):
+        assert anim in html
+    # Edges are labeled by how rows are routed to the next stage.
+    for tag in ("shuffle", "rebalance", "forward"):
+        assert tag in html
+
+
 def test_dashboard_html_makes_completion_obvious() -> None:
     html = load_dashboard_html().decode()
     # A finished run must be unmissable: a full-width, color-coded status bar (not just the small header
