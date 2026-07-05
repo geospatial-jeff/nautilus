@@ -54,6 +54,16 @@
   .flow .fnode .ncls { fill:var(--dim); font-size:10px; }
   .flow .fnode .nrate { fill:var(--accent); font-size:11px; }
   .flegend { color:var(--dim); font-size:11px; margin-top:10px; line-height:1.6; }
+  .act { display:grid; gap:9px; }
+  .actrow { display:grid; grid-template-columns:minmax(110px,170px) 1fr 44px; align-items:center; gap:10px; }
+  .actrow .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .actrow .name .cls { color:var(--dim); }
+  .actbar { display:flex; height:14px; border-radius:4px; overflow:hidden; background:var(--line); }
+  .actseg { height:100%; min-width:1px; }
+  .actrow .busy { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .actlegend { color:var(--dim); font-size:11px; margin-top:11px; display:flex; flex-wrap:wrap; gap:6px 14px; }
+  .actlegend span { display:inline-flex; align-items:center; gap:5px; }
+  .actlegend i { width:10px; height:10px; border-radius:2px; }
   .errors td { color:#f0a; text-align:left; white-space:normal; }
   svg { display:block; }
   .foot { color:var(--dim); padding:0 18px 18px; }
@@ -71,6 +81,8 @@
 <main>
   <section class="panel"><h2>hardware</h2><div id="hw" class="workers"></div></section>
   <section class="panel"><h2>operators</h2><table id="ops"><thead></thead><tbody></tbody></table></section>
+  <section class="panel"><h2>activity</h2><div id="act" class="act"></div>
+    <div class="actlegend" id="actlegend"></div></section>
   <section class="panel"><h2>flow</h2><div id="flow" class="flow"></div>
     <div class="flegend">dots trace rows moving through each channel right now · line weight = rows carried so far ·
       stroke turns amber as a channel's queue fills toward capacity ·
@@ -116,6 +128,10 @@ function pct(h, p) {                       // percentile from fixed-bucket histo
 function counter(op, name) {
   const c = (op.counters||[]).find(x=>x.name===name); return c ? c.value : 0;
 }
+// A metric can appear once per label set (send_wait per channel, route per edge); the operator's total
+// is their sum — see the report's _counter_total.
+function sumCounter(op, name){ return (op.counters||[]).reduce((t,c)=>t+(c.name===name?c.value:0),0); }
+function sumHgram(op, name){ return (op.histograms||[]).reduce((t,h)=>t+(h.name===name?h.sum:0),0); }
 function spark(vals, max) {                 // inline SVG sparkline, no deps
   const w=140,hh=34,n=vals.length; if(!n) return "";
   const top = max || Math.max(1, ...vals);
@@ -222,6 +238,7 @@ function render(doc) {
     }).join("") + "</tr>";
   }).join("");
 
+  renderActivity(doc);
   renderFlow(doc);
 
   // errors
@@ -229,6 +246,49 @@ function render(doc) {
   document.getElementById("errpanel").style.display = errs.length ? "" : "none";
   document.querySelector("#errs tbody").innerHTML = errs.map(e=>
     `<tr><td>${esc(e.operator_id)} · ${esc(e.phase)} · ${esc(e.exc_type)}: ${esc(e.message)}</td></tr>`).join("");
+}
+// --- activity breakdown --------------------------------------------------------------------------
+// Where each operator's share of the run wall went, as one stacked bar per operator. The segments are
+// disjoint slices the report already carries: compute is runtime.step_micros (minus a source's own
+// io.wait_micros, which its step time includes), shuffle is partition.route_micros, and the two waits are
+// edge.input_wait_micros / edge.send_wait_micros. A bar spans (instances × wall), so each segment reads
+// as a share of that operator's available time; 'other' is the wall those slices do not cover. Facts
+// only — the segments are measured microseconds, with no verdict attached.
+const ACT = [
+  {key:"compute",   lbl:"compute",    color:"#3fb950"},
+  {key:"shuffle",   lbl:"shuffle",    color:"#58a6ff"},
+  {key:"in_wait",   lbl:"input wait", color:"#6e7681"},
+  {key:"send_wait", lbl:"send wait",  color:"#d29922"},
+  {key:"src_io",    lbl:"source I/O", color:"#a371f7"},
+  {key:"other",     lbl:"other",      color:"#3d444d"},
+];
+function renderActivity(doc){
+  const el=document.getElementById("act"), leg=document.getElementById("actlegend");
+  const wall=doc.meta.wall_micros||0, ops=doc.operators.filter(o=>o.kind!=="process");
+  if(!ops.length || !wall){ el.innerHTML='<div class="meta">no activity yet</div>'; leg.innerHTML=""; return; }
+  const byOp=new Map();       // sum each operator's slices over its instances — one bar per operator
+  ops.forEach(o=>{ const a=byOp.get(o.operator_id)
+      || {cls:o.op_class,n:0,compute:0,shuffle:0,in_wait:0,send_wait:0,src_io:0};
+    const io=sumCounter(o,"io.wait_micros");
+    a.compute += Math.max(0, sumCounter(o,"runtime.step_micros")-io);
+    a.src_io += io;
+    a.shuffle += sumHgram(o,"partition.route_micros");
+    a.in_wait += sumCounter(o,"edge.input_wait_micros");
+    a.send_wait += sumCounter(o,"edge.send_wait_micros");
+    a.n += 1; byOp.set(o.operator_id, a); });
+  el.innerHTML=[...byOp.entries()].map(([id,a])=>{
+    const span=a.n*wall;
+    a.other=Math.max(0, span-(a.compute+a.shuffle+a.in_wait+a.send_wait+a.src_io));
+    const segs=ACT.map(c=>{ const v=a[c.key]||0; if(v<=0) return "";
+      const p=v/span*100;
+      return `<div class="actseg" style="flex-basis:${p.toFixed(2)}%;background:${c.color}"
+        title="${c.lbl} · ${fmt(v)} µs · ${p.toFixed(0)}%"></div>`; }).join("");
+    return `<div class="actrow"><div class="name">${esc(id)} <span class="cls">${esc(clip(a.cls||"",14))}</span></div>`
+      + `<div class="actbar">${segs}</div>`
+      + `<div class="busy">${(a.compute/span*100).toFixed(0)}%</div></div>`;
+  }).join("");
+  leg.innerHTML = ACT.map(c=>`<span><i style="background:${c.color}"></i>${c.lbl}</span>`).join("")
+    + `<span>· bar = instances × run wall · right column = compute share</span>`;
 }
 function headerMetric(c){return {rows_in:"operator.rows_in",rows_out:"operator.rows_out",
   busy:"runtime.step_micros",wait:"edge.send_wait_micros",queue:"edge.queue_depth",
