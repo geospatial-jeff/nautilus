@@ -67,12 +67,12 @@ starts from evidence, not a cold read.
   value→id numpy lookup array gathers every row's id and assigns unseen values in one bulk
   `np.unique`+`arange` pass, with no per-key Python. A non-integer batch (e.g. the bool side of an int↔bool
   join) keeps the dict path on a disjoint id space; nulls share the dict null id (null still matches null);
-  negative keys fall back on the first batch. This is the join twin of the 2026-07-18 `KeyedCount`/
-  `KeyedMean` bincount fold.
+  negative keys fall back on the first batch. Same fix, applied to the join intern, as the 2026-07-18
+  `KeyedCount`/`KeyedMean` bincount fold.
 - **Impact (`nautilus.bench.measure("bench-join", rows=2M, batch=4096, keys=100000)`, median of 5; Linux
   x86_64):** **7.17M → 43.0M rows/s (6.0×)**. On the geospatial join cases the same fix took the
   **anomaly self-join 0.76s → 0.25s (3×, 0.19× → 0.59× vs xarray-sql)** and **forecast-skill 1.51s → 0.59s
-  (2.6×, 0.25× → 0.67×)** — the aggregation half was already vectorized, so this was the remaining wall.
+  (2.6×, 0.25× → 0.67×)** — the aggregation half was already vectorized, so this was the remaining bottleneck.
 - **Correctness:** structural digest identical before → after (`e0fae4e3…`); full `pytest` green
   (393 passed, incl. the join value/type/null/width-consistency tests); `bench-check` adds no digest
   failure (the lone `bench-join-dist` OUTPUT-CHANGED is pre-existing on clean HEAD).
@@ -80,8 +80,8 @@ starts from evidence, not a cold read.
 ## 2026-07-18 — KeyedCount integer-key bincount fold: 12–16× on keyed aggregation (parity with DataFusion)
 
 - **Commit:** `b6a6330`.
-- **Change:** for non-negative integer keys — the common case (indices, hashed buckets, the keyed
-  shuffle's own routing ids) — `KeyedCount` (`operators.py`) now accumulates counts in a numpy array
+- **Change:** for non-negative integer keys — the common case (indices, hashed buckets) — `KeyedCount`
+  (`operators.py`) now accumulates counts in a numpy array
   indexed by the key value (`np.bincount` per batch, one vectorized add into the running array) instead of
   `pyarrow value_counts` → `to_pylist` → per-key keyed-state fold. That removes *all* per-key Python from
   both the hot path and the end-of-stream flush; other key types keep the keyed-state fold, and null keys
@@ -90,7 +90,7 @@ starts from evidence, not a cold read.
 - **Impact (`nautilus.bench.measure("bench-keyed", rows=1M, batch=4096)`, median of 7, warmup 1; Linux
   x86_64):** **keys=1000 10.3M → 122M rows/s (11.8×)** and **keys=500000 1.70M → 26.7M (15.8×)**. On the
   geospatial climatology (`GROUP BY lat,lon,hour`, 535k groups) the same fast path took nautilus **1.70s →
-  0.067s (25×)** — from 23× *slower* than xarray-sql to a **dead heat (0.067s vs 0.069s)**. Anomaly (agg
+  0.067s (25×)** — from 23× *slower* than xarray-sql to **parity (0.067s vs 0.069s)**. Anomaly (agg
   half) 2.32s → 0.76s (3×). Stacks on the 2026-07-17 nested-store fold.
 - **Correctness:** structural digest identical before → after at both scales (`cd4180929b4a` keys=1000,
   `3bf27b23…` keys=500000); keyed/count/state `pytest` green; `bench-check` adds no digest failure (the

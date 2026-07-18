@@ -101,11 +101,9 @@ class InMemoryStateBackend(StateBackend):
 
     The store is nested — ``(operator_id, name, namespace) -> {key: value}`` — so the keyed-aggregation
     hot path (:meth:`reduce_all`) folds a whole batch with one *inner-dict* update per key, building and
-    hashing no :class:`StateScope` per fold. That per-key ``StateScope`` (a four-field frozen dataclass,
-    hashed on all four) was the dominant cost of a high-cardinality aggregation, where the fold count far
-    exceeds the key count. Incremental per-``(operator_id, name)`` counts of entries and distinct keys keep
-    :meth:`sizes` O(state-names); they move only when a key is added or removed (a repeated fold touches
-    no counter), so the per-record path stays cheap.
+    hashing no :class:`StateScope`. Incremental per-``(operator_id, name)`` counts of entries and distinct
+    keys keep :meth:`sizes` O(state-names); they move only when a key is added or removed (a repeated fold
+    touches no counter), so the per-record path stays cheap.
     """
 
     #: (operator_id, name, namespace) -> {partition key -> value}.
@@ -135,9 +133,8 @@ class InMemoryStateBackend(StateBackend):
         items: Iterable[tuple[Key, object]],
         reducer: Callable[[object, object], object],
     ) -> None:
-        # The keyed-aggregation hot path: fold each (key, value) with one inner-dict update — no StateScope
-        # built or hashed per key. Only a new key touches the size counters. Semantics match
-        # ReducingState.add — a None current (whether unset or a stored None) is a first write.
+        # Only a new key touches the size counters. Semantics match ReducingState.add — a None current
+        # (whether unset or a stored None) is a first write.
         outer = (operator_id, name, None)
         sub = self._store.get(outer)
         if sub is None:

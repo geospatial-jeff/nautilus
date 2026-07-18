@@ -153,15 +153,11 @@ class Tokenize(OneInputOperator):
 
 
 class KeyedCount(OneInputOperator):
-    """Counts occurrences per key. A keyed *global* aggregation: results are emitted at end of stream
-    (:meth:`on_eos`).
+    """Counts occurrences per key, emitted at end of stream (:meth:`on_eos`) — a keyed global aggregation.
 
-    For **non-negative integer keys** — the common case (indices, hashed buckets, the keyed shuffle's own
-    routing ids) — it accumulates counts in a numpy array indexed by the key value (``np.bincount`` per
-    batch, then a vectorized add into the running array). That folds a whole batch with no per-key Python
-    object at all — no ``to_pylist`` materialization, no dict, no ``KeyContext`` — which is the dominant
-    cost at high cardinality. Any other key type (strings, negatives, floats) falls back to the keyed-state
-    fold. Null keys are counted as their own group either way."""
+    Non-negative integer keys are counted in a numpy array indexed by the key value (``np.bincount`` per
+    batch, added into a running array); any other key type folds through keyed state. Either way a null
+    key is counted as its own group."""
 
     _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
 
@@ -329,8 +325,7 @@ class HashJoin(TwoInputOperator):
         self._single_ids: dict[type, dict[object, int]] = {}
         self._multi_ids: dict[tuple[tuple[type, object], ...], int] = {}
         self._num_ids = 0
-        # Single non-negative-integer key (the common case): intern vectorially through a value→id numpy
-        # array instead of a Python loop over distinct values, decided on the first non-empty single key.
+        # The single-integer-key fast path's state (:meth:`_encode` picks it on the first non-empty key).
         self._int_fast: bool | None = None
         self._int_id = np.empty(0, dtype=np.int64)  # key value → dense id (-1 = unseen)
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
@@ -391,8 +386,8 @@ class HashJoin(TwoInputOperator):
 
         A single **non-negative integer** key (indices, ids — the common case) interns fully vectorized:
         a value→id numpy array gathers each row's id and assigns unseen keys in bulk, with no per-key
-        Python at all. Other single keys use ``dictionary_encode`` so the value→id intern runs once per
-        *distinct* key (not per row), the per-row expansion being a numpy take."""
+        Python. Other single keys use ``dictionary_encode`` so the value→id intern runs once per *distinct*
+        key (not per row), the per-row expansion being a numpy take."""
         if len(key_columns) == 1:
             col = batch.column(key_columns[0])
             if self._int_fast is None and len(col):  # decide on the first non-empty single key
@@ -457,10 +452,8 @@ class HashJoin(TwoInputOperator):
         return self._intern_ints(np.asarray(col.to_numpy(zero_copy_only=False)))
 
     def _intern_ints(self, keys: np.ndarray) -> np.ndarray:
-        """Map a non-negative integer key array to dense global ids through a value→id lookup array,
-        assigning ids to unseen values in one bulk pass — the vectorized replacement for the per-key
-        :meth:`_intern_single` loop, which dominated a high-cardinality join (once per row when keys are
-        all distinct)."""
+        """Gather a non-negative integer key array to dense global ids through the ``_int_id`` value→id
+        lookup, growing it to fit and assigning the next free ids to unseen values in one bulk pass."""
         if keys.size == 0:
             return keys.astype(np.int64, copy=False)
         if keys.min() < 0:  # decided non-negative on the first batch; a later negative can't index _int_id
