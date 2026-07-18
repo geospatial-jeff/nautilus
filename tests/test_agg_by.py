@@ -308,3 +308,62 @@ def test_agg_by_distributed_run_matches_single_process():
     }
     serial = {r["k"]: (round(r["m"], 9), r["n"]) for b in s.run().batches for r in b.to_pylist()}
     assert dist == serial and len(serial) == 20
+
+
+def _keyed_mean(batch):
+    return {
+        row["k"]: row
+        for b in source(from_batches(batch))
+        .apply(KeyedMean("k", "v", "m"), key_columns="k")
+        .run()
+        .batches
+        for row in b.to_pylist()
+    }
+
+
+def test_keyed_mean_normal_output_and_null_key_group():
+    # The tuned single-key mean still emits (key, mean, n), and a null key forms its own group.
+    b = pa.record_batch({"k": pa.array([0, 1, 0], pa.int64()), "v": pa.array([1.0, 10.0, 3.0])})
+    assert _keyed_mean(b)[0] == {"k": 0, "m": 2.0, "n": 2}
+    nk = pa.record_batch({"k": pa.array([0, None, 0], pa.int64()), "v": pa.array([1.0, 9.0, 3.0])})
+    r = _keyed_mean(nk)
+    assert r[0]["m"] == 2.0 and r[None]["m"] == 9.0
+
+
+def test_keyed_mean_all_null_group_and_negative_key_fixed():
+    # Regression: an all-null value group used to be silently dropped; now kept with NULL mean, 0 count.
+    b = pa.record_batch({"k": pa.array([0, 1, 2], pa.int64()), "v": pa.array([5.0, None, None])})
+    r = _keyed_mean(b)
+    assert r[1] == {"k": 1, "m": None, "n": 0} and r[2] == {"k": 2, "m": None, "n": 0}
+    # Regression: a negative integer key used to crash np.bincount; now the group-by path handles it.
+    neg = pa.record_batch({"k": pa.array([-1, 0, -1], pa.int64()), "v": pa.array([1.0, 2.0, 3.0])})
+    assert {k: v["m"] for k, v in _keyed_mean(neg).items()} == {-1: 2.0, 0: 2.0}
+
+
+def test_keyed_mean_agrees_with_agg_by_under_nulls():
+    # The specialized mean and the general verb must not diverge — including on all-null groups.
+    rng = np.random.default_rng(11)
+    data = [
+        pa.record_batch(
+            {
+                "k": pa.array(rng.integers(0, 15, 2000)),
+                "v": pa.array(rng.normal(0, 1, 2000), mask=rng.random(2000) < 0.25),
+            }
+        )
+        for _ in range(3)
+    ]
+
+    def norm(batches):
+        return {
+            r["k"]: (None if r["m"] is None else round(r["m"], 9), r["n"])
+            for b in batches
+            for r in b.to_pylist()
+        }
+
+    km = norm(
+        source(from_batches(*data)).apply(KeyedMean("k", "v", "m"), key_columns="k").run().batches
+    )
+    ab = norm(
+        source(from_batches(*data)).agg_by("k", m=("v", "mean"), n=("v", "count")).run().batches
+    )
+    assert km == ab
