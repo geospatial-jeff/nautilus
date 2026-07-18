@@ -32,6 +32,7 @@ from nautilus.operators import (
     AsyncMapBatch,
     FilterRows,
     HashJoin,
+    KeyedAgg,
     KeyedCount,
     MapBatch,
     Tokenize,
@@ -123,6 +124,23 @@ class Stream:
         The input is shuffled on ``key_col``, so a key's rows meet on one instance when parallel."""
         return self._extend(
             lambda: KeyedCount(key_col, count_col), key_columns=(key_col,), parallelism=parallelism
+        )
+
+    def agg_by(self, key_cols: _Keys, *, parallelism: int = 1, **aggs: tuple[str, str]) -> Stream:
+        """Grouped aggregation (:class:`~nautilus.operators.KeyedAgg`) — ``GROUP BY key_cols`` emitting one
+        row per group at end of stream. Each keyword names an output column as ``(input_col, func)`` with
+        ``func`` one of ``sum``, ``count``, ``mean``, ``min``, ``max``::
+
+            source(rows).agg_by("lat", mean_c=("temp", "mean"), n=("temp", "count"), hi=("temp", "max"))
+
+        The input is shuffled on ``key_cols`` (one or several), so every row of a key meets on one instance
+        when parallel — the same co-partitioning ``count_by`` uses."""
+        if not aggs:
+            raise ValueError("agg_by needs at least one aggregation, e.g. mean_c=('temp', 'mean')")
+        keys = _norm(key_cols)
+        specs = dict(aggs)
+        return self._extend(
+            lambda: KeyedAgg(keys, specs), key_columns=keys, parallelism=parallelism
         )
 
     def apply(

@@ -13,7 +13,7 @@ What each one does is on its own class.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pyarrow as pa
@@ -356,6 +356,191 @@ class KeyedMean(OneInputOperator):
                     names=[self.key_col, self.mean_col, "n"],
                 )
             )
+
+
+#: Each aggregation func and the base per-key partials it needs (``mean`` = ``sum`` / ``count``).
+_AGG_BASE: dict[str, tuple[str, ...]] = {
+    "sum": ("sum",),
+    "count": ("count",),
+    "mean": ("sum", "count"),
+    "min": ("min",),
+    "max": ("max",),
+}
+
+
+def _merge_scalar(func: str, a: Any, b: Any) -> Any:
+    """Merge two per-key base partials (numbers from Arrow) on the general (dict) path."""
+    if func in ("sum", "count"):
+        return a + b
+    return min(a, b) if func == "min" else max(a, b)
+
+
+class KeyedAgg(OneInputOperator):
+    """Grouped aggregation — the vectorized ``GROUP BY`` behind the DSL's ``.agg_by``.
+
+    ``aggs`` maps each output column name to ``(input_col, func)`` with ``func`` one of ``sum``, ``count``,
+    ``mean``, ``min``, ``max``; one row per key group is emitted at end of stream. For a single
+    non-negative-integer key it bincounts / scatters the raw batch rows directly into running numpy
+    accumulators indexed by the key value — no per-key Python and no per-batch group-by, matching the
+    :class:`KeyedCount` / :class:`KeyedMean` fast path. Any other key (multi-column, string, negative)
+    reduces each batch by an Arrow group-by and folds the per-key partials through a dict. ``count`` and
+    ``mean`` count non-null values of the input column, matching SQL ``COUNT(col)`` / ``AVG(col)``.
+    """
+
+    def __init__(self, key_cols: tuple[str, ...], aggs: dict[str, tuple[str, str]]) -> None:
+        self.key_cols = key_cols
+        self.aggs = dict(aggs)
+        unknown = {f for _, f in self.aggs.values()} - set(_AGG_BASE)
+        if unknown:
+            raise ValueError(f"agg_by: unknown func(s) {sorted(unknown)}; use {sorted(_AGG_BASE)}")
+        # The (column, arrow-func) base partials every batch computes, deduped. End-of-stream needs to know
+        # which keys received rows: reuse a requested count base if there is one, else add a cheap count on
+        # the first key column — so a plain mean/sum stays at exactly the bases it needs.
+        value_bases = [(inc, bf) for inc, f in self.aggs.values() for bf in _AGG_BASE[f]]
+        counts = [b for b in value_bases if b[1] == "count"]
+        self._presence = counts[0] if counts else (self.key_cols[0], "count")
+        self._bases: tuple[tuple[str, str], ...] = tuple(
+            dict.fromkeys([self._presence, *value_bases])
+        )
+
+    def key_columns(self) -> tuple[str, ...]:
+        return self.key_cols
+
+    def open(self, ctx: OperatorContext) -> None:
+        self._ctx = ctx
+        self._fast: bool | None = None  # single non-negative-integer key → numpy accumulators
+        self._acc: dict[tuple[str, str], np.ndarray] = (
+            {}
+        )  # fast-path running accumulators, per base
+        self._state: dict[tuple[Any, ...], dict[tuple[str, str], object]] = (
+            {}
+        )  # general-path per-key partials
+        self._key_types: list[pa.DataType] = []
+
+    def _partial(self, batch: pa.RecordBatch) -> pa.Table:
+        cols: dict[str, pa.Array] = {c: batch.column(c) for c in self.key_cols}
+        for inc, _ in self._bases:
+            cols.setdefault(inc, batch.column(inc))
+        return (
+            pa.table(cols)
+            .group_by(list(self.key_cols))
+            .aggregate([(inc, bf) for inc, bf in self._bases])
+        )
+
+    def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        if self._fast is None:
+            k0 = batch.column(self.key_cols[0])
+            self._fast = (
+                len(self.key_cols) == 1
+                and pa.types.is_integer(k0.type)
+                and k0.null_count == 0
+                and (len(k0) == 0 or pc.min(k0).as_py() >= 0)
+            )
+            self._key_types = [batch.column(c).type for c in self.key_cols]
+        if self._fast:
+            self._process_fast(batch)
+            return
+        partial = self._partial(batch)
+        if partial.num_rows == 0:
+            return
+        keytuples = list(zip(*[partial.column(c).to_pylist() for c in self.key_cols], strict=True))
+        vals = {b: partial.column(f"{b[0]}_{b[1]}").to_pylist() for b in self._bases}
+        for i, kt in enumerate(keytuples):
+            cur = self._state.get(kt)
+            if cur is None:
+                self._state[kt] = {b: vals[b][i] for b in self._bases}
+            else:
+                for b in self._bases:
+                    cur[b] = _merge_scalar(b[1], cur[b], vals[b][i])
+
+    def _process_fast(self, batch: pa.RecordBatch) -> None:
+        # Single-non-negative-integer-key path: bincount / scatter the RAW rows directly, indexed by the key
+        # value, with no per-batch Arrow group-by — the same move that makes KeyedCount/KeyedMean fast. Each
+        # base filters its own input column's nulls (SQL COUNT(col)/SUM/MIN/MAX skip them).
+        kcol = batch.column(self.key_cols[0])
+        if kcol.null_count:
+            raise ValueError("agg_by integer fast path requires non-null keys")
+        base_keys = np.asarray(kcol.to_numpy(zero_copy_only=False))
+        if base_keys.size == 0:
+            return
+        if base_keys.min() < 0:
+            raise ValueError("agg_by integer fast path requires non-negative keys")
+        top = int(base_keys.max()) + 1
+        for base in self._bases:
+            vcol = batch.column(base[0])
+            if vcol.null_count:
+                valid = vcol.is_valid()
+                keys = np.asarray(kcol.filter(valid).to_numpy(zero_copy_only=False))
+                col = np.asarray(vcol.filter(valid).to_numpy(zero_copy_only=False))
+            else:
+                keys, col = base_keys, np.asarray(vcol.to_numpy(zero_copy_only=False))
+            self._scatter_raw(base, keys, top, col)
+
+    def _scatter_raw(
+        self, base: tuple[str, str], keys: np.ndarray, top: int, col: np.ndarray
+    ) -> None:
+        bf = base[1]
+        init, dtype = {
+            "count": (0, np.int64),
+            "sum": (0.0, np.float64),
+            "min": (np.inf, np.float64),
+            "max": (-np.inf, np.float64),
+        }[bf]
+        acc = self._acc.get(base)
+        if acc is None or acc.size < top:
+            grown = np.full(top, init, dtype=dtype)
+            if acc is not None:
+                grown[: acc.size] = acc
+            acc = self._acc[base] = grown
+        if bf == "count":
+            if keys.size:
+                acc[:top] += np.bincount(keys, minlength=top)[:top]
+        elif bf == "sum":
+            if keys.size:
+                acc[:top] += np.bincount(
+                    keys, weights=col.astype(np.float64, copy=False), minlength=top
+                )[:top]
+        elif bf == "min":
+            np.minimum.at(acc, keys, col)
+        else:
+            np.maximum.at(acc, keys, col)
+
+    def _finalize(self, func: str, inc: str, at: np.ndarray) -> np.ndarray:
+        if func == "mean":
+            return cast(np.ndarray, self._acc[(inc, "sum")][at] / self._acc[(inc, "count")][at])
+        return cast(np.ndarray, self._acc[(inc, _AGG_BASE[func][0])][at])
+
+    def on_eos(self, out: Collector) -> None:
+        if self._fast:
+            if not self._acc:
+                return
+            nz = np.nonzero(self._acc[self._presence])[0]
+            if nz.size == 0:
+                return
+            arrays = [pa.array(nz, self._key_types[0])]
+            for _out, (inc, func) in self.aggs.items():
+                arrays.append(pa.array(self._finalize(func, inc, nz)))
+            out.emit(pa.RecordBatch.from_arrays(arrays, names=[self.key_cols[0], *self.aggs]))
+            return
+        if not self._state:
+            return
+        kts = list(self._state)
+        arrays = [
+            pa.array([kt[i] for kt in kts], self._key_types[i]) for i in range(len(self.key_cols))
+        ]
+        for _out, (inc, func) in self.aggs.items():
+            vals: list[Any]
+            if func == "mean":
+                vals = [
+                    cast(float, self._state[kt][(inc, "sum")])
+                    / cast(float, self._state[kt][(inc, "count")])
+                    for kt in kts
+                ]
+            else:
+                b = (inc, _AGG_BASE[func][0])
+                vals = [self._state[kt][b] for kt in kts]
+            arrays.append(pa.array(vals))
+        out.emit(pa.RecordBatch.from_arrays(arrays, names=[*self.key_cols, *self.aggs]))
 
 
 class _SideBuffer:
