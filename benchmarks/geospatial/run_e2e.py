@@ -22,7 +22,14 @@ import sys
 
 REPS = int(os.environ.get("GEOBENCH_E2E_REPS", "5"))
 ENGINES = ["xarray", "xarray-sql", "nautilus"]
-CASE_TITLES = {"03": "zonal mean (GROUP BY latitude)", "06": "zonal vector (range JOIN)"}
+CASE_TITLES = {
+    "01": "NDVI (Sentinel-2 per-pixel)",
+    "02": "climatology (GROUP BY lat,lon,hour)",
+    "03": "zonal mean (GROUP BY latitude)",
+    "04": "anomaly (climatology self-JOIN)",
+    "05": "forecast skill (JOIN + RMSE)",
+    "06": "zonal vector (range JOIN)",
+}
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 

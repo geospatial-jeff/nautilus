@@ -41,10 +41,11 @@ import pyarrow as pa
 import xarray as xr
 
 from nautilus import source
+from nautilus.operators import KeyedMean
 
 pa.set_cpu_count(1)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _ops import KeyedMean, SlicedSource
+from _ops import SlicedSource  # noqa: E402
 
 ERA5_URL = "gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3"
 WORKERS = [int(w) for w in os.environ.get("GEOBENCH_WORKERS", "1,2,4,8").split(",")]

@@ -54,12 +54,14 @@ import xarray_sql as xql
 from datafusion import SessionConfig
 
 from nautilus import source
+from nautilus.benchmarks import GEO_REGIONS, make_region_tagger
+from nautilus.operators import KeyedMean
 
 pa.set_cpu_count(1)  # keep nautilus's own pyarrow compute single-threaded for parity
 
 sys.path.insert(0, os.path.dirname(__file__))
 from _harness import CaseSkipped, Timing, max_abs_diff, measure  # noqa: E402
-from _ops import KeyedMean, SlicedSource, make_region_tagger  # noqa: E402
+from _ops import SlicedSource  # noqa: E402
 
 REPS = int(os.environ.get("GEOBENCH_REPS", "7"))
 ERA5_DAY = os.environ.get("GEOBENCH_ERA5_DAY", "2020-06-01")
@@ -99,13 +101,8 @@ _S2_BBOX = [7.2, 44.5, 7.4, 44.7]
 _S2_DATETIME = "2025-04-25/2025-05-05"
 _S2_Y0, _S2_X0, _S2_N = 4_000, 6_000, 1_024
 
-_REGIONS = [
-    ("Sahara", 18.0, 30.0, 0.0, 30.0),
-    ("Amazon", -10.0, 5.0, 290.0, 310.0),
-    ("Australia_Outback", -30.0, -20.0, 125.0, 140.0),
-    ("Greenland", 65.0, 80.0, 300.0, 340.0),
-    ("SE_Asia", 5.0, 20.0, 95.0, 110.0),
-]
+# The five region boxes, shared with the library's bench-geo-zonal-vector pipeline (no divergence).
+_REGIONS = GEO_REGIONS
 # Temporal cases 02/04 use a bounded CONUS-ish window (3 days, hourly) — small enough to hold the whole
 # self-join in memory, large enough to have a real diurnal cycle (24 hours × 3 samples each).
 _CONUS = {
