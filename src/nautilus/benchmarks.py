@@ -23,13 +23,17 @@ benchmark without code edits:
 * ``NAUTILUS_BENCH_KEYS``  — distinct keys / word vocabulary (default 1000)
 * ``NAUTILUS_BENCH_SKEW`` — zipfian key-skew exponent for ``bench-skew`` (default 1.2)
 * ``NAUTILUS_BENCH_DELAY_US`` — per-batch stall for ``bench-backpressure`` (default 200)
+
+The geospatial ``bench-geo-*`` pipelines draw from a gridded field (:class:`SyntheticGridSource`) sized by
+its own knobs — ``NAUTILUS_GEO_DAYS`` / ``NAUTILUS_GEO_NLAT`` / ``NAUTILUS_GEO_NLON`` / ``NAUTILUS_GEO_BATCH``
+(see :func:`geo_bench_params`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from time import perf_counter_ns
 
 import numpy as np
@@ -121,6 +125,28 @@ def bench_params() -> dict[str, int]:
         "batch_rows": batch_rows,
         "num_batches": max(1, -(-rows // batch_rows)),  # ceil; at least one batch
         "key_cardinality": _env_int("NAUTILUS_BENCH_KEYS", DEFAULT_KEYS),
+    }
+
+
+# Default grid for the geospatial benchmarks (a time × lat × lon field): three days of hourly data over a
+# 72×221 window — ~1.1M cells, and the (lat, lon, hour) climatology has ~380k groups of three, the
+# high-cardinality-small-group aggregation the `bench-geo-climatology` pipeline exists to stress.
+GEO_DEFAULT_DAYS = 3
+GEO_DEFAULT_NLAT = 72
+GEO_DEFAULT_NLON = 221
+GEO_DEFAULT_BATCH = 65_536
+
+
+def geo_bench_params() -> dict[str, int]:
+    """Grid scale for the geospatial benchmarks, from the environment (with defaults) — the geo analog of
+    :func:`bench_params`. ``NAUTILUS_GEO_DAYS`` sets the number of hourly days (so timesteps = 24×days and
+    a climatology group has ``days`` members), ``NAUTILUS_GEO_NLAT`` / ``NAUTILUS_GEO_NLON`` the spatial
+    window, ``NAUTILUS_GEO_BATCH`` the rows per emitted batch."""
+    return {
+        "n_days": _env_int("NAUTILUS_GEO_DAYS", GEO_DEFAULT_DAYS),
+        "nlat": _env_int("NAUTILUS_GEO_NLAT", GEO_DEFAULT_NLAT),
+        "nlon": _env_int("NAUTILUS_GEO_NLON", GEO_DEFAULT_NLON),
+        "rows_per_batch": _env_int("NAUTILUS_GEO_BATCH", GEO_DEFAULT_BATCH),
     }
 
 
@@ -268,3 +294,159 @@ class SyntheticJoinTableSource(SourceOperator):
         keys = pa.array(np.arange(self._key_cardinality))
         yield Batch(pa.record_batch({"key": keys, "rval": keys}))
         yield EOS_FRAME
+
+
+# --- geospatial benchmarks ---------------------------------------------------------------------
+#
+# The geospatial `bench-geo-*` pipelines run the streaming forms of the xarray-sql geospatial suite (a
+# per-pixel map, three GROUP BY reductions at different key cardinalities, and two joins) so the aggregation
+# and join hot paths are exercised on gridded data, not just the abstract keyed stream. They draw from one
+# deterministic field — :class:`SyntheticGridSource` — instead of real Zarr, so a run is engine-bound and
+# reproducible; the cross-engine comparison against real ARCO-ERA5 / Sentinel-2 lives outside the library
+# (benchmarks/geospatial/), reusing the same operators (:class:`~nautilus.operators.KeyedMean`, the region
+# tagger, the map functions below) over a real-data source.
+
+#: Five disjoint lat/lon boxes (name, lat_min, lat_max, lon_min, lon_max) over the ERA5 grid — the vector
+#: side of the `bench-geo-zonal-vector` range join, and the same boxes the real-data comparison uses.
+GEO_REGIONS: list[tuple[str, float, float, float, float]] = [
+    ("Sahara", 18.0, 30.0, 0.0, 30.0),
+    ("Amazon", -10.0, 5.0, 290.0, 310.0),
+    ("Australia_Outback", -30.0, -20.0, 125.0, 140.0),
+    ("Greenland", 65.0, 80.0, 300.0, 340.0),
+    ("SE_Asia", 5.0, 20.0, 95.0, 110.0),
+]
+
+
+class SyntheticGridSource(SourceOperator):
+    """A deterministic ERA5-like field — a ``time × latitude × longitude`` grid of ``2m_temperature``,
+    unraveled to one row per cell — that the ``bench-geo-*`` pipelines aggregate and join.
+
+    Every row carries ``gid`` (the ``(lat, lon, hour)`` group id ``(lat_idx·nlon+lon_idx)·24 + hour`` — the
+    high-cardinality aggregation key, and the equi-join key) and the value under ``value_col``. The rest are
+    opt-in, so each pipeline emits exactly what it keys or reduces on (unused columns would only inflate the
+    source's per-batch cost and muddy the operator's self-time): ``lat_index=True`` adds ``lat_idx`` (the
+    low-cardinality latitude band); ``coords=True`` adds ``latitude`` / ``longitude`` for the range join;
+    ``bands=True`` adds ``red`` / ``nir`` reflectance for the NDVI map; ``replicas>1`` emits that many copies
+    of the grid tagged with a ``replica`` id (model×lead forecasts over one truth field — the many side of
+    the forecast-skill join). Latitude spans 90..−90 and longitude 0..360 so :data:`GEO_REGIONS` select real
+    subsets, and ``gid`` alone never collides across two joined instances.
+
+    Deterministic like the other synthetic sources (the value is a pole-to-equator gradient plus fixed-seed
+    noise, reseeded per timestep so emission order can't change it), so the structural digest stays a valid
+    unchanged-output gate. Emits each timestep's grid in ``rows_per_batch``-row batches, then EOS.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_days: int,
+        nlat: int,
+        nlon: int,
+        rows_per_batch: int,
+        value_col: str = "value",
+        lat_index: bool = False,
+        coords: bool = False,
+        bands: bool = False,
+        replicas: int = 1,
+    ) -> None:
+        self._nt = n_days * 24
+        self._nlat = nlat
+        self._nlon = nlon
+        self._rpb = rows_per_batch
+        self._value_col = value_col
+        self._lat_index = lat_index
+        self._coords = coords
+        self._bands = bands
+        self._replicas = max(1, replicas)
+
+    async def frames(self) -> AsyncIterator[Frame]:
+        nlat, nlon, n = self._nlat, self._nlon, self._nlat * self._nlon
+        lat = np.linspace(90.0, -90.0, nlat)
+        lon = np.linspace(0.0, 360.0, nlon, endpoint=False)
+        lat_idx = np.repeat(np.arange(nlat, dtype=np.int32), nlon)  # per-cell latitude band
+        cell = lat_idx.astype(np.int64) * nlon + np.tile(np.arange(nlon, dtype=np.int64), nlat)
+        gid_base = cell * 24  # + hour → the (lat, lon, hour) group id, unique per (cell, hour)
+        latitude = np.repeat(lat, nlon)
+        base = 273.15 + 30.0 * np.cos(np.deg2rad(latitude))  # pole-to-equator gradient (K)
+        lat_idx_arr = pa.array(lat_idx) if self._lat_index else None
+        gid_lat = pa.array(latitude) if self._coords else None
+        gid_lon = pa.array(np.tile(lon, nlat)) if self._coords else None
+        for t in range(self._nt):
+            rng = np.random.default_rng(_SEED + t)  # per-timestep seed → order-independent
+            gid = pa.array(gid_base + t % 24)
+            value = pa.array(base + rng.normal(0.0, 3.0, n))
+            red = pa.array(rng.uniform(0.02, 0.3, n).astype(np.float32)) if self._bands else None
+            nir = pa.array(rng.uniform(0.2, 0.6, n).astype(np.float32)) if self._bands else None
+            for r in range(self._replicas):
+                cols: dict[str, pa.Array] = {"gid": gid, self._value_col: value}
+                if lat_idx_arr is not None:
+                    cols["lat_idx"] = lat_idx_arr
+                if gid_lat is not None and gid_lon is not None:
+                    cols["latitude"], cols["longitude"] = gid_lat, gid_lon
+                if red is not None and nir is not None:
+                    cols["red"], cols["nir"] = red, nir
+                if self._replicas > 1:
+                    cols["replica"] = pa.array(np.full(n, r, dtype=np.int32))
+                rb = pa.record_batch(cols)
+                for j in range(0, n, self._rpb):
+                    yield Batch(rb.slice(j, self._rpb))
+        yield EOS_FRAME
+
+
+def make_region_tagger(
+    regions: list[tuple[str, float, float, float, float]], value_col: str
+) -> Callable[[pa.RecordBatch], pa.RecordBatch]:
+    """Build the ``map`` for the raster×vector range join: tag each pixel with the region box it falls in.
+    The returned function takes a batch with ``latitude`` / ``longitude`` / ``value_col`` and emits
+    ``(region_id, value_col)`` for every pixel-in-box pair — a pixel in no box drops out, and the boxes are
+    disjoint so a pixel matches at most one. This is the broadcast form of ``JOIN regions ON latitude
+    BETWEEN … AND longitude BETWEEN …``: with only a handful of boxes, broadcasting them and testing each
+    pixel beats shuffling every pixel into a hash join. Module-level factory over a plain bounds list, so
+    the returned closure cloudpickles to a worker."""
+    bounds = [(i, *r[1:]) for i, r in enumerate(regions)]
+
+    def tag(batch: pa.RecordBatch) -> pa.RecordBatch:
+        lat = batch.column("latitude").to_numpy(zero_copy_only=False)
+        lon = batch.column("longitude").to_numpy(zero_copy_only=False)
+        val = batch.column(value_col).to_numpy(zero_copy_only=False)
+        ids: list[np.ndarray] = []
+        vals: list[np.ndarray] = []
+        for rid, lat_min, lat_max, lon_min, lon_max in bounds:
+            m = (lat >= lat_min) & (lat <= lat_max) & (lon >= lon_min) & (lon <= lon_max)
+            if m.any():
+                ids.append(np.full(int(m.sum()), rid, dtype=np.int32))
+                vals.append(val[m])
+        if not ids:
+            return pa.record_batch(
+                {"region_id": pa.array([], pa.int32()), value_col: pa.array([], pa.float64())}
+            )
+        return pa.record_batch(
+            {"region_id": pa.array(np.concatenate(ids)), value_col: pa.array(np.concatenate(vals))}
+        )
+
+    return tag
+
+
+def ndvi_map(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Per-pixel ``(nir − red) / (nir + red)`` — the NDVI benchmark's map. Module-level so a ``--workers``
+    run can cloudpickle the operator."""
+    red = batch.column("red").to_numpy()
+    nir = batch.column("nir").to_numpy()
+    return pa.record_batch(
+        {"lat_idx": batch.column("lat_idx"), "ndvi": pa.array((nir - red) / (nir + red))}
+    )
+
+
+def anomaly_subtract(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Subtract the per-group climatology from each observation — the map after the anomaly self-join,
+    which carries the raw ``value`` and the joined climatology ``clim``. Module-level for cloudpickle.
+    """
+    anom = batch.column("value").to_numpy() - batch.column("clim").to_numpy()
+    return pa.record_batch({"gid": batch.column("gid"), "anom": pa.array(anom)})
+
+
+def squared_error(batch: pa.RecordBatch) -> pa.RecordBatch:
+    """Squared forecast error ``(temp_f − temp_e)²`` per cell — the map after the forecast-skill join,
+    fed to a per-``replica`` mean whose root is RMSE. Module-level for cloudpickle."""
+    err = batch.column("temp_f").to_numpy() - batch.column("temp_e").to_numpy()
+    return pa.record_batch({"replica": batch.column("replica"), "se": pa.array(err * err)})
