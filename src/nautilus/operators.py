@@ -3,11 +3,12 @@
 Concrete operators that exercise the streaming semantics. Most follow the synchronous
 ``process``/``on_eos`` contract (emit into the ``Collector``, never await; see
 :mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`, and
-:class:`KeyedCount` back the DSL's ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by``, and
-:class:`HashJoin` backs ``.join``. :class:`KeyedMean` is the ``AVG ... GROUP BY`` companion to
-:class:`KeyedCount`, applied through ``.apply`` rather than bound to a verb. :class:`AsyncMapBatch` is the
-one awaiting built-in — it backs ``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``.
-What each one does is on its own class.
+:class:`KeyedCount` back the DSL's ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by``,
+:class:`KeyedAgg` backs ``.agg_by`` (grouped ``sum``/``count``/``mean``/``min``/``max``), and
+:class:`HashJoin` backs ``.join``. :class:`KeyedMean` is a specialized ``AVG ... GROUP BY`` companion to
+:class:`KeyedCount`, applied through ``.apply``. :class:`AsyncMapBatch` is the one awaiting built-in — it
+backs ``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``. What each one does is on
+its own class.
 """
 
 from __future__ import annotations
