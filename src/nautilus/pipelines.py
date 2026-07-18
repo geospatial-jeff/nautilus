@@ -42,7 +42,6 @@ from nautilus.demos import DemoStreamSource
 from nautilus.dsl import source as dsl_source
 from nautilus.operators import (
     KeyedCount,
-    KeyedMean,
     MapBatch,
     Tokenize,
     from_batches,
@@ -307,10 +306,11 @@ def bench_geo_ndvi() -> Pipeline:
     return src, [MapBatch(ndvi_map)]
 
 
-def bench_geo_zonal() -> Pipeline:
-    """Benchmark: ``AVG(temperature) GROUP BY latitude`` — a *low*-cardinality keyed mean (one group per
-    latitude band, so a few huge groups). Stresses KeyedMean's per-batch bincount fold far more than its
-    end-of-stream flush. Run parallel to exercise the keyed shuffle:
+def bench_geo_zonal(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: ``AVG(temperature) GROUP BY latitude`` via ``.agg_by`` — a *low*-cardinality keyed mean
+    (one group per latitude band, so a few huge groups). Stresses KeyedAgg's per-batch bincount fold far
+    more than its end-of-stream flush. A *graph* pipeline (the ``.agg_by`` verb lowers to one), run via
+    ``run_plan`` / ``deploy``; run parallel to exercise the keyed shuffle:
     ``nautilus run bench-geo-zonal --parallelism 4``. Scale via NAUTILUS_GEO_*."""
     p = geo_bench_params()
     src = SyntheticGridSource(
@@ -320,15 +320,19 @@ def bench_geo_zonal() -> Pipeline:
         rows_per_batch=p["rows_per_batch"],
         lat_index=True,
     )
-    return src, [KeyedMean("lat_idx", "value", "mean_k")]
+    return (
+        dsl_source(src)
+        .agg_by("lat_idx", mean_k=("value", "mean"), parallelism=parallelism)
+        .to_graph(parallelism=parallelism)
+    )
 
 
-def bench_geo_climatology() -> Pipeline:
-    """Benchmark: ``AVG(temperature) GROUP BY (latitude, longitude, hour)`` — a *high*-cardinality keyed
-    mean (hundreds of thousands of small groups, encoded in one integer ``gid`` key). The hardest
-    aggregation in the suite, and the one the vectorized KeyedMean fast path targets: every group survives
-    to the end-of-stream flush. Scale via NAUTILUS_GEO_* (``NAUTILUS_GEO_DAYS`` sets the group size).
-    """
+def bench_geo_climatology(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: ``AVG(temperature) GROUP BY (latitude, longitude, hour)`` via ``.agg_by`` — a
+    *high*-cardinality keyed mean (hundreds of thousands of small groups, encoded in one integer ``gid``
+    key). The hardest aggregation in the suite, and the one the vectorized KeyedAgg fast path targets: every
+    group survives to the end-of-stream flush. A *graph* pipeline, run via ``run_plan`` / ``deploy``. Scale
+    via NAUTILUS_GEO_* (``NAUTILUS_GEO_DAYS`` sets the group size)."""
     p = geo_bench_params()
     src = SyntheticGridSource(
         n_days=p["n_days"],
@@ -336,14 +340,18 @@ def bench_geo_climatology() -> Pipeline:
         nlon=p["nlon"],
         rows_per_batch=p["rows_per_batch"],
     )
-    return src, [KeyedMean("gid", "value", "mean_k")]
+    return (
+        dsl_source(src)
+        .agg_by("gid", mean_k=("value", "mean"), parallelism=parallelism)
+        .to_graph(parallelism=parallelism)
+    )
 
 
-def bench_geo_zonal_vector() -> Pipeline:
+def bench_geo_zonal_vector(parallelism: int = 1) -> LogicalGraph:
     """Benchmark: ``AVG(temperature) ... JOIN regions ON lat/lon BETWEEN`` — a raster×vector range join
-    written as a broadcast region-tag map feeding a keyed mean (one group per region box). Stresses the
-    per-batch numpy range test in the tagger and a tiny-cardinality KeyedMean. Scale via NAUTILUS_GEO_*.
-    """
+    written as a broadcast region-tag map feeding ``.agg_by`` (one group per region box). Stresses the
+    per-batch numpy range test in the tagger and a tiny-cardinality keyed mean. A *graph* pipeline, run via
+    ``run_plan`` / ``deploy``. Scale via NAUTILUS_GEO_*."""
     p = geo_bench_params()
     src = SyntheticGridSource(
         n_days=p["n_days"],
@@ -353,15 +361,20 @@ def bench_geo_zonal_vector() -> Pipeline:
         coords=True,
     )
     tag = make_region_tagger(GEO_REGIONS, "value")
-    return src, [MapBatch(tag), KeyedMean("region_id", "value", "mean_k")]
+    return (
+        dsl_source(src)
+        .map(tag, parallelism=parallelism)
+        .agg_by("region_id", mean_k=("value", "mean"), parallelism=parallelism)
+        .to_graph(parallelism=parallelism)
+    )
 
 
 def bench_geo_anomaly(parallelism: int = 1) -> LogicalGraph:
     """Benchmark: a per-cell temperature anomaly = observation − its own ``(lat, lon, hour)`` climatology —
-    a self-join. The raw field is aggregated to a per-``gid`` climatology (KeyedMean), then that climatology
-    is joined back to the same raw field on ``gid`` (HashJoin, a large-to-large co-partitioned join) and
-    subtracted. A *graph* pipeline (two sources over one field), so it is run via ``run_plan`` / ``deploy``.
-    Scale via NAUTILUS_GEO_*."""
+    a self-join. The raw field is aggregated to a per-``gid`` climatology (``.agg_by``), then that
+    climatology is joined back to the same raw field on ``gid`` (HashJoin, a large-to-large co-partitioned
+    join) and subtracted. A *graph* pipeline (two sources over one field), so it is run via ``run_plan`` /
+    ``deploy``. Scale via NAUTILUS_GEO_*."""
     p = geo_bench_params()
 
     def grid() -> SyntheticGridSource:
@@ -372,9 +385,7 @@ def bench_geo_anomaly(parallelism: int = 1) -> LogicalGraph:
             rows_per_batch=p["rows_per_batch"],
         )
 
-    clim = dsl_source(grid()).apply(
-        KeyedMean("gid", "value", "clim"), key_columns="gid", parallelism=parallelism
-    )
+    clim = dsl_source(grid()).agg_by("gid", clim=("value", "mean"), parallelism=parallelism)
     return (
         dsl_source(grid())
         .join(clim, on="gid", parallelism=parallelism)
@@ -386,10 +397,10 @@ def bench_geo_anomaly(parallelism: int = 1) -> LogicalGraph:
 def bench_geo_forecast(parallelism: int = 1) -> LogicalGraph:
     """Benchmark: forecast skill = RMSE of each forecast against truth, grouped by model×lead — a join then
     a keyed mean. Many model×lead forecast copies of a field (each a ``replica`` id) are joined to one truth
-    field on the cell id ``gid`` (HashJoin), the squared error is taken, and a per-``replica`` mean gives the
-    mean squared error (its root is RMSE). A *graph* pipeline (forecast + truth sources), run via
-    ``run_plan`` / ``deploy``. ``NAUTILUS_GEO_REPLICAS`` sets the model×lead count (default 8); scale the grid
-    via NAUTILUS_GEO_*."""
+    field on the cell id ``gid`` (HashJoin), the squared error is taken, and a per-``replica`` mean
+    (``.agg_by``) gives the mean squared error (its root is RMSE). A *graph* pipeline (forecast + truth
+    sources), run via ``run_plan`` / ``deploy``. ``NAUTILUS_GEO_REPLICAS`` sets the model×lead count
+    (default 8); scale the grid via NAUTILUS_GEO_*."""
     p = geo_bench_params()
     replicas = int(os.environ.get("NAUTILUS_GEO_REPLICAS", "8"))
     # One day, so gid is unique per (cell, hour): truth has one row per gid and each forecast replica one,
@@ -413,7 +424,7 @@ def bench_geo_forecast(parallelism: int = 1) -> LogicalGraph:
         dsl_source(forecast)
         .join(dsl_source(truth), on="gid", parallelism=parallelism)
         .map(squared_error, parallelism=parallelism)
-        .apply(KeyedMean("replica", "se", "mse"), key_columns="replica", parallelism=parallelism)
+        .agg_by("replica", mse=("se", "mean"), parallelism=parallelism)
         .to_graph(parallelism=parallelism)
     )
 
@@ -429,9 +440,6 @@ EXAMPLES: dict[str, Builder] = {
     "bench-skew": bench_skew,
     "bench-backpressure": bench_backpressure,
     "bench-geo-ndvi": bench_geo_ndvi,
-    "bench-geo-zonal": bench_geo_zonal,
-    "bench-geo-climatology": bench_geo_climatology,
-    "bench-geo-zonal-vector": bench_geo_zonal_vector,
 }
 
 #: Graph pipelines are a LogicalGraph the harness runs with run_plan/deploy rather than the linear
@@ -443,6 +451,9 @@ GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
     "bench-join": bench_join,
     "bench-async": bench_async,
     "bench-async-io": bench_async_io,
+    "bench-geo-zonal": bench_geo_zonal,
+    "bench-geo-climatology": bench_geo_climatology,
+    "bench-geo-zonal-vector": bench_geo_zonal_vector,
     "bench-geo-anomaly": bench_geo_anomaly,
     "bench-geo-forecast": bench_geo_forecast,
 }
