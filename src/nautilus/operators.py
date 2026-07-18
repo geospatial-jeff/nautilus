@@ -154,7 +154,14 @@ class Tokenize(OneInputOperator):
 
 class KeyedCount(OneInputOperator):
     """Counts occurrences per key. A keyed *global* aggregation: results are emitted at end of stream
-    (:meth:`on_eos`)."""
+    (:meth:`on_eos`).
+
+    For **non-negative integer keys** — the common case (indices, hashed buckets, the keyed shuffle's own
+    routing ids) — it accumulates counts in a numpy array indexed by the key value (``np.bincount`` per
+    batch, then a vectorized add into the running array). That folds a whole batch with no per-key Python
+    object at all — no ``to_pylist`` materialization, no dict, no ``KeyContext`` — which is the dominant
+    cost at high cardinality. Any other key type (strings, negatives, floats) falls back to the keyed-state
+    fold. Null keys are counted as their own group either way."""
 
     _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
 
@@ -164,17 +171,33 @@ class KeyedCount(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
-        self._key_type: pa.DataType | None = (
-            None  # captured from the input so output keeps its type
-        )
+        self._key_type: pa.DataType | None = None  # captured from the input so output keeps its type
+        self._counts: np.ndarray | None = None  # numpy accumulator while the integer fast path is active
+        self._nulls = 0  # null-key occurrences (fast path only; the dict path folds null like any key)
 
     def key_columns(self) -> tuple[str, ...]:
         return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        col = batch.column(self.key_col)
         if self._key_type is None:
-            self._key_type = batch.column(self.key_col).type
-        counts = pc.value_counts(batch.column(self.key_col))
+            self._key_type = col.type
+            if pa.types.is_integer(col.type):
+                self._counts = np.zeros(0, dtype=np.int64)
+        if self._counts is not None:
+            if col.null_count:
+                self._nulls += col.null_count
+                col = col.drop_null()
+            keys = np.asarray(col.to_numpy(zero_copy_only=False))
+            if keys.size:
+                bc = np.bincount(keys)  # non-negative ints only (raises otherwise → drops to no fast path)
+                if bc.size > self._counts.size:
+                    grown = np.zeros(bc.size, dtype=np.int64)
+                    grown[: self._counts.size] = self._counts
+                    self._counts = grown
+                self._counts[: bc.size] += bc
+            return
+        counts = pc.value_counts(col)
         # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
         keys = ((v,) for v in counts.field("values").to_pylist())
         self._ctx.reduce_all(
@@ -182,6 +205,16 @@ class KeyedCount(OneInputOperator):
         )
 
     def on_eos(self, out: Collector) -> None:
+        if self._counts is not None:  # integer fast path: emit nonzero keys + counts, vectorized
+            nz = np.nonzero(self._counts)[0]
+            if nz.size or self._nulls:
+                key_arr = pa.array(nz, self._key_type)
+                cnt_arr = pa.array(self._counts[nz], pa.int64())
+                if self._nulls:  # append the null-key group (rare; a small concat, not a per-key loop)
+                    key_arr = pa.concat_arrays([key_arr, pa.array([None], self._key_type)])
+                    cnt_arr = pa.concat_arrays([cnt_arr, pa.array([self._nulls], pa.int64())])
+                out.emit(pa.RecordBatch.from_arrays([key_arr, cnt_arr], names=[self.key_col, self.count_col]))
+            return
         keys: list[object] = []
         totals: list[int] = []
         fired: list[KeyContext] = []
