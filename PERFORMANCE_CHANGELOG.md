@@ -63,6 +63,26 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-18 — HashJoin vectorized integer-key intern: 6× on high-cardinality joins
+
+- **Commit:** `41dc3d9`.
+- **Change:** `HashJoin._encode` (`operators.py`) interned each distinct key to its dense integer id
+  through a Python per-value loop (`_intern_single`) over `dictionary_encode`'s distinct values — which at
+  high cardinality is effectively once per *row* (cProfile of an anomaly self-join: `_intern_single`
+  called 2.14M times, 87% of the join). For non-negative integer keys it now interns vectorially: a
+  value→id numpy lookup array gathers every row's id and assigns unseen values in one bulk
+  `np.unique`+`arange` pass, with no per-key Python. A non-integer batch (e.g. the bool side of an int↔bool
+  join) keeps the dict path on a disjoint id space; nulls share the dict null id (null still matches null);
+  negative keys fall back on the first batch. This is the join twin of the 2026-07-18 `KeyedCount`/
+  `KeyedMean` bincount fold.
+- **Impact (`nautilus.bench.measure("bench-join", rows=2M, batch=4096, keys=100000)`, median of 5; Linux
+  x86_64):** **7.17M → 43.0M rows/s (6.0×)**. On the geospatial join cases the same fix took the
+  **anomaly self-join 0.76s → 0.25s (3×, 0.19× → 0.59× vs xarray-sql)** and **forecast-skill 1.51s → 0.59s
+  (2.6×, 0.25× → 0.67×)** — the aggregation half was already vectorized, so this was the remaining wall.
+- **Correctness:** structural digest identical before → after (`e0fae4e3…`); full `pytest` green
+  (393 passed, incl. the join value/type/null/width-consistency tests); `bench-check` adds no digest
+  failure (the lone `bench-join-dist` OUTPUT-CHANGED is pre-existing on clean HEAD).
+
 ## 2026-07-18 — KeyedCount integer-key bincount fold: 12–16× on keyed aggregation (parity with DataFusion)
 
 - **Commit:** `b6a6330`.
