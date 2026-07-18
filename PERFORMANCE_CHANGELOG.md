@@ -63,6 +63,27 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-17 — Keyed-state nested store: no per-fold StateScope alloc (2.2× on keyed aggregation)
+
+- **Commit:** `79b8125`.
+- **Change:** `InMemoryStateBackend` (`state/__init__.py`) kept a flat `dict[StateScope, value]`, so
+  `reduce_all` — the hot path every keyed aggregation folds each batch through — built and hashed a
+  four-field frozen `StateScope` per `(key, value)` fold. It now nests the store as
+  `dict[(operator_id, name, namespace), {key: value}]`, so a fold is one inner-dict update keyed by the
+  bare partition key: no `StateScope` built or hashed per fold, and `entries()` (the end-of-stream flush)
+  iterates only the matching `(operator, name)` group instead of scanning the whole store. Benefits every
+  keyed aggregation — the built-in `KeyedCount`, and the geospatial-benchmark `KeyedMean`.
+- **Impact (`nautilus.bench.measure("bench-keyed", rows=1M, batch=4096)`, median of 7 trials, warmup 1;
+  Linux x86_64 / WSL2):** the fold cost falls at every cardinality, since the removed `StateScope` is per
+  *fold*, not per key — at **keys=1000 4.29M → 9.28M rows/s (2.16×)** and **keys=500,000 837k → 1.49M
+  (1.78×)**. Per operator at 500k keys, `KeyedCount`'s `operator.process_micros` 1.17s → 0.56s (2.1×) and
+  `operator.on_eos_micros` 0.65s → 0.47s (1.4×). Transfers to the geospatial climatology
+  (`GROUP BY lat,lon,hour`, 535k groups): nautilus 2.88s → 1.86s (1.55×).
+- **Correctness:** structural digest identical before → after at both scales (`cd4180929b4a` at keys=1000,
+  `3bf27b23…` at keys=500,000); full `pytest` green (391 passed); `bench-check` adds no digest failure
+  (the lone `bench-join-dist` OUTPUT-CHANGED reproduces on clean HEAD — pre-existing distributed
+  nondeterminism vs the off-machine baseline, unrelated to this change).
+
 ## 2026-07-04 — HashJoin nested key intern: up to 1.5× on high-cardinality joins
 
 - **Commit:** `d9459f3`.
