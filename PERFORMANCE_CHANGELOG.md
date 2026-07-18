@@ -38,12 +38,6 @@ starts from evidence, not a cold read.
   buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
   common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.
 
-- **`HashJoin._encode` per-distinct-key intern.** After the two shipped vectorizations, the residual
-  stream-table cost is interning each distinct key to its integer id — a `((type, value),)` tuple build
-  plus a dict lookup per distinct key (cProfile: ~30% of the join at 1000 keys). A nested `type → {value:
-  id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
-  as diminishing returns next to the ~90–125× already shipped.
-
 - **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
   by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
   stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
