@@ -122,7 +122,7 @@ class InMemoryStateBackend(StateBackend):
         sub = self._store.get(outer)
         if sub is None:
             sub = self._store[outer] = {}
-        if scope.key not in sub:  # a new slot — update the size counters (an existing key's put skips this)
+        if scope.key not in sub:  # new slot: bump the size counters (a repeat put skips it)
             self._track_add(scope.operator_id, scope.name, scope.key)
         sub[scope.key] = value
 
@@ -193,7 +193,7 @@ class InMemoryStateBackend(StateBackend):
         self._store = pickle.loads(blob)
         self._entry_count = {}
         self._key_count = {}
-        for (op, nm, _ns), sub in self._store.items():  # rebuild the size counters from the restored store
+        for (op, nm, _ns), sub in self._store.items():  # rebuild the size counters from the store
             for key in sub:
                 self._track_add(op, nm, key)
 

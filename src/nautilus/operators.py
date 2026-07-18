@@ -167,9 +167,9 @@ class KeyedCount(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
-        self._key_type: pa.DataType | None = None  # captured from the input so output keeps its type
-        self._counts: np.ndarray | None = None  # numpy accumulator while the integer fast path is active
-        self._nulls = 0  # null-key occurrences (fast path only; the dict path folds null like any key)
+        self._key_type: pa.DataType | None = None  # input type, kept on the output
+        self._counts: np.ndarray | None = None  # integer fast-path count accumulator
+        self._nulls = 0  # null-key count (fast path; dict path folds null normally)
 
     def key_columns(self) -> tuple[str, ...]:
         return (self.key_col,)
@@ -186,7 +186,7 @@ class KeyedCount(OneInputOperator):
                 col = col.drop_null()
             keys = np.asarray(col.to_numpy(zero_copy_only=False))
             if keys.size:
-                bc = np.bincount(keys)  # non-negative ints only (raises otherwise → drops to no fast path)
+                bc = np.bincount(keys)  # non-negative ints only (raises on negative)
                 if bc.size > self._counts.size:
                     grown = np.zeros(bc.size, dtype=np.int64)
                     grown[: self._counts.size] = self._counts
@@ -195,9 +195,9 @@ class KeyedCount(OneInputOperator):
             return
         counts = pc.value_counts(col)
         # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
-        keys = ((v,) for v in counts.field("values").to_pylist())
+        key_tuples = ((v,) for v in counts.field("values").to_pylist())
         self._ctx.reduce_all(
-            self._STATE, zip(keys, counts.field("counts").to_pylist(), strict=True), _add
+            self._STATE, zip(key_tuples, counts.field("counts").to_pylist(), strict=True), _add
         )
 
     def on_eos(self, out: Collector) -> None:
@@ -206,10 +206,14 @@ class KeyedCount(OneInputOperator):
             if nz.size or self._nulls:
                 key_arr = pa.array(nz, self._key_type)
                 cnt_arr = pa.array(self._counts[nz], pa.int64())
-                if self._nulls:  # append the null-key group (rare; a small concat, not a per-key loop)
+                if self._nulls:  # append the null-key group (rare, a small concat)
                     key_arr = pa.concat_arrays([key_arr, pa.array([None], self._key_type)])
                     cnt_arr = pa.concat_arrays([cnt_arr, pa.array([self._nulls], pa.int64())])
-                out.emit(pa.RecordBatch.from_arrays([key_arr, cnt_arr], names=[self.key_col, self.count_col]))
+                out.emit(
+                    pa.RecordBatch.from_arrays(
+                        [key_arr, cnt_arr], names=[self.key_col, self.count_col]
+                    )
+                )
             return
         keys: list[object] = []
         totals: list[int] = []
@@ -446,17 +450,20 @@ class HashJoin(TwoInputOperator):
         if col.null_count:
             valid = np.asarray(col.is_valid())
             out = np.empty(n, dtype=np.int64)
-            out[~valid] = self._intern_single(type(None), None)  # the same id the dict path gives a null
-            out[valid] = self._intern_ints(np.asarray(col.drop_null().to_numpy(zero_copy_only=False)))
+            out[~valid] = self._intern_single(type(None), None)  # same null id as the dict path
+            out[valid] = self._intern_ints(
+                np.asarray(col.drop_null().to_numpy(zero_copy_only=False))
+            )
             return out
         return self._intern_ints(np.asarray(col.to_numpy(zero_copy_only=False)))
 
     def _intern_ints(self, keys: np.ndarray) -> np.ndarray:
         """Gather a non-negative integer key array to dense global ids through the ``_int_id`` value→id
-        lookup, growing it to fit and assigning the next free ids to unseen values in one bulk pass."""
+        lookup, growing it to fit and assigning the next free ids to unseen values in one bulk pass.
+        """
         if keys.size == 0:
             return keys.astype(np.int64, copy=False)
-        if keys.min() < 0:  # decided non-negative on the first batch; a later negative can't index _int_id
+        if keys.min() < 0:  # a later negative can't index _int_id (batch 1 was non-negative)
             raise ValueError("HashJoin integer fast path requires non-negative keys")
         top = int(keys.max()) + 1
         if top > self._int_id.size:  # grow the lookup to cover this batch's largest key value
@@ -472,7 +479,7 @@ class HashJoin(TwoInputOperator):
             )
             self._num_ids += int(new_vals.size)
             ids = self._int_id[keys]
-        return ids
+        return cast(np.ndarray, ids)
 
     def _probe_and_emit(
         self,
