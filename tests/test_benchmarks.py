@@ -216,7 +216,7 @@ def test_keyed_mean_propagates_nan_within_a_group():
 
 def test_geo_linear_pipelines_are_deterministic(monkeypatch):
     _geo_env(monkeypatch)
-    for builder in (bench_geo_ndvi, bench_geo_zonal, bench_geo_climatology, bench_geo_zonal_vector):
+    for builder in (bench_geo_ndvi,):  # only the elementwise map stays linear; the rest use .agg_by
         digests = set()
         for _ in range(3):
             src, ops = builder()
@@ -226,7 +226,14 @@ def test_geo_linear_pipelines_are_deterministic(monkeypatch):
 
 def test_geo_graph_pipelines_are_deterministic(monkeypatch):
     _geo_env(monkeypatch)
-    for builder in (bench_geo_anomaly, bench_geo_forecast):
+    builders = (
+        bench_geo_zonal,
+        bench_geo_climatology,
+        bench_geo_zonal_vector,
+        bench_geo_anomaly,
+        bench_geo_forecast,
+    )
+    for builder in builders:
         digests = {
             asyncio.run(run_plan(builder(1))).telemetry.structural_digest() for _ in range(3)
         }
