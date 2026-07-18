@@ -3,11 +3,10 @@ nautilus pipeline.
 
 The pipelines themselves reuse the library operators (:class:`nautilus.operators.KeyedMean`, the region
 tagger and map functions in :mod:`nautilus.benchmarks`) so nothing here re-implements the nautilus side —
-only how a real store becomes a stream, which the synthetic ``bench-geo-*`` sources cannot cover: an
-in-memory grid unraveled slice by slice (:class:`SlicedSource`); a cloud Zarr store read directly on the
-actor's event loop (:class:`ZarrSliceSource`, the end-to-end read path, and :class:`Wb2ForecastSource` for
-the two-model forecast case it cannot express as one array); and a Zarr read fanned out across worker
-processes (:class:`ZarrReadChunk`).
+only how a real store becomes a stream, the part the synthetic ``bench-geo-*`` sources cannot cover. Three
+read shapes need three sources: an in-memory grid (:class:`SlicedSource`), a direct cloud-Zarr read
+(:class:`ZarrSliceSource`, plus :class:`Wb2ForecastSource` for the two-model forecast), and a worker-fanned
+read (:class:`ZarrReadChunk`); each class's docstring says how and why.
 """
 
 from __future__ import annotations
@@ -63,8 +62,8 @@ class SlicedSource(SourceOperator):
     A row engine consuming gridded data must view the grid as rows; doing that for a whole day of ERA5
     (25M cells) at once would materialize hundreds of MB before a single row is processed. ``slice_fn(i)``
     instead returns slice ``i``'s columns (``{name: 1-D np.ndarray}``) only when the source reaches it, so
-    the pipeline holds one slice at a time — the streaming a nautilus source is meant to do, and the
-    mirror of how xarray-sql reads its Zarr in ``chunks``. Each slice is emitted in ``rows_per_batch``-row
+    the pipeline holds one slice at a time — like how xarray-sql reads its Zarr in ``chunks``. Each slice
+    is emitted in ``rows_per_batch``-row
     batches. The per-slice unravel runs inside the pipeline (so it is counted in a timed run, like the
     chunk→Arrow conversion xarray-sql does inside ``.sql()``)."""
 
@@ -88,9 +87,9 @@ class SlicedSource(SourceOperator):
 class ZarrSliceSource(SourceOperator):
     """Read a Zarr store directly with zarr-python's async API, one selection at a time, and stream each
     fetched slice's unraveled rows — the source that lets a nautilus pipeline ingest cloud Zarr itself, with
-    no xarray in the read path. It exercises nautilus in its design regime: reads run on the actor's event
-    loop with up to ``prefetch`` fetches in flight, so the next slice is being fetched while downstream
-    operators compute the current one, and the whole read overlaps the aggregation instead of preceding it.
+    no xarray in the read path. Reads run on the actor's event loop with up to ``prefetch`` fetches in
+    flight, so the next slice is being fetched while downstream operators compute the current one, and the
+    whole read overlaps the aggregation instead of preceding it.
 
     ``selections`` is the list of zarr getitem selections to read — a time chunk ``(t, slice(None),
     slice(None))``, a ``(time, lead, …)`` forecast slice, or a spatial window ``(yslice, xslice)`` — one per

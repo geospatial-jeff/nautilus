@@ -300,11 +300,11 @@ class SyntheticJoinTableSource(SourceOperator):
 #
 # The geospatial `bench-geo-*` pipelines run the streaming forms of the xarray-sql geospatial suite (a
 # per-pixel map, three GROUP BY reductions at different key cardinalities, and two joins) so the aggregation
-# and join hot paths are exercised on gridded data, not just the abstract keyed stream. They draw from one
-# deterministic field — :class:`SyntheticGridSource` — instead of real Zarr, so a run is engine-bound and
-# reproducible; the cross-engine comparison against real ARCO-ERA5 / Sentinel-2 lives outside the library
-# (benchmarks/geospatial/), reusing the same operators (:class:`~nautilus.operators.KeyedMean`, the region
-# tagger, the map functions below) over a real-data source.
+# and join hot paths are exercised on gridded data, not just the abstract keyed stream. They draw from
+# :class:`SyntheticGridSource` instead of real Zarr; the cross-engine comparison against real ARCO-ERA5 /
+# Sentinel-2 lives outside the library (benchmarks/geospatial/), reusing the same operators
+# (:class:`~nautilus.operators.KeyedMean`, the region tagger, the map functions below) over a real-data
+# source.
 
 #: Five disjoint lat/lon boxes (name, lat_min, lat_max, lon_min, lon_max) over the ERA5 grid — the vector
 #: side of the `bench-geo-zonal-vector` range join, and the same boxes the real-data comparison uses.
@@ -331,9 +331,9 @@ class SyntheticGridSource(SourceOperator):
     the forecast-skill join). Latitude spans 90..−90 and longitude 0..360 so :data:`GEO_REGIONS` select real
     subsets, and ``gid`` alone never collides across two joined instances.
 
-    Deterministic like the other synthetic sources (the value is a pole-to-equator gradient plus fixed-seed
-    noise, reseeded per timestep so emission order can't change it), so the structural digest stays a valid
-    unchanged-output gate. Emits each timestep's grid in ``rows_per_batch``-row batches, then EOS.
+    The value is a pole-to-equator gradient plus fixed-seed noise, reseeded per timestep so emission order
+    can't change it — deterministic, like the other synthetic sources. Emits each timestep's grid in
+    ``rows_per_batch``-row batches, then EOS.
     """
 
     def __init__(

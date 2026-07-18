@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """End-to-end cold-read benchmark: each engine reads a case's real store off the cloud and computes, in a
-fresh process per measurement so every read is cold.
+fresh process per rep (via ``e2e_case.py``) so every read is cold — no client keeps a warm block cache
+across reps (the reason the upstream ``run_perf.sh`` also forks per rep, and the only fair way to compare
+reads).
 
-``run_bench.py`` isolates the compute kernel (data pre-loaded). This one measures the *whole* pipeline —
-including the read — which is what a real user pays and, per the upstream suite, is what dominates
-wall-clock. It exists because nautilus can now read Zarr itself (``_ops.ZarrSliceSource`` /
-``Wb2ForecastSource``, obstore + zarr-python async), so the read is finally something all three engines do
-rather than a step factored out. A fresh subprocess per rep (via ``e2e_case.py``) defeats every
-client-side block cache, so nautilus, xarray, and xarray-sql each pay a cold read on every measurement —
-the only fair way to compare reads. All six cases run: 01 reads a Sentinel-2 scene over HTTPS, 02/03/04/06
-ARCO-ERA5 over GCS, 05 the WeatherBench2 forecast + truth stores.
+``run_bench.py`` isolates the compute kernel (data pre-loaded); this measures the *whole* pipeline, the
+read a real user pays for. It exists because nautilus can now read Zarr itself (``_ops.ZarrSliceSource`` /
+``Wb2ForecastSource``), so the read is finally something all three engines do rather than a step factored
+out. All six cases run: 01 reads a Sentinel-2 scene over HTTPS, 02/03/04/06 ARCO-ERA5 over GCS, 05 the
+WeatherBench2 forecast + truth stores.
 
 Run:  ``.venv/bin/python benchmarks/geospatial/run_e2e.py [01 02 03 04 05 06]``  (default: all)
 Env:  ``GEOBENCH_E2E_REPS`` (default 5), ``GEOBENCH_PREFETCH`` (nautilus read-ahead depth, default 8),

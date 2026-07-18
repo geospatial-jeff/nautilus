@@ -9,9 +9,9 @@ case's own ``measured(...)`` block computes, so nautilus is dropped into an exis
 
 **Scope — read `_harness.py` first.** This isolates in-memory COMPUTE: the read is factored out for all
 three engines (each `.load()`s its window once, outside the timed region) to compare *kernels*, so these
-numbers are NOT the xarray-sql suite's cold-read perf table. For the whole pipeline — where nautilus
-reads the Zarr itself via `_ops.ZarrSliceSource` and the read (which dominates) overlaps compute — see
-`run_e2e.py`. All engines are pinned single-threaded (nautilus p1, DataFusion 1 partition, non-BLAS
+numbers are NOT the xarray-sql suite's cold-read perf table. For the whole pipeline (nautilus reads the
+Zarr itself, `_ops.ZarrSliceSource`), see `run_e2e.py`. All engines are pinned single-threaded (nautilus
+p1, DataFusion 1 partition, non-BLAS
 numpy) for a like-for-like row; nautilus p4 is an in-process scale-out probe, GIL-bound, not a parity
 comparison (nautilus's real scale-out is `run(workers=N)` across processes). The nautilus operators are
 the library's own (`nautilus.operators.KeyedMean`, the region tagger in `nautilus.benchmarks`) — the same
@@ -36,7 +36,7 @@ import os
 
 # Pin every math backend to one thread BEFORE numpy/pyarrow import them, so the comparison is
 # single-thread-vs-single-thread (DataFusion here is tokio current-thread; the numpy reductions are
-# non-BLAS anyway). nautilus p4 is the only multi-instance row, labeled as a scale-out probe.
+# non-BLAS anyway).
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_v, "1")
 
@@ -113,8 +113,7 @@ _CONUS = {
 
 def xarray_sql_ctx() -> xql.XarrayContext:
     """A single-partition (single-threaded) DataFusion context, so xarray-sql is measured on one core
-    like the other engines. Confirmed to change these memory-bound queries within noise vs the 32-core
-    default, so this is fair, not a handicap."""
+    like the other engines."""
     return xql.XarrayContext(SessionConfig().with_target_partitions(1))
 
 
@@ -771,7 +770,7 @@ def report(results: list[dict]) -> None:
     print("CAVEATS (see _harness.py):")
     for c in [
         "COMPUTE kernel only — read factored out for all engines; NOT the xarray-sql suite's cold-read numbers.",
-        "For the whole pipeline (nautilus reads Zarr itself, read overlaps compute), see run_e2e.py.",
+        "For the whole pipeline (nautilus reads Zarr itself), see run_e2e.py.",
         "nautilus p4 is in-process (one event loop, one GIL): it adds shuffle+copy overhead for no compute",
         "  parallelism, so it is ≤ p1 here. Real scale-out is run(workers=N) across processes — out of scope.",
         "Dropped the originals' WHERE/time-pruning (data is one day in RAM) — removes xarray-sql's predicate-pushdown lever.",

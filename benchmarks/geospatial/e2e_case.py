@@ -2,12 +2,10 @@
 """One cold end-to-end read+compute for a single (engine, case) — the unit the cold-read driver spawns.
 
 The compute-only benchmark (``run_bench.py``) pre-loads data and times the kernel. This instead times the
-*whole* pipeline — open the store, read the case's real Zarr off the cloud, compute — for one engine, once.
-Run in a fresh process per measurement (see ``run_e2e.py``) so every read is cold: no client keeps a warm
-block cache across reps, which is the only way the read is measured fairly (the reason the upstream
-xarray-sql harness also forks per rep). nautilus reads Zarr through its own async ``ZarrSliceSource`` /
-``Wb2ForecastSource`` (obstore backend, prefetching), with no xarray in the read path; xarray and
-xarray-sql read through xarray's zarr/gcsfs stack, as they must.
+*whole* pipeline — open the store, read the case's real Zarr off the cloud, compute — for one engine, once,
+in a fresh process spawned by ``run_e2e.py`` so the read is cold. nautilus reads through its own async
+``ZarrSliceSource`` / ``Wb2ForecastSource``; xarray and xarray-sql read through xarray's zarr/gcsfs stack,
+as they must.
 
 Each engine returns ``(key, value)`` pairs the driver hashes into a digest — the cross-engine correctness
 check — so the three must agree bit-for-bit after rounding, not merely run.
@@ -72,7 +70,8 @@ _WB2_INIT = slice("2020-01-01", "2020-01-10")
 
 
 def _digest(pairs: list[tuple[float, float]]) -> str:
-    """Stable hash of (key, value-rounded-to-2dp) pairs — same numbers → same digest across engines."""
+    """Stable hash of (key-rounded-to-4dp, value-rounded-to-2dp) pairs — same numbers → same digest across
+    engines (the key rounding matters for the float latitude keys of cases 03/06)."""
     body = ";".join(f"{round(k, 4)}:{round(v, 2)}" for k, v in sorted(pairs))
     return hashlib.sha256(body.encode()).hexdigest()[:16]
 
@@ -406,7 +405,8 @@ def _wb2_setup():
 
 
 def _wb2_ref(ctx):
-    """xarray reference RMSE by (model, lead) — used by the xarray and (as a check) xarray-sql paths."""
+    """xarray reference RMSE by (model, lead) — the xarray path returns it directly; the xarray-sql and
+    nautilus paths compute their own, and the digest cross-checks all three."""
     def op(u):
         return xr.open_zarr(u, chunks=None, storage_options={"token": "anon"}, decode_timedelta=True)
 

@@ -6,8 +6,8 @@ makes a claim: the geospatial operations we reach for an *array* library to do a
 SQL and showing the SQL answer matches a plain-xarray reference.
 
 nautilus is a relational streaming engine, so the same operations express directly in its Arrow dataflow.
-This benchmark drops nautilus in as a **third contender** across all six cases: the same real data, the
-same operation three ways, checked to agree, and timed.
+This benchmark adds nautilus as a third engine across all six cases: the same real data, the same
+operation three ways, checked to agree, and timed.
 
 | xarray-sql case | operation | nautilus form | keyed cardinality |
 |---|---|---|--:|
@@ -33,9 +33,8 @@ The read dominates these workloads (the upstream suite says as much), so the ben
 2. **End-to-end cold read** (`run_e2e.py`) — each engine reads the case's real store off the cloud
    *itself* and computes, in a fresh process per rep so every read is cold (the reason the upstream
    `run_perf.sh` also forks per rep). **nautilus reads through its own async source** — `_ops.py`'s
-   `ZarrSliceSource` (and `Wb2ForecastSource` for the two-model forecast join), built on `obstore` +
-   zarr-python's async API, prefetching so the next fetch overlaps the current compute — with no xarray
-   in the read path. This is the number a user actually pays.
+   `ZarrSliceSource` (and `Wb2ForecastSource` for the two-model forecast join), with no xarray in the read
+   path. This is the number a user actually pays.
 
 Both modes pin every engine single-threaded (DataFusion to one partition — verified within noise of its
 32-core default on these memory-bound queries — numpy non-BLAS, nautilus one actor). nautilus p4 is an
@@ -84,11 +83,10 @@ are now vectorized.**
   flat memory.
 - **High cardinality → now competitive, where it used to collapse.** The 535 k-group climatology lands at
   **parity with DataFusion** (0.92×) and the two high-cardinality joins within ~2× (anomaly 0.50×,
-  forecast 0.61×). This is the payoff of vectorizing the keyed hot paths: `KeyedMean` folds each batch
-  with `np.bincount` into running per-key sum/count arrays instead of a per-key Python dict, and
-  `HashJoin` interns keys through a numpy value→id map. Earlier — with the per-key-Python MVP state
-  backend — the same climatology ran ~34× slower than DataFusion and the joins ~20×; see
-  `PERFORMANCE_CHANGELOG.md`. The array *reference* is still far ahead on these because a diurnal
+  forecast 0.61×). This is the payoff of vectorizing the keyed hot paths: `KeyedMean` and `HashJoin` now
+  fold each batch into numpy arrays for non-negative integer keys instead of per-key Python state. Earlier
+  — with the per-key-Python MVP state backend — the same climatology ran ~34× slower than DataFusion and
+  the joins ~20×; see `PERFORMANCE_CHANGELOG.md`. The array *reference* is still far ahead on these because a diurnal
   climatology is a native `reshape`+`mean` for it — no grouping at all.
 - **Constant memory throughout.** nautilus holds ~0–100 MB across every case (it streams batches and keeps
   only per-key state); the array reference spikes to 1.2 GB on the range join and 149 MB on zonal mean. On
@@ -103,17 +101,14 @@ zonal mean). It loses where its per-slice model is a poor fit: the forecast case
 self-join reads its window twice. Those are read-pattern costs, addressable by coalescing requests — not
 the compute-kernel story above.
 
-Headline: after the keyed-path vectorization, nautilus is fastest on elementwise and low-cardinality
-relational ops, at parity-to-within-2× on high-cardinality `GROUP BY`/`JOIN`, and streams all of it at
-constant memory; end-to-end its async reader is fastest when the read is large and contiguous. It remains
-a general distributed dataflow engine, not a single-node array library.
+And nautilus reaches all of this as a general distributed dataflow engine, not a single-node array library
+— the same pipeline runs across machines (below), which neither rival here does.
 
 ## Scaling out (multiple workers)
 
 `run(workers=N)` spawns N processes, places the graph across them, and lets the keyed shuffle cross
-sockets — nautilus's real multi-core path (in-process `parallelism>1` shares one GIL and only adds
-overhead, which is why the p4 column above is ≤ p1). On this **single node** it does not speed these
-workloads up, for two structural reasons:
+sockets — nautilus's real multi-core path. On this **single node** it does not speed these workloads up,
+for two structural reasons:
 
 - **Compute (keyed aggregation).** A nautilus *source* is pinned to one instance (the IR rejects a parallel
   source), so every row enters through one actor and the keyed-shuffle routing runs there serially;

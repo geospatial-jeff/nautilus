@@ -243,10 +243,10 @@ class KeyedCount(OneInputOperator):
 class KeyedMean(OneInputOperator):
     """``AVG(value) GROUP BY key`` — the mean of a value column per key, emitted at end of stream.
 
-    The keyed-aggregation companion to :class:`KeyedCount`, and it shares that operator's integer fast
-    path: for non-negative integer keys it folds each batch into running per-key ``sum`` and ``count``
-    numpy arrays (``np.bincount``) with no per-key Python object, so a mean over a high-cardinality key
-    stays vectorized. Other key types fold ``(sum, count)`` partials through keyed state instead.
+    It shares :class:`KeyedCount`'s integer fast path: for non-negative integer keys it folds each batch
+    into running per-key ``sum`` and ``count`` numpy arrays (``np.bincount``) with no per-key Python
+    object, so a mean over a high-cardinality key stays vectorized. Other key types fold ``(sum, count)``
+    partials through keyed state instead.
 
     The sum accumulates in float64 even for a float32 value column, a *null value* joins no mean (skipped,
     like SQL ``AVG``), and a *null key* forms its own group (like :class:`KeyedCount`, like SQL ``GROUP
