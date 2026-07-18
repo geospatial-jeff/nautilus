@@ -5,136 +5,159 @@ makes a claim: the geospatial operations we reach for an *array* library to do a
 **relational** — `GROUP BY`, `JOIN`, column arithmetic. It proves this by expressing each operation in
 SQL and showing the SQL answer matches a plain-xarray reference.
 
-nautilus is a relational streaming engine, so the same operations express directly in its Arrow
-dataflow. This benchmark drops nautilus in as a **third contender** on the spatial cases: the same real
-data, the same operation three ways, checked to agree, and timed.
+nautilus is a relational streaming engine, so the same operations express directly in its Arrow dataflow.
+This benchmark drops nautilus in as a **third contender** across all six cases: the same real data, the
+same operation three ways, checked to agree, and timed.
 
-| xarray-sql case | operation | nautilus form |
-|---|---|---|
-| `01_ndvi` | per-pixel `(nir-red)/(nir+red)` | `.map` (column arithmetic) |
-| `02_climatology` | `AVG(temp) GROUP BY lat, lon, hour` | `KeyedMean` on an encoded (lat,lon,hour) id |
-| `03_zonal_mean` | `AVG(temp) GROUP BY latitude` | `KeyedMean` (keyed aggregation) |
-| `04_anomaly` | climatology CTE self-`JOIN` back to obs | two sources → `KeyedMean` + `HashJoin` on the id |
-| `05_forecast_skill` | forecast↔truth `JOIN` on valid_time + RMSE | `HashJoin` → squared-error `.map` → `KeyedMean` |
-| `06_zonal_vector` | `AVG … JOIN regions ON lat/lon BETWEEN` | broadcast region-tag `.map` → `KeyedMean` |
+| xarray-sql case | operation | nautilus form | keyed cardinality |
+|---|---|---|--:|
+| `01_ndvi` | per-pixel `(nir-red)/(nir+red)` | `.map` (column arithmetic) | — |
+| `06_zonal_vector` | `AVG … JOIN regions ON lat/lon BETWEEN` | broadcast region-tag `.map` → `KeyedMean` | 5 |
+| `03_zonal_mean` | `AVG(temp) GROUP BY latitude` | `KeyedMean` | 721 |
+| `05_forecast_skill` | forecast↔truth `JOIN` on valid_time + RMSE | `HashJoin` → squared-error `.map` → `KeyedMean` | ~162 k join keys |
+| `02_climatology` | `AVG(temp) GROUP BY lat, lon, hour` | `KeyedMean` on an encoded (lat,lon,hour) id | 535 k |
+| `04_anomaly` | climatology CTE self-`JOIN` back to obs | `KeyedMean` → `HashJoin` on the id → subtract | 535 k |
 
-Cases 01/03/06 are *spatial* (Sentinel-2, one day of ERA5); 02/04/05 are *temporal* (a 3-day ERA5 window;
-WeatherBench2 ML-forecast scoring).
+The nautilus operators here are the library's own — `nautilus.operators.KeyedMean` and the region tagger
+in `nautilus.benchmarks`, the same code the `bench-geo-*` CLI benchmarks run — so this comparison never
+drifts from what the engine actually ships. Only the *reading* of real data lives in `_ops.py`.
 
 ## Two measurements: the compute kernel, and the whole pipeline
 
 The read dominates these workloads (the upstream suite says as much), so the benchmark reports both ends:
 
 1. **Compute-only** (`run_bench.py`) — read the window into memory once, then time only the compute.
-   Isolates the engine's kernel. To keep the read out of the timed region for *all* engines it is factored
-   out; but that flattered the array reference and hid that nautilus streams. Fair to compare kernels,
-   not whole pipelines.
-2. **End-to-end cold read** (`run_e2e.py`) — each engine reads the day's ARCO-ERA5 Zarr chunks off GCS
+   Isolates the engine's kernel. Factoring the read out for *all* engines flatters the array reference
+   (its native array layout needs no gridded→relational unravel) and hides that nautilus streams — fair to
+   compare kernels, not whole pipelines.
+2. **End-to-end cold read** (`run_e2e.py`) — each engine reads the case's real store off the cloud
    *itself* and computes, in a fresh process per rep so every read is cold (the reason the upstream
-   `run_perf.sh` also forks per rep). **nautilus reads Zarr through its own async source** — `_ops.py`'s
-   `ZarrChunkSource`, built on `obstore` + zarr-python's async API, prefetching chunks so the next fetch
-   overlaps the current compute — with no xarray in the read path. This is the number a user actually pays.
+   `run_perf.sh` also forks per rep). **nautilus reads through its own async source** — `_ops.py`'s
+   `ZarrSliceSource` (and `Wb2ForecastSource` for the two-model forecast join), built on `obstore` +
+   zarr-python's async API, prefetching so the next fetch overlaps the current compute — with no xarray
+   in the read path. This is the number a user actually pays.
 
-Notes that apply to both: all engines run single-threaded (DataFusion pinned to one partition — verified
-within noise of its 32-core default on these memory-bound queries — numpy is non-BLAS, nautilus is one
-actor); the mirrored SQL runs on the pre-sliced day, so the archive `WHERE`-time pruning (a separate
-xarray-sql strength) is out of scope; compute-only memory is resident-set growth sampled from `/proc`
-(counts DataFusion's Rust heap and Arrow's C++ buffers, unlike `tracemalloc`).
+Both modes pin every engine single-threaded (DataFusion to one partition — verified within noise of its
+32-core default on these memory-bound queries — numpy non-BLAS, nautilus one actor). nautilus p4 is an
+in-process scale-out *probe* (one event loop, one GIL): it only adds shuffle overhead, so it is ≤ p1 here
+— real scale-out is `run(workers=N)` across processes (see below). Compute-only memory is resident-set
+growth sampled from `/proc` (so it counts DataFusion's Rust heap and Arrow's C++ buffers, which
+`tracemalloc` cannot).
 
 ## Results
 
-Real data (Sentinel-2 1024×1024 scene; ARCO-ERA5 one day = 24.9M cells), single-threaded, all engines
-agree to floating-point tolerance. Representative run (±~10% machine-to-machine).
+Real data — Sentinel-2 1024×1024 scene, ARCO-ERA5 (one day = 24.9 M cells; a 3-day CONUS window =
+1.6 M), WeatherBench2 forecasts — single-threaded, all six cases agree across engines to floating-point
+tolerance. Representative run on one machine (±~10% machine-to-machine).
 
-**Compute-only** (data pre-loaded; median of 3–7; peak = resident-set growth; ▸groups = keyed cardinality):
+**Compute-only** (data pre-loaded; median of 5; peak = resident-set growth; ordered by keyed cardinality):
 
-| Case | ▸groups | xarray ref | xarray-sql | nautilus | vs sql | vs ref |
+| Case | groups | xarray ref | xarray-sql | nautilus p1 | vs sql | vs ref |
 |---|--:|--:|--:|--:|--:|--:|
-| 01 NDVI (elementwise) | — | 0.008s / 25 MB | 0.085s / 56 MB | **0.004s / 25 MB** | **11.0×** | **1.5×** |
-| 03 zonal mean (GROUP BY lat) | 721 | 0.051s / 104 MB | 0.111s / 2 MB | 0.241s / **~0 MB** | 0.46× | 0.21× |
-| 06 zonal vector (range JOIN) | 5 | 0.485s / 1246 MB | 0.222s / ~0 MB | **0.124s / ~0 MB** | **1.79×** | **3.91×** |
-| 02 climatology (GROUP BY lat,lon,hour) | 535 k | 0.008s / ~0 MB | 0.085s / 56 MB | 2.88s / 260 MB | 0.03× | 0.00× |
-| 04 anomaly (self-JOIN) | 535 k | 0.011s / ~0 MB | 0.170s / 34 MB | 3.53s / 169 MB | 0.05× | 0.00× |
-| 05 forecast skill (JOIN + RMSE) | 160 k | 0.038s / ~0 MB | 0.449s / 3 MB | 2.09s / ~0 MB | 0.21× | 0.02× |
+| 01 NDVI (elementwise) | — | 0.006 s / 24 MB | 0.064 s / 20 MB | **0.005 s / 25 MB** | **12.3×** | **1.18×** |
+| 06 zonal vector (range JOIN) | 5 | 0.490 s / 1246 MB | 0.215 s / ~0 MB | **0.107 s / ~0 MB** | **2.01×** | **4.58×** |
+| 03 zonal mean (GROUP BY lat) | 721 | 0.059 s / 149 MB | 0.117 s / 2 MB | 0.132 s / **~0 MB** | 0.88× | 0.45× |
+| 02 climatology (GROUP BY lat,lon,hour) | 535 k | 0.007 s / ~0 MB | 0.078 s / 55 MB | 0.084 s / 9 MB | **0.92×** | 0.08× |
+| 05 forecast skill (JOIN + RMSE) | 162 k keys | 0.038 s / ~0 MB | 0.435 s / 3 MB | 0.714 s / ~0 MB | 0.61× | 0.05× |
+| 04 anomaly (self-JOIN) | 535 k | 0.010 s / ~0 MB | 0.167 s / 63 MB | 0.331 s / 101 MB | 0.50× | 0.03× |
 
-**End-to-end** (each engine reads the Zarr off GCS itself; median of 5 cold fresh-process reps):
+**End-to-end** (each engine reads its store off the cloud itself, cold; median of 3 fresh-process reps;
+02/04 over a one-day window to keep the cold read tractable):
 
-| Case | xarray | xarray-sql | nautilus | vs sql | vs xarray |
-|---|--:|--:|--:|--:|--:|
-| 03 zonal mean (GROUP BY) | 1.56s | 1.33s | 1.57s | 0.85× | 1.00× |
-| 06 zonal vector (range JOIN) | 2.02s | 1.40s | **1.25s** | **1.12×** | **1.62×** |
+| Case | store (read shape) | xarray | xarray-sql | nautilus | vs sql | vs xarray |
+|---|---|--:|--:|--:|--:|--:|
+| 01 NDVI | Sentinel-2 (one 1024² window) | 10.40 s | 10.91 s | **2.28 s** | **4.78×** | **4.56×** |
+| 06 zonal vector | ERA5 (24 global chunks) | 2.98 s | 1.75 s | **1.59 s** | **1.11×** | **1.88×** |
+| 03 zonal mean | ERA5 (24 global chunks) | 1.61 s | 1.54 s | 1.55 s | 0.99× | 1.04× |
+| 02 climatology | ERA5 (24 global chunks) | 1.55 s | 1.65 s | 1.82 s | 0.90× | 0.85× |
+| 04 anomaly | ERA5 (24 chunks, read twice) | 1.51 s | 1.61 s | 3.08 s | 0.52× | 0.49× |
+| 05 forecast skill | WeatherBench2 (1600 tiny slices) | 0.84 s | 1.37 s | 3.67 s | 0.37× | 0.23× |
 
-**The result tracks one variable: keyed cardinality (the ▸groups column).**
 
-- **Low cardinality → nautilus is competitive or fastest.** Elementwise NDVI (no keys) is fastest — its
-  zero-copy Arrow arithmetic beats the array reference and is ~11× faster than a DataFusion query whose
-  fixed per-query cost dwarfs a trivial op. The range join (5 regions) and 721-group zonal mean stream
-  with flat memory; the 721-group `GROUP BY` is ~2× behind DataFusion's fused-Rust aggregation but the
-  range join *beats* it, and both crush the array reference (which pays 1.2 GB to rasterize masks).
-- **High cardinality → nautilus loses by 5–400×.** The 535 k-group climatology, the 535 k-key self-join,
-  and the 160 k-key forecast join are all dominated by nautilus's *per-key Python overhead* — its MVP
-  keyed-state backend allocates a `StateScope` per key per batch through a Python dict, and `HashJoin`
-  interns keys in Python — where DataFusion aggregates and joins in fused Rust and numpy groups
-  vectorially. This is a real, documented limitation of the current in-memory state backend, and the
-  clearest signal in the suite: **nautilus's keyed machinery does not yet scale to high-cardinality
-  aggregation and joins.**
-- **End-to-end, the read dominates and the gap closes.** With the ~1.3 s cold GCS read included — the
-  I/O-bound regime nautilus is built for — its prefetching async source overlaps read with compute
-  (sequential 3.4 s → prefetch=8 1.35 s) and lands competitive-to-fastest on the read-bound cases.
+**The result tracks one variable: keyed cardinality (the groups column) — and the relational hot paths
+are now vectorized.**
 
-Headline: nautilus is competitive-to-fastest on elementwise and low-cardinality relational ops and when
-I/O dominates, but its Python-level keyed state and join interning make high-cardinality `GROUP BY`/`JOIN`
-its clear weak spot — the place a vectorized-Rust engine like DataFusion is simply in a different class.
+- **No keys, or few → nautilus is fastest.** Elementwise NDVI streams zero-copy Arrow arithmetic, beating
+  the array reference and running ~12× faster than a DataFusion query whose fixed per-query cost dwarfs a
+  trivial op. The 5-region range join *beats* DataFusion 2× and the array reference 4.6× — the array form
+  pays 1.2 GB to rasterize per-region boolean masks, where nautilus tags each pixel in one numpy pass at
+  flat memory.
+- **High cardinality → now competitive, where it used to collapse.** The 535 k-group climatology lands at
+  **parity with DataFusion** (0.92×) and the two high-cardinality joins within ~2× (anomaly 0.50×,
+  forecast 0.61×). This is the payoff of vectorizing the keyed hot paths: `KeyedMean` folds each batch
+  with `np.bincount` into running per-key sum/count arrays instead of a per-key Python dict, and
+  `HashJoin` interns keys through a numpy value→id map. Earlier — with the per-key-Python MVP state
+  backend — the same climatology ran ~34× slower than DataFusion and the joins ~20×; see
+  `PERFORMANCE_CHANGELOG.md`. The array *reference* is still far ahead on these because a diurnal
+  climatology is a native `reshape`+`mean` for it — no grouping at all.
+- **Constant memory throughout.** nautilus holds ~0–100 MB across every case (it streams batches and keeps
+  only per-key state); the array reference spikes to 1.2 GB on the range join and 149 MB on zonal mean. On
+  data that does not fit in RAM, that is the difference between running and not.
+
+End-to-end, where the cold read is included, a second axis appears: **the shape of the read, not the
+compute.** nautilus's async obstore reader is much faster when the read is one large contiguous window — it
+reads the Sentinel-2 scene **4.8× faster than xarray's HTTP/gcsfs stack** (2.3 s vs 10.4 s), so NDVI's whole
+pipeline is ~4.6× faster — and stays competitive-to-fastest on the mid-size ERA5-day reads (zonal vector,
+zonal mean). It loses where its per-slice model is a poor fit: the forecast case issues 1600 tiny
+64×32 reads (two models × 20 inits × 40 leads) whose per-request overhead dwarfs the data, and the anomaly
+self-join reads its window twice. Those are read-pattern costs, addressable by coalescing requests — not
+the compute-kernel story above.
+
+Headline: after the keyed-path vectorization, nautilus is fastest on elementwise and low-cardinality
+relational ops, at parity-to-within-2× on high-cardinality `GROUP BY`/`JOIN`, and streams all of it at
+constant memory; end-to-end its async reader is fastest when the read is large and contiguous. It remains
+a general distributed dataflow engine, not a single-node array library.
 
 ## Scaling out (multiple workers)
 
 `run(workers=N)` spawns N processes, places the graph across them, and lets the keyed shuffle cross
 sockets — nautilus's real multi-core path (in-process `parallelism>1` shares one GIL and only adds
-overhead). On this **single node** it does not speed these workloads up, for two structural reasons:
+overhead, which is why the p4 column above is ≤ p1). On this **single node** it does not speed these
+workloads up, for two structural reasons:
 
-- **Compute (keyed aggregation).** A nautilus *source* is pinned to one instance (the IR rejects a
-  parallel source), so every row enters through one actor and the keyed-shuffle *routing* — itself
-  Python-per-key — runs there serially. Distributing `KeyedMean` across workers can't get past that:
-  535 k-group climatology stays flat and 25 M-row zonal mean gets far *worse* (every row is serialized
-  cross-process). Pipeline time (telemetry, excludes spawn):
+- **Compute (keyed aggregation).** A nautilus *source* is pinned to one instance (the IR rejects a parallel
+  source), so every row enters through one actor and the keyed-shuffle routing runs there serially;
+  distributing `KeyedMean` across workers cannot get past that, and now every row also crosses a process
+  boundary. Pipeline time (telemetry, excludes process spawn):
 
   | workers | 03 zonal mean (25M rows) | 02 climatology (535k groups) |
   |--:|--:|--:|
-  | 1 | 0.24s (1.00×) | 2.90s (1.00×) |
-  | 2 | 1.18s (0.21×) | 3.03s (0.96×) |
-  | 4 | 1.94s (0.13×) | 2.81s (1.03×) |
-  | 8 | 3.73s (0.07×) | 3.55s (0.82×) |
+  | 1 | 0.14 s (1.00×) | 0.09 s (1.00×) |
+  | 2 | 1.21 s (0.12×) | 1.72 s (0.05×) |
+  | 4 | 1.89 s (0.07×) | 2.27 s (0.04×) |
+  | 8 | 3.74 s (0.03×) | 3.43 s (0.03×) |
 
-- **I/O (reading Zarr).** Reads are fanned out the idiomatic way — a chunk-index source feeding a parallel
-  async reader (`ZarrReadChunk`) across workers — but that doesn't help either: one process with async
-  prefetch (`in_flight=8`) already **saturates the network** at ~1.4 s for the day's 24 chunks, so extra
-  worker processes on the same NIC only add cross-process transport and run slower.
+- **I/O (reading Zarr).** Reads fan out the idiomatic way — a chunk-index source feeding a parallel async
+  reader (`ZarrReadChunk`) across workers — but one process with async prefetch (`in_flight=8`) already
+  **saturates the network**, reading the day's 24 chunks in 1.44 s, so extra workers on the same NIC only
+  add cross-process transport:
 
-  | workers | end-to-end read (in_flight=8) |
+  | workers | end-to-end read |
   |--:|--:|
-  | 1 | 1.38s (1.00×) |
-  | 2 | 1.79s (0.77×) |
-  | 4 | 2.01s (0.69×) |
-  | 8 | 1.97s (0.70×) |
+  | 1 | 1.44 s (1.00×) |
+  | 2 | 1.96 s (0.73×) |
+  | 4 | 1.92 s (0.75×) |
+  | 8 | 2.06 s (0.70×) |
 
 The payoff of `run(workers=N)` is genuinely **multi-machine** — each node its own cores *and* its own
-network link — which one host can't show. On a single box, nautilus's in-process async concurrency (the
-event loop + source prefetch) is the right tool and workers only add overhead. `bench_workers.py`
-(single serial source) and `bench_workers_zarr.py` (distributed async reader) reproduce both tables.
+network link — which one host cannot show. On a single box, nautilus's in-process async concurrency (the
+event loop + source prefetch) is the right tool. `bench_workers.py` and `bench_workers_zarr.py` reproduce
+both tables.
 
 ## Running
 
 ```shell
-.venv/bin/python benchmarks/geospatial/run_bench.py         # compute-only, all 6 cases
-.venv/bin/python benchmarks/geospatial/run_e2e.py           # end-to-end cold read (03, 06)
-.venv/bin/python benchmarks/geospatial/bench_workers.py     # run(workers=N) scale-out, keyed cases
-.venv/bin/python benchmarks/geospatial/bench_workers_zarr.py  # distributed Zarr read across workers
-GEOBENCH_REPS=5 GEOBENCH_CSV=out.csv .venv/bin/python benchmarks/geospatial/run_bench.py 03
+.venv/bin/python benchmarks/geospatial/run_bench.py            # compute-only, all 6 cases
+.venv/bin/python benchmarks/geospatial/run_e2e.py              # end-to-end cold read, all 6 cases
+.venv/bin/python benchmarks/geospatial/bench_workers.py        # run(workers=N) scale-out, keyed cases
+.venv/bin/python benchmarks/geospatial/bench_workers_zarr.py   # distributed Zarr read across workers
+GEOBENCH_REPS=5 GEOBENCH_CSV=out.csv .venv/bin/python benchmarks/geospatial/run_bench.py 02
 ```
 
 Needs the geo extras alongside nautilus (`xarray`, `pandas`, `zarr>=3`, `gcsfs`, `obstore`, `xarray_sql`,
-`pystac-client`) and network access to GCS, WeatherBench2, and the EOPF STAC service; cases 01–04/06 fall
-back to a synthetic field of the same shape when offline, and case 05 (WeatherBench2) skips cleanly.
-`_ops.py` holds the nautilus pieces — `KeyedMean`, the region tagger, the lazy `SlicedSource`, and the
-async `ZarrChunkSource`; `_harness.py` holds timing, the peak-RSS sampler, and the scope caveats;
-`e2e_case.py` is one cold read+compute that `run_e2e.py` forks.
+`pystac-client`) and network to GCS, WeatherBench2, and the EOPF STAC service. Compute-only cases 01–04/06
+fall back to a synthetic field of the same shape when offline (05 skips cleanly); the end-to-end mode
+needs the real stores. `_ops.py` holds only the real-data readers — the lazy in-memory `SlicedSource`, the
+async `ZarrSliceSource`, `Wb2ForecastSource`, and the distributed `ZarrReadChunk`; the nautilus operators
+come from the library. `_harness.py` holds timing, the peak-RSS sampler, and the compute-only scope
+caveats; `e2e_case.py` is one cold read+compute that `run_e2e.py` forks.

@@ -10,21 +10,20 @@ case's own ``measured(...)`` block computes, so nautilus is dropped into an exis
 **Scope — read `_harness.py` first.** This isolates in-memory COMPUTE: the read is factored out for all
 three engines (each `.load()`s its window once, outside the timed region) to compare *kernels*, so these
 numbers are NOT the xarray-sql suite's cold-read perf table. For the whole pipeline — where nautilus
-reads the Zarr itself via `_ops.ZarrChunkSource` and the read (which dominates) overlaps compute — see
+reads the Zarr itself via `_ops.ZarrSliceSource` and the read (which dominates) overlaps compute — see
 `run_e2e.py`. All engines are pinned single-threaded (nautilus p1, DataFusion 1 partition, non-BLAS
 numpy) for a like-for-like row; nautilus p4 is an in-process scale-out probe, GIL-bound, not a parity
-comparison (nautilus's real scale-out is `run(workers=N)` across processes).
+comparison (nautilus's real scale-out is `run(workers=N)` across processes). The nautilus operators are
+the library's own (`nautilus.operators.KeyedMean`, the region tagger in `nautilus.benchmarks`) — the same
+ones the `bench-geo-*` pipelines run — so this comparison never diverges from what the engine ships.
 
-Cases (spatial first, per the request):
+Each case's nautilus form and grouping cardinality are tabulated in `README.md`; the six span an
+elementwise map (01 NDVI, Sentinel-2), three `GROUP BY` reductions at rising cardinality (03 zonal by
+latitude, 06 zonal-vector by region, 02 climatology by lat/lon/hour), and two joins (04 anomaly self-join,
+05 forecast-skill join). Data is real Sentinel-2 / ARCO-ERA5 / WeatherBench2, with a synthetic same-shape
+fallback offline for 01–04/06 (05 skips cleanly).
 
-* **01 NDVI** — per-pixel ``(nir-red)/(nir+red)``: array ``apply_ufunc`` = SQL column arithmetic =
-  nautilus ``.map``. Data: a real Sentinel-2 L2A scene (EOPF Zarr), or a synthetic scene offline.
-* **03 zonal mean** — ``AVG(2m_temperature) GROUP BY latitude``: an array reduction = SQL GROUP BY =
-  nautilus ``KeyedMean``. Data: one day of ARCO-ERA5.
-* **06 zonal vector** — ``AVG … JOIN regions ON lat/lon BETWEEN``: raster×vector range join = SQL
-  range JOIN = nautilus broadcast region-tag + ``KeyedMean``. Data: one day of ARCO-ERA5 + 5 boxes.
-
-Run:  ``.venv/bin/python benchmarks/geospatial/run_bench.py [01 03 06 ...]``  (default: all)
+Run:  ``.venv/bin/python benchmarks/geospatial/run_bench.py [01 02 03 04 05 06]``  (default: all)
 Env:  ``GEOBENCH_REPS`` (default 7), ``GEOBENCH_ERA5_DAY`` (default 2020-06-01),
       ``GEOBENCH_PAR`` (nautilus parallelisms, default ``1,4``), ``GEOBENCH_BATCH`` (rows/batch,
       default 262144), ``GEOBENCH_CSV`` (write results table).

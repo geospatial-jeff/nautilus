@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""End-to-end cold-read benchmark: each engine reads the day's Zarr chunks off GCS and computes, in a
+"""End-to-end cold-read benchmark: each engine reads a case's real store off the cloud and computes, in a
 fresh process per measurement so every read is cold.
 
 ``run_bench.py`` isolates the compute kernel (data pre-loaded). This one measures the *whole* pipeline —
-including the Zarr read — which is what a real user pays and, per the upstream suite, is what dominates
-wall-clock. It exists because nautilus can now read Zarr itself (``_ops.ZarrChunkSource``, obstore +
-zarr-python async), so the read is finally something all three engines do rather than a step factored
-out. A fresh subprocess per rep (via ``e2e_case.py``) defeats every client-side block cache, so nautilus,
-xarray, and xarray-sql each pay a cold GCS read on every measurement — the only fair way to compare reads.
+including the read — which is what a real user pays and, per the upstream suite, is what dominates
+wall-clock. It exists because nautilus can now read Zarr itself (``_ops.ZarrSliceSource`` /
+``Wb2ForecastSource``, obstore + zarr-python async), so the read is finally something all three engines do
+rather than a step factored out. A fresh subprocess per rep (via ``e2e_case.py``) defeats every
+client-side block cache, so nautilus, xarray, and xarray-sql each pay a cold read on every measurement —
+the only fair way to compare reads. All six cases run: 01 reads a Sentinel-2 scene over HTTPS, 02/03/04/06
+ARCO-ERA5 over GCS, 05 the WeatherBench2 forecast + truth stores.
 
-Run:  ``.venv/bin/python benchmarks/geospatial/run_e2e.py [03 06]``  (default: both)
-Env:  ``GEOBENCH_E2E_REPS`` (default 5), ``GEOBENCH_PREFETCH`` (nautilus read-ahead depth, default 8).
+Run:  ``.venv/bin/python benchmarks/geospatial/run_e2e.py [01 02 03 04 05 06]``  (default: all)
+Env:  ``GEOBENCH_E2E_REPS`` (default 5), ``GEOBENCH_PREFETCH`` (nautilus read-ahead depth, default 8),
+      ``GEOBENCH_E2E_WINDOW_DAYS`` (02/04 window length; each hour is one full ERA5 chunk, default 1).
 """
 
 from __future__ import annotations
@@ -54,7 +57,8 @@ def _one(engine: str, case: str) -> tuple[float, str] | None:
 def main() -> int:
     cases = [a for a in sys.argv[1:] if a in CASE_TITLES] or list(CASE_TITLES)
     print(f"END-TO-END COLD READ — fresh process per rep, reps={REPS}, prefetch={os.environ.get('GEOBENCH_PREFETCH', '8')}")
-    print("(each engine reads the day's ARCO-ERA5 Zarr chunks off GCS + computes; nautilus via its own async source)")
+    print("(each engine reads the case's real store — Sentinel-2 / ARCO-ERA5 / WeatherBench2 — and computes;")
+    print(" nautilus reads it through its own async source, the others through xarray)")
     rows = []
     for case in cases:
         print(f"\n▸ {case} {CASE_TITLES[case]}")
