@@ -134,11 +134,18 @@ class Stream:
             source(rows).agg_by("lat", mean_c=("temp", "mean"), n=("temp", "count"), hi=("temp", "max"))
 
         The input is shuffled on ``key_cols`` (one or several), so every row of a key meets on one instance
-        when parallel — the same co-partitioning ``count_by`` uses."""
+        when parallel — the same co-partitioning ``count_by`` uses. ``parallelism`` is reserved, so an
+        output column cannot be named ``parallelism``."""
+        if not isinstance(parallelism, int):
+            raise TypeError(
+                "agg_by: parallelism= must be an int (did you name an aggregation 'parallelism'? "
+                f"it is reserved); got {parallelism!r}"
+            )
         if not aggs:
             raise ValueError("agg_by needs at least one aggregation, e.g. mean_c=('temp', 'mean')")
         keys = _norm(key_cols)
         specs = dict(aggs)
+        KeyedAgg(keys, specs)  # validate the specs eagerly, at the call site, not deep in the run
         return self._extend(
             lambda: KeyedAgg(keys, specs), key_columns=keys, parallelism=parallelism
         )

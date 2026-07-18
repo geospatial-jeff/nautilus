@@ -144,8 +144,167 @@ def test_agg_by_is_deterministic():
     assert len(digests) == 1
 
 
-def test_agg_by_rejects_no_aggs_and_unknown_func():
+def test_agg_by_rejects_bad_specs_and_reserved_names():
+    # All validation is eager, at the .agg_by() call site — not deep in a run.
     with pytest.raises(ValueError, match="at least one aggregation"):
         source(from_batches()).agg_by("k")
     with pytest.raises(ValueError, match="unknown func"):
-        KeyedAgg(("k",), {"x": ("v", "median")})
+        source(from_batches()).agg_by("k", x=("v", "median"))
+    with pytest.raises(ValueError, match="must be"):
+        source(from_batches()).agg_by("k", x=("v", "sum", "extra"))
+    with pytest.raises(
+        ValueError, match="collide"
+    ):  # output name == a key column silently drops the key
+        source(from_batches()).agg_by("k", k=("v", "sum"))
+    with pytest.raises(TypeError, match="parallelism"):  # reserved keyword, not an aggregation
+        source(from_batches()).agg_by("k", parallelism=("v", "sum"))
+
+
+def test_agg_by_all_null_group_is_null_on_both_paths():
+    # A group with rows but all-null values → NULL for sum/mean/min/max and 0 for count (SQL semantics),
+    # identically on the integer fast path and the string general path.
+    vals = pa.array([5.0, None, None])
+    aggs = dict(s=("v", "sum"), c=("v", "count"), m=("v", "mean"), lo=("v", "min"), hi=("v", "max"))
+    fast = _by_key(
+        source(from_batches(pa.record_batch({"k": pa.array([0, 1, 2], pa.int64()), "v": vals})))
+        .agg_by("k", **aggs)
+        .run()
+        .batches,
+        "k",
+    )
+    gen = _by_key(
+        source(from_batches(pa.record_batch({"k": pa.array(["a", "b", "c"]), "v": vals})))
+        .agg_by("k", **aggs)
+        .run()
+        .batches,
+        "k",
+    )
+    assert fast[1] == {"k": 1, "s": None, "c": 0, "m": None, "lo": None, "hi": None}
+    assert gen["b"] == {"k": "b", "s": None, "c": 0, "m": None, "lo": None, "hi": None}
+
+
+def test_agg_by_general_path_all_null_across_batches():
+    # Regression: an all-null group split across batches used to crash the run (None + None / None / 0).
+    b1 = pa.record_batch({"k": pa.array(["b", "b"]), "v": pa.array([None, None], pa.float64())})
+    b2 = pa.record_batch({"k": pa.array(["b", "a"]), "v": pa.array([None, 3.0])})
+    r = _by_key(
+        source(from_batches(b1, b2)).agg_by("k", s=("v", "sum"), m=("v", "mean")).run().batches, "k"
+    )
+    assert r["b"] == {"k": "b", "s": None, "m": None}
+    assert r["a"] == {"k": "a", "s": 3.0, "m": 3.0}
+
+
+def test_agg_by_fast_and_general_paths_agree_under_nulls():
+    # The two paths are selected invisibly (by key dtype), so they must agree exactly — fuzz with heavy
+    # nulls (many all-null groups) over all five funcs, int key (fast) vs string key (general).
+    rng = np.random.default_rng(7)
+    aggs = dict(s=("v", "sum"), c=("v", "count"), m=("v", "mean"), lo=("v", "min"), hi=("v", "max"))
+    for _ in range(20):
+        fb, gb = [], []
+        for _ in range(int(rng.integers(1, 4))):
+            n = int(rng.integers(1, 40))
+            k = rng.integers(0, 8, n)
+            v = pa.array(rng.normal(0, 5, n), mask=rng.random(n) < 0.4)
+            fb.append(pa.record_batch({"k": pa.array(k), "v": v}))
+            gb.append(pa.record_batch({"k": pa.array([f"g{x}" for x in k]), "v": v}))
+        f = _by_key(source(from_batches(*fb)).agg_by("k", **aggs).run().batches, "k")
+        g = _by_key(source(from_batches(*gb)).agg_by("k", **aggs).run().batches, "k")
+        for ik, fr in f.items():
+            gr = g[f"g{ik}"]
+            for a in aggs:
+                fa, ga = fr[a], gr[a]
+                assert (fa is None and ga is None) or abs(fa - ga) < 1e-9, (ik, a, fa, ga)
+
+
+def test_agg_by_integer_column_keeps_integer_dtype_both_paths():
+    aggs = dict(s=("v", "sum"), lo=("v", "min"), hi=("v", "max"))
+    fast = (
+        source(
+            from_batches(
+                pa.record_batch(
+                    {"k": pa.array([0, 0, 1], pa.int64()), "v": pa.array([2, 3, 4], pa.int64())}
+                )
+            )
+        )
+        .agg_by("k", **aggs)
+        .run()
+        .batches[0]
+    )
+    gen = (
+        source(
+            from_batches(
+                pa.record_batch(
+                    {"k": pa.array(["x", "x", "y"]), "v": pa.array([2, 3, 4], pa.int64())}
+                )
+            )
+        )
+        .agg_by("k", **aggs)
+        .run()
+        .batches[0]
+    )
+    for rb in (fast, gen):
+        assert rb.schema.field("s").type == pa.int64()
+        assert rb.schema.field("lo").type == pa.int64()
+        assert rb.schema.field("hi").type == pa.int64()
+
+
+def test_agg_by_narrow_integer_key_emits_int64():
+    # An int8 key is emitted as int64 so a later batch's larger key value cannot overflow the output type.
+    out = (
+        source(
+            from_batches(
+                pa.record_batch(
+                    {"k": pa.array([1, 2, 1], pa.int8()), "v": pa.array([1.0, 2.0, 3.0])}
+                )
+            )
+        )
+        .agg_by("k", s=("v", "sum"))
+        .run()
+        .batches[0]
+    )
+    assert out.schema.field("k").type == pa.int64()
+
+
+def test_agg_by_negative_or_null_key_in_later_batch_demotes_to_general_path():
+    # The fast path latches on the first (non-negative int) batch; a later negative/null key must not crash
+    # — it drains the accumulators into the group-by path, which handles any key.
+    b1 = pa.record_batch({"k": pa.array([0, 1], pa.int64()), "v": pa.array([1.0, 2.0])})
+    neg = pa.record_batch({"k": pa.array([-1, 0], pa.int64()), "v": pa.array([9.0, 3.0])})
+    r = {
+        row["k"]: row["s"]
+        for b in source(from_batches(b1, neg)).agg_by("k", s=("v", "sum")).run().batches
+        for row in b.to_pylist()
+    }
+    assert r == {0: 4.0, 1: 2.0, -1: 9.0}
+    nul = pa.record_batch({"k": pa.array([None, 0], pa.int64()), "v": pa.array([9.0, 3.0])})
+    r = {
+        row["k"]: row["s"]
+        for b in source(from_batches(b1, nul)).agg_by("k", s=("v", "sum")).run().batches
+        for row in b.to_pylist()
+    }
+    assert r == {0: 4.0, 1: 2.0, None: 9.0}  # null key is its own group on the general path
+
+
+def test_agg_by_empty_stream_emits_nothing():
+    out = source(from_batches()).agg_by("k", m=("v", "mean")).run().batches
+    assert sum(b.num_rows for b in out) == 0
+
+
+def test_agg_by_distributed_run_matches_single_process():
+    # workers=2 spawns processes and shuffles across a socket — exercises cloudpickle of KeyedAgg and the
+    # cross-process keyed shuffle, not just in-process parallelism.
+    rng = np.random.default_rng(5)
+    data = [
+        pa.record_batch(
+            {"k": pa.array(rng.integers(0, 20, 1000)), "v": pa.array(rng.normal(0, 1, 1000))}
+        )
+        for _ in range(3)
+    ]
+    s = source(from_batches(*data)).agg_by("k", m=("v", "mean"), n=("v", "count"))
+    dist = {
+        r["k"]: (round(r["m"], 9), r["n"])
+        for b in s.run(workers=2, parallelism=2).batches
+        for r in b.to_pylist()
+    }
+    serial = {r["k"]: (round(r["m"], 9), r["n"]) for b in s.run().batches for r in b.to_pylist()}
+    assert dist == serial and len(serial) == 20
