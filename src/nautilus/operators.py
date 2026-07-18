@@ -4,9 +4,9 @@ Concrete operators that exercise the streaming semantics. Most follow the synchr
 ``process``/``on_eos`` contract (emit into the ``Collector``, never await; see
 :mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`, and
 :class:`KeyedCount` back the DSL's ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by``,
-:class:`KeyedAgg` backs ``.agg_by`` (grouped ``sum``/``count``/``mean``/``min``/``max``), and
-:class:`HashJoin` backs ``.join``. :class:`KeyedMean` is a specialized ``AVG ... GROUP BY`` companion to
-:class:`KeyedCount`, applied through ``.apply``. :class:`AsyncMapBatch` is the one awaiting built-in — it
+:class:`KeyedAgg` backs ``.agg_by`` (grouped aggregation), and :class:`HashJoin` backs ``.join``.
+:class:`KeyedMean` is the specialized single-key mean, applied through ``.apply``. :class:`AsyncMapBatch`
+is the one awaiting built-in — it
 backs ``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``. What each one does is on
 its own class.
 """
@@ -241,8 +241,8 @@ class KeyedMean(OneInputOperator):
     ``.agg_by(key, mean_col=(value, "mean"), n=(value, "count"))`` but keeps a tuned bincount loop.
 
     For non-negative integer keys it folds each batch into running per-key ``sum`` and ``count`` numpy
-    arrays (``np.bincount``) with no per-key Python — the vectorized fast path, and a null-free stream stays
-    on exactly the two bincounts a plain mean needs. Semantics match SQL ``AVG(col)``: a null value is
+    arrays (``np.bincount``) with no per-key Python — the vectorized fast path. Semantics match SQL
+    ``AVG(col)``: a null value is
     skipped, and a group whose values are *all* null keeps its row with a ``NULL`` mean and ``0`` count (a
     *NaN* value, unlike a null, propagates to ``NaN``, as DataFusion ``AVG`` also yields). A negative or
     null key (rare) drains the accumulators into an Arrow group-by that handles any key. Emits one row per
