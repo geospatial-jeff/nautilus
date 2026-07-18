@@ -191,6 +191,222 @@
       },
       "trials": 5
     },
+    "bench-geo-anomaly": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-anomaly",
+      "recorded_at": "2026-07-18T15:04:37+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "a81fae164c21cd988c2434d50de5d91e3e9c1ad53cb9dc127804ecab9cfe8b39",
+      "throughput_rows_per_sec": {
+        "iqr": 657746.0854480974,
+        "max": 20921489.797466435,
+        "median": 20377642.87209546,
+        "min": 19662572.726516612,
+        "rel_spread": 0.03227782965756042,
+        "samples": [
+          19662572.726516612,
+          19962299.353427477,
+          20377642.87209546,
+          20620045.438875575,
+          20921489.797466435
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-climatology": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-climatology",
+      "recorded_at": "2026-07-18T15:04:36+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "5b81e0db9d49d53d70236327be55c712ce3a2be460fbcd6ccc9df5b4d0394084",
+      "throughput_rows_per_sec": {
+        "iqr": 596361.0158839747,
+        "max": 17717115.716953337,
+        "median": 17612323.01803256,
+        "min": 16964883.054574534,
+        "rel_spread": 0.033860440515052125,
+        "samples": [
+          16964883.054574534,
+          17023681.893659938,
+          17612323.01803256,
+          17620042.909543913,
+          17717115.716953337
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-forecast": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-forecast",
+      "recorded_at": "2026-07-18T15:04:39+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "abbfb4b28b8521e33607c7d47e1287e0e438a044481a2bd4e978ad8429c991cb",
+      "throughput_rows_per_sec": {
+        "iqr": 166294.95648693293,
+        "max": 22787983.521021202,
+        "median": 22512380.71433456,
+        "min": 22317093.58155017,
+        "rel_spread": 0.007386822326660729,
+        "samples": [
+          22317093.58155017,
+          22489471.613755804,
+          22512380.71433456,
+          22655766.570242736,
+          22787983.521021202
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-ndvi": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-ndvi",
+      "recorded_at": "2026-07-18T15:04:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "d316a5266116127a2dadbd27fab9c5c7c56feb2a10ee5e2be028b3169a956725",
+      "throughput_rows_per_sec": {
+        "iqr": 3412612.89530617,
+        "max": 90591388.92183608,
+        "median": 86474997.16949089,
+        "min": 84763539.5087304,
+        "rel_spread": 0.03946357915013808,
+        "samples": [
+          84763539.5087304,
+          86081899.46652642,
+          86474997.16949089,
+          89494512.36183259,
+          90591388.92183608
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-zonal": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-zonal",
+      "recorded_at": "2026-07-18T15:04:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "fe2cb6e6804f1b3cd3c0bf880f94408c1efec19213ad6f53d1c84d32836bf583",
+      "throughput_rows_per_sec": {
+        "iqr": 3244435.207404159,
+        "max": 61197307.97991668,
+        "median": 54780588.0946689,
+        "min": 54532889.100428365,
+        "rel_spread": 0.05922600176904451,
+        "samples": [
+          54532889.100428365,
+          54647333.77849852,
+          54780588.0946689,
+          57891768.98590268,
+          61197307.97991668
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-zonal-vector": {
+      "deterministic": true,
+      "environment": {
+        "commit": "30a5961",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+        "processor": "unknown",
+        "python_version": "3.14.4"
+      },
+      "pipeline": "bench-geo-zonal-vector",
+      "recorded_at": "2026-07-18T15:04:37+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "88f3311cab9235cefac11d9ac24a07d178770b92f530b16a089084059598439c",
+      "throughput_rows_per_sec": {
+        "iqr": 2397128.3942259178,
+        "max": 45145135.87269862,
+        "median": 45036081.28834356,
+        "min": 41159973.366975054,
+        "rel_spread": 0.05322684224851404,
+        "samples": [
+          41159973.366975054,
+          42716795.17020658,
+          45036081.28834356,
+          45113923.564432494,
+          45145135.87269862
+        ]
+      },
+      "trials": 5
+    },
     "bench-join": {
       "deterministic": true,
       "environment": {

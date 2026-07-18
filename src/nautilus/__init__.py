@@ -42,6 +42,7 @@ from nautilus.operators import (
     HashJoin,
     InMemorySource,
     KeyedCount,
+    KeyedMean,
     MapBatch,
     Tokenize,
     from_batches,
@@ -74,6 +75,7 @@ __all__ = [
     "FilterRows",
     "Tokenize",
     "KeyedCount",
+    "KeyedMean",
     "HashJoin",
     # data frames (for building inputs by hand)
     "Batch",

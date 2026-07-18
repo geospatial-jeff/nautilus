@@ -4,9 +4,10 @@ Concrete operators that exercise the streaming semantics. Most follow the synchr
 ``process``/``on_eos`` contract (emit into the ``Collector``, never await; see
 :mod:`nautilus.core.operator`): :class:`MapBatch`, :class:`FilterRows`, :class:`Tokenize`, and
 :class:`KeyedCount` back the DSL's ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by``, and
-:class:`HashJoin` backs ``.join``. :class:`AsyncMapBatch` is the one awaiting built-in — it backs
-``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``. What each one does is on its
-own class.
+:class:`HashJoin` backs ``.join``. :class:`KeyedMean` is the ``AVG ... GROUP BY`` companion to
+:class:`KeyedCount`, applied through ``.apply`` rather than bound to a verb. :class:`AsyncMapBatch` is the
+one awaiting built-in — it backs ``.map_async``, doing its I/O in ``fetch`` and emitting in ``integrate``.
+What each one does is on its own class.
 """
 
 from __future__ import annotations
@@ -32,6 +33,12 @@ from nautilus.state import KeyContext
 
 def _add(a: int, b: int) -> int:
     return a + b
+
+
+def _add_sum_count(a: tuple[float, int], b: tuple[float, int]) -> tuple[float, int]:
+    """Merge two per-key ``(sum, count)`` partials — the reducer :class:`KeyedMean` folds through keyed
+    state on its non-integer-key path. Module-level so the operator cloudpickles to a worker."""
+    return (a[0] + b[0], a[1] + b[1])
 
 
 class InMemorySource(SourceOperator):
@@ -229,6 +236,124 @@ class KeyedCount(OneInputOperator):
                 pa.RecordBatch.from_arrays(
                     [pa.array(keys, self._key_type), pa.array(totals, pa.int64())],
                     names=[self.key_col, self.count_col],
+                )
+            )
+
+
+class KeyedMean(OneInputOperator):
+    """``AVG(value) GROUP BY key`` — the mean of a value column per key, emitted at end of stream.
+
+    It shares :class:`KeyedCount`'s integer fast path: for non-negative integer keys it folds each batch
+    into running per-key ``sum`` and ``count`` numpy arrays (``np.bincount``) with no per-key Python
+    object, so a mean over a high-cardinality key stays vectorized. Other key types fold ``(sum, count)``
+    partials through keyed state instead.
+
+    The sum accumulates in float64 even for a float32 value column, a *null value* joins no mean (skipped,
+    like SQL ``AVG``), and a *null key* forms its own group (like :class:`KeyedCount`, like SQL ``GROUP
+    BY``). A *NaN* value does propagate, though — a group holding one means NaN, as DataFusion ``AVG`` also
+    yields (xarray's ``mean(skipna=True)`` skips it instead), so the mean only matches a skipna reducer on
+    gap-free data. Emits one row per key: ``key_col``, ``mean_col``, and ``n`` (the count that
+    contributed)."""
+
+    _STATE = "sum_count"  # state-backend name (distinct from the mean_col output column)
+
+    def __init__(self, key_col: str, value_col: str, mean_col: str = "mean") -> None:
+        self.key_col = key_col
+        self.value_col = value_col
+        self.mean_col = mean_col
+
+    def open(self, ctx: OperatorContext) -> None:
+        self._ctx = ctx
+        self._key_type: pa.DataType | None = None  # input type, kept on the output
+        self._sum: np.ndarray | None = None  # running per-key sum (integer fast path)
+        self._cnt: np.ndarray | None = None  # running per-key non-null count, same index
+        self._null_sum = 0.0  # the null-key group's running (sum, count) — no integer index for it
+        self._null_cnt = 0
+
+    def key_columns(self) -> tuple[str, ...]:
+        return (self.key_col,)
+
+    def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        kcol = batch.column(self.key_col)
+        if self._key_type is None:
+            self._key_type = kcol.type
+            if pa.types.is_integer(kcol.type):
+                self._sum = np.zeros(0, dtype=np.float64)
+                self._cnt = np.zeros(0, dtype=np.int64)
+        if self._sum is not None and self._cnt is not None:
+            vcol = batch.column(self.value_col)
+            if vcol.null_count:  # a null value joins no mean — AVG skips it (both key paths agree)
+                keep = vcol.is_valid()
+                kcol, vcol = kcol.filter(keep), vcol.filter(keep)
+            if kcol.null_count:  # null keys form their own group (like KeyedCount, SQL GROUP BY)
+                is_null = kcol.is_null()  # they have no bincount slot, so tallied apart
+                nvals = np.asarray(vcol.filter(is_null).to_numpy(zero_copy_only=False), np.float64)
+                self._null_sum += float(nvals.sum())
+                self._null_cnt += int(nvals.size)
+                keep = pc.invert(is_null)
+                kcol, vcol = kcol.filter(keep), vcol.filter(keep)
+            keys = np.asarray(kcol.to_numpy(zero_copy_only=False))
+            if keys.size:
+                vals = np.asarray(vcol.to_numpy(zero_copy_only=False), dtype=np.float64)
+                bs = np.bincount(keys, weights=vals)  # per-key sum; non-negative ints only
+                bc = np.bincount(keys)  # per-key count
+                if bs.size > self._sum.size:
+                    self._sum = np.concatenate([self._sum, np.zeros(bs.size - self._sum.size)])
+                    self._cnt = np.concatenate(
+                        [self._cnt, np.zeros(bs.size - self._cnt.size, np.int64)]
+                    )
+                self._sum[: bs.size] += bs
+                self._cnt[: bc.size] += bc
+            return
+        tbl = pa.table({"k": kcol, "v": batch.column(self.value_col)})
+        agg = tbl.group_by("k").aggregate([("v", "sum"), ("v", "count")])
+        items = zip(
+            ((k,) for k in agg.column("k").to_pylist()),
+            zip(agg.column("v_sum").to_pylist(), agg.column("v_count").to_pylist(), strict=True),
+            strict=True,
+        )
+        self._ctx.reduce_all(self._STATE, items, _add_sum_count)
+
+    def on_eos(self, out: Collector) -> None:
+        if self._sum is not None and self._cnt is not None:  # integer fast path
+            nz = np.nonzero(self._cnt)[0]
+            if nz.size or self._null_cnt:
+                key_arr = pa.array(nz, self._key_type)
+                mean_arr = pa.array(self._sum[nz] / self._cnt[nz], pa.float64())
+                cnt_arr = pa.array(self._cnt[nz], pa.int64())
+                if self._null_cnt:  # append the null-key group (rare, a small concat)
+                    key_arr = pa.concat_arrays([key_arr, pa.array([None], self._key_type)])
+                    mean_arr = pa.concat_arrays(
+                        [mean_arr, pa.array([self._null_sum / self._null_cnt], pa.float64())]
+                    )
+                    cnt_arr = pa.concat_arrays([cnt_arr, pa.array([self._null_cnt], pa.int64())])
+                out.emit(
+                    pa.RecordBatch.from_arrays(
+                        [key_arr, mean_arr, cnt_arr], names=[self.key_col, self.mean_col, "n"]
+                    )
+                )
+            return
+        keys: list[object] = []
+        means: list[float] = []
+        counts: list[int] = []
+        fired: list[KeyContext] = []
+        for kctx, value in self._ctx.entries(self._STATE):  # collect first, then clear (no mutation
+            total, n = cast("tuple[float, int]", value)  # so entries may stream lazily)
+            keys.append(kctx.key[0])
+            means.append(total / n if n else float("nan"))
+            counts.append(n)
+            fired.append(kctx)
+        for kctx in fired:
+            self._ctx.clear_state(self._STATE, kctx)
+        if keys:
+            out.emit(
+                pa.RecordBatch.from_arrays(
+                    [
+                        pa.array(keys, self._key_type),
+                        pa.array(means, pa.float64()),
+                        pa.array(counts, pa.int64()),
+                    ],
+                    names=[self.key_col, self.mean_col, "n"],
                 )
             )
 
