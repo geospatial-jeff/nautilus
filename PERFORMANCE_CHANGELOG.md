@@ -63,6 +63,25 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-18 — KeyedCount integer-key bincount fold: 12–16× on keyed aggregation (parity with DataFusion)
+
+- **Commit:** `b6a6330`.
+- **Change:** for non-negative integer keys — the common case (indices, hashed buckets, the keyed
+  shuffle's own routing ids) — `KeyedCount` (`operators.py`) now accumulates counts in a numpy array
+  indexed by the key value (`np.bincount` per batch, one vectorized add into the running array) instead of
+  `pyarrow value_counts` → `to_pylist` → per-key keyed-state fold. That removes *all* per-key Python from
+  both the hot path and the end-of-stream flush; other key types keep the keyed-state fold, and null keys
+  are counted as their own group either way. The geospatial benchmark's `KeyedMean` carries the same fast
+  path (running per-key `sum`/`count`).
+- **Impact (`nautilus.bench.measure("bench-keyed", rows=1M, batch=4096)`, median of 7, warmup 1; Linux
+  x86_64):** **keys=1000 10.3M → 122M rows/s (11.8×)** and **keys=500000 1.70M → 26.7M (15.8×)**. On the
+  geospatial climatology (`GROUP BY lat,lon,hour`, 535k groups) the same fast path took nautilus **1.70s →
+  0.067s (25×)** — from 23× *slower* than xarray-sql to a **dead heat (0.067s vs 0.069s)**. Anomaly (agg
+  half) 2.32s → 0.76s (3×). Stacks on the 2026-07-17 nested-store fold.
+- **Correctness:** structural digest identical before → after at both scales (`cd4180929b4a` keys=1000,
+  `3bf27b23…` keys=500000); keyed/count/state `pytest` green; `bench-check` adds no digest failure (the
+  lone `bench-join-dist` OUTPUT-CHANGED is pre-existing on clean HEAD).
+
 ## 2026-07-17 — Keyed-state nested store: no per-fold StateScope alloc (2.2× on keyed aggregation)
 
 - **Commit:** `79b8125`.
