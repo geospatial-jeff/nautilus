@@ -38,12 +38,6 @@ starts from evidence, not a cold read.
   buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
   common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.
 
-- **`HashJoin._encode` per-distinct-key intern.** After the two shipped vectorizations, the residual
-  stream-table cost is interning each distinct key to its integer id — a `((type, value),)` tuple build
-  plus a dict lookup per distinct key (cProfile: ~30% of the join at 1000 keys). A nested `type → {value:
-  id}` map would drop the per-value tuple build; expected ~10–15% on `bench-join`, digest-preserving. Left
-  as diminishing returns next to the ~90–125× already shipped.
-
 - **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
   by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
   stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
@@ -62,6 +56,66 @@ starts from evidence, not a cold read.
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
 
 ---
+
+## 2026-07-18 — HashJoin vectorized integer-key intern: 6× on high-cardinality joins
+
+- **Commit:** `41dc3d9`.
+- **Change:** `HashJoin._encode` (`operators.py`) interned each distinct key to its dense integer id
+  through a Python per-value loop (`_intern_single`) over `dictionary_encode`'s distinct values — which at
+  high cardinality is effectively once per *row* (cProfile of an anomaly self-join: `_intern_single`
+  called 2.14M times, 87% of the join). For non-negative integer keys it now interns vectorially: a
+  value→id numpy lookup array gathers every row's id and assigns unseen values in one bulk
+  `np.unique`+`arange` pass, with no per-key Python. A non-integer batch (e.g. the bool side of an int↔bool
+  join) keeps the dict path on a disjoint id space; nulls share the dict null id (null still matches null);
+  negative keys fall back on the first batch. Same fix, applied to the join intern, as the 2026-07-18
+  `KeyedCount`/`KeyedMean` bincount fold.
+- **Impact (`nautilus.bench.measure("bench-join", rows=2M, batch=4096, keys=100000)`, median of 5; Linux
+  x86_64):** **7.17M → 43.0M rows/s (6.0×)**. On the geospatial join cases the same fix took the
+  **anomaly self-join 0.76s → 0.25s (3×, 0.19× → 0.59× vs xarray-sql)** and **forecast-skill 1.51s → 0.59s
+  (2.6×, 0.25× → 0.67×)** — the aggregation half was already vectorized, so this was the remaining bottleneck.
+- **Correctness:** structural digest identical before → after (`e0fae4e3…`); full `pytest` green
+  (393 passed, incl. the join value/type/null/width-consistency tests); `bench-check` adds no digest
+  failure (the lone `bench-join-dist` OUTPUT-CHANGED is pre-existing on clean HEAD).
+
+## 2026-07-18 — KeyedCount integer-key bincount fold: 12–16× on keyed aggregation (parity with DataFusion)
+
+- **Commit:** `b6a6330`.
+- **Change:** for non-negative integer keys — the common case (indices, hashed buckets) — `KeyedCount`
+  (`operators.py`) now accumulates counts in a numpy array
+  indexed by the key value (`np.bincount` per batch, one vectorized add into the running array) instead of
+  `pyarrow value_counts` → `to_pylist` → per-key keyed-state fold. That removes *all* per-key Python from
+  both the hot path and the end-of-stream flush; other key types keep the keyed-state fold, and null keys
+  are counted as their own group either way. The geospatial benchmark's `KeyedMean` carries the same fast
+  path (running per-key `sum`/`count`).
+- **Impact (`nautilus.bench.measure("bench-keyed", rows=1M, batch=4096)`, median of 7, warmup 1; Linux
+  x86_64):** **keys=1000 10.3M → 122M rows/s (11.8×)** and **keys=500000 1.70M → 26.7M (15.8×)**. On the
+  geospatial climatology (`GROUP BY lat,lon,hour`, 535k groups) the same fast path took nautilus **1.70s →
+  0.067s (25×)** — from 23× *slower* than xarray-sql to **parity (0.067s vs 0.069s)**. Anomaly (agg
+  half) 2.32s → 0.76s (3×). Stacks on the 2026-07-17 nested-store fold.
+- **Correctness:** structural digest identical before → after at both scales (`cd4180929b4a` keys=1000,
+  `3bf27b23…` keys=500000); keyed/count/state `pytest` green; `bench-check` adds no digest failure (the
+  lone `bench-join-dist` OUTPUT-CHANGED is pre-existing on clean HEAD).
+
+## 2026-07-17 — Keyed-state nested store: no per-fold StateScope alloc (2.2× on keyed aggregation)
+
+- **Commit:** `79b8125`.
+- **Change:** `InMemoryStateBackend` (`state/__init__.py`) kept a flat `dict[StateScope, value]`, so
+  `reduce_all` — the hot path every keyed aggregation folds each batch through — built and hashed a
+  four-field frozen `StateScope` per `(key, value)` fold. It now nests the store as
+  `dict[(operator_id, name, namespace), {key: value}]`, so a fold is one inner-dict update keyed by the
+  bare partition key: no `StateScope` built or hashed per fold, and `entries()` (the end-of-stream flush)
+  iterates only the matching `(operator, name)` group instead of scanning the whole store. Benefits every
+  keyed aggregation — the built-in `KeyedCount`, and the geospatial-benchmark `KeyedMean`.
+- **Impact (`nautilus.bench.measure("bench-keyed", rows=1M, batch=4096)`, median of 7 trials, warmup 1;
+  Linux x86_64 / WSL2):** the fold cost falls at every cardinality, since the removed `StateScope` is per
+  *fold*, not per key — at **keys=1000 4.29M → 9.28M rows/s (2.16×)** and **keys=500,000 837k → 1.49M
+  (1.78×)**. Per operator at 500k keys, `KeyedCount`'s `operator.process_micros` 1.17s → 0.56s (2.1×) and
+  `operator.on_eos_micros` 0.65s → 0.47s (1.4×). Transfers to the geospatial climatology
+  (`GROUP BY lat,lon,hour`, 535k groups): nautilus 2.88s → 1.86s (1.55×).
+- **Correctness:** structural digest identical before → after at both scales (`cd4180929b4a` at keys=1000,
+  `3bf27b23…` at keys=500,000); full `pytest` green (391 passed); `bench-check` adds no digest failure
+  (the lone `bench-join-dist` OUTPUT-CHANGED reproduces on clean HEAD — pre-existing distributed
+  nondeterminism vs the off-machine baseline, unrelated to this change).
 
 ## 2026-07-04 — HashJoin nested key intern: up to 1.5× on high-cardinality joins
 
