@@ -99,27 +99,32 @@ class StateBackend(ABC):
 class InMemoryStateBackend(StateBackend):
     """Dict-backed state. MVP only — unbounded memory; documented limitation.
 
-    Alongside the store it keeps incremental per-``(operator_id, name)`` counts of entries and distinct
-    keys, updated on ``put``/``clear`` of a *new*/removed slot, so :meth:`sizes` is O(state-names) and
-    needs no walk of the store. The bookkeeping adds one membership test per ``put`` (an existing key's
-    repeated ``put`` — every reducing-state fold — touches no counter), keeping the per-record path cheap.
+    The store is nested — ``(operator_id, name, namespace) -> {key: value}`` — so the keyed-aggregation
+    hot path (:meth:`reduce_all`) folds a whole batch with one *inner-dict* update per key, building and
+    hashing no :class:`StateScope`. Incremental per-``(operator_id, name)`` counts of entries and distinct
+    keys keep :meth:`sizes` O(state-names); they move only when a key is added or removed (a repeated fold
+    touches no counter), so the per-record path stays cheap.
     """
 
-    _store: dict[StateScope, object] = field(default_factory=dict)
+    #: (operator_id, name, namespace) -> {partition key -> value}.
+    _store: dict[tuple[str, str, Namespace], dict[Key, object]] = field(default_factory=dict)
     #: (operator_id, name) -> live entry count.
     _entry_count: dict[tuple[str, str], int] = field(default_factory=dict)
     #: (operator_id, name) -> {key: number of namespaces holding that key}; a key is distinct while > 0.
     _key_count: dict[tuple[str, str], dict[Key, int]] = field(default_factory=dict)
 
     def get(self, scope: StateScope) -> object | None:
-        return self._store.get(scope)
+        sub = self._store.get((scope.operator_id, scope.name, scope.namespace))
+        return None if sub is None else sub.get(scope.key)
 
     def put(self, scope: StateScope, value: object) -> None:
-        if (
-            scope not in self._store
-        ):  # a new slot — update the size counters (existing folds skip this)
-            self._track_add(scope)
-        self._store[scope] = value
+        outer = (scope.operator_id, scope.name, scope.namespace)
+        sub = self._store.get(outer)
+        if sub is None:
+            sub = self._store[outer] = {}
+        if scope.key not in sub:  # new slot: bump the size counters (a repeat put skips it)
+            self._track_add(scope.operator_id, scope.name, scope.key)
+        sub[scope.key] = value
 
     def reduce_all(
         self,
@@ -128,31 +133,36 @@ class InMemoryStateBackend(StateBackend):
         items: Iterable[tuple[Key, object]],
         reducer: Callable[[object, object], object],
     ) -> None:
-        # The keyed-aggregation hot path: inline get + reducer + set against the raw store so a batch
-        # folds without a KeyContext or ReducingState handle per key. Only a new slot touches the size
-        # counters (as put does). Semantics match ReducingState.add — a None current is a first write.
-        store = self._store
+        # Only a new key touches the size counters. Semantics match ReducingState.add — a None current
+        # (whether unset or a stored None) is a first write.
+        outer = (operator_id, name, None)
+        sub = self._store.get(outer)
+        if sub is None:
+            sub = self._store[outer] = {}
         for key, value in items:
-            scope = StateScope(operator_id, name, key, None)
-            cur = store.get(scope)
-            if cur is None:
-                if scope not in store:  # new slot (not merely a stored None) — keep sizes() correct
-                    self._track_add(scope)
-                store[scope] = value
+            if key in sub:
+                cur = sub[key]
+                sub[key] = value if cur is None else reducer(cur, value)
             else:
-                store[scope] = reducer(cur, value)
+                sub[key] = value
+                self._track_add(operator_id, name, key)
 
     def clear(self, scope: StateScope) -> None:
-        if scope in self._store:
-            self._track_remove(scope)
-        self._store.pop(scope, None)
+        outer = (scope.operator_id, scope.name, scope.namespace)
+        sub = self._store.get(outer)
+        if sub is not None and scope.key in sub:
+            del sub[scope.key]
+            self._track_remove(scope.operator_id, scope.name, scope.key)
+            if not sub:  # drop the empty namespace group so entries()/iteration skip it
+                del self._store[outer]
 
     def entries(self, operator_id: str, name: str) -> Iterator[tuple[Key, Namespace, object]]:
-        # Lazy: no full-store copy. Callers collect-then-clear (see the ABC contract), so the store is
-        # not mutated mid-iteration — avoids an O(store) allocation on the end-of-stream flush.
-        for scope, value in self._store.items():
-            if scope.operator_id == operator_id and scope.name == name:
-                yield scope.key, scope.namespace, value
+        # Lazy, and touches only the matching (operator_id, name) groups — not the whole store. Callers
+        # collect-then-clear (the ABC contract), so the store is not mutated mid-iteration.
+        for (op, nm, ns), sub in self._store.items():
+            if op == operator_id and nm == name:
+                for key, value in sub.items():
+                    yield key, ns, value
 
     def sizes(self) -> dict[tuple[str, str], tuple[int, int]]:
         return {
@@ -160,21 +170,21 @@ class InMemoryStateBackend(StateBackend):
             for name, count in self._entry_count.items()
         }
 
-    def _track_add(self, scope: StateScope) -> None:
-        name = (scope.operator_id, scope.name)
-        self._entry_count[name] = self._entry_count.get(name, 0) + 1
-        keys = self._key_count.setdefault(name, {})
-        keys[scope.key] = keys.get(scope.key, 0) + 1
+    def _track_add(self, operator_id: str, name: str, key: Key) -> None:
+        nm = (operator_id, name)
+        self._entry_count[nm] = self._entry_count.get(nm, 0) + 1
+        keys = self._key_count.setdefault(nm, {})
+        keys[key] = keys.get(key, 0) + 1
 
-    def _track_remove(self, scope: StateScope) -> None:
-        name = (scope.operator_id, scope.name)
-        self._entry_count[name] = self._entry_count.get(name, 1) - 1
-        keys = self._key_count.get(name, {})
-        remaining = keys.get(scope.key, 1) - 1
+    def _track_remove(self, operator_id: str, name: str, key: Key) -> None:
+        nm = (operator_id, name)
+        self._entry_count[nm] = self._entry_count.get(nm, 1) - 1
+        keys = self._key_count.get(nm, {})
+        remaining = keys.get(key, 1) - 1
         if remaining <= 0:
-            keys.pop(scope.key, None)
+            keys.pop(key, None)
         else:
-            keys[scope.key] = remaining
+            keys[key] = remaining
 
     def snapshot(self) -> bytes:
         return pickle.dumps(self._store, protocol=pickle.HIGHEST_PROTOCOL)
@@ -183,8 +193,9 @@ class InMemoryStateBackend(StateBackend):
         self._store = pickle.loads(blob)
         self._entry_count = {}
         self._key_count = {}
-        for scope in self._store:  # rebuild the size counters from the restored store
-            self._track_add(scope)
+        for (op, nm, _ns), sub in self._store.items():  # rebuild the size counters from the store
+            for key in sub:
+                self._track_add(op, nm, key)
 
 
 # --- Typed handles -----------------------------------------------------------------------------

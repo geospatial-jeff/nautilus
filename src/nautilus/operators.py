@@ -153,8 +153,11 @@ class Tokenize(OneInputOperator):
 
 
 class KeyedCount(OneInputOperator):
-    """Counts occurrences per key. A keyed *global* aggregation: results are emitted at end of stream
-    (:meth:`on_eos`)."""
+    """Counts occurrences per key, emitted at end of stream (:meth:`on_eos`) — a keyed global aggregation.
+
+    Non-negative integer keys are counted in a numpy array indexed by the key value (``np.bincount`` per
+    batch, added into a running array); any other key type folds through keyed state. Either way a null
+    key is counted as its own group."""
 
     _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
 
@@ -164,24 +167,54 @@ class KeyedCount(OneInputOperator):
 
     def open(self, ctx: OperatorContext) -> None:
         self._ctx = ctx
-        self._key_type: pa.DataType | None = (
-            None  # captured from the input so output keeps its type
-        )
+        self._key_type: pa.DataType | None = None  # input type, kept on the output
+        self._counts: np.ndarray | None = None  # integer fast-path count accumulator
+        self._nulls = 0  # null-key count (fast path; dict path folds null normally)
 
     def key_columns(self) -> tuple[str, ...]:
         return (self.key_col,)
 
     def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        col = batch.column(self.key_col)
         if self._key_type is None:
-            self._key_type = batch.column(self.key_col).type
-        counts = pc.value_counts(batch.column(self.key_col))
+            self._key_type = col.type
+            if pa.types.is_integer(col.type):
+                self._counts = np.zeros(0, dtype=np.int64)
+        if self._counts is not None:
+            if col.null_count:
+                self._nulls += col.null_count
+                col = col.drop_null()
+            keys = np.asarray(col.to_numpy(zero_copy_only=False))
+            if keys.size:
+                bc = np.bincount(keys)  # non-negative ints only (raises on negative)
+                if bc.size > self._counts.size:
+                    grown = np.zeros(bc.size, dtype=np.int64)
+                    grown[: self._counts.size] = self._counts
+                    self._counts = grown
+                self._counts[: bc.size] += bc
+            return
+        counts = pc.value_counts(col)
         # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
-        keys = ((v,) for v in counts.field("values").to_pylist())
+        key_tuples = ((v,) for v in counts.field("values").to_pylist())
         self._ctx.reduce_all(
-            self._STATE, zip(keys, counts.field("counts").to_pylist(), strict=True), _add
+            self._STATE, zip(key_tuples, counts.field("counts").to_pylist(), strict=True), _add
         )
 
     def on_eos(self, out: Collector) -> None:
+        if self._counts is not None:  # integer fast path: emit nonzero keys + counts, vectorized
+            nz = np.nonzero(self._counts)[0]
+            if nz.size or self._nulls:
+                key_arr = pa.array(nz, self._key_type)
+                cnt_arr = pa.array(self._counts[nz], pa.int64())
+                if self._nulls:  # append the null-key group (rare, a small concat)
+                    key_arr = pa.concat_arrays([key_arr, pa.array([None], self._key_type)])
+                    cnt_arr = pa.concat_arrays([cnt_arr, pa.array([self._nulls], pa.int64())])
+                out.emit(
+                    pa.RecordBatch.from_arrays(
+                        [key_arr, cnt_arr], names=[self.key_col, self.count_col]
+                    )
+                )
+            return
         keys: list[object] = []
         totals: list[int] = []
         fired: list[KeyContext] = []
@@ -296,6 +329,9 @@ class HashJoin(TwoInputOperator):
         self._single_ids: dict[type, dict[object, int]] = {}
         self._multi_ids: dict[tuple[tuple[type, object], ...], int] = {}
         self._num_ids = 0
+        # The single-integer-key fast path's state (:meth:`_encode` picks it on the first non-empty key).
+        self._int_fast: bool | None = None
+        self._int_id = np.empty(0, dtype=np.int64)  # key value → dense id (-1 = unseen)
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
         self._left_names: list[str] | None = None
         self._right_value_cols: list[str] | None = None
@@ -326,6 +362,8 @@ class HashJoin(TwoInputOperator):
         self._single_ids.clear()
         self._multi_ids.clear()
         self._num_ids = 0
+        self._int_fast = None
+        self._int_id = np.empty(0, dtype=np.int64)
 
     def _check_columns(self) -> None:
         """Once both input schemas are known, reject a right non-key column that collides with a left
@@ -350,11 +388,23 @@ class HashJoin(TwoInputOperator):
         shuffle routes them apart at parallelism > 1), while ``int32`` 1 and ``int64`` 1 share one id (both
         surface as Python ``int``, matching the shuffle, which encodes the value not the width).
 
-        The single-column case (the common one) is vectorized like the keyed shuffle: ``dictionary_encode``
-        finds the distinct values and a per-row index into them, so the value→id intern runs once per
-        *distinct* key, not once per row, and the per-row expansion is a numpy take."""
+        A single **non-negative integer** key (indices, ids — the common case) interns fully vectorized:
+        a value→id numpy array gathers each row's id and assigns unseen keys in bulk, with no per-key
+        Python. Other single keys use ``dictionary_encode`` so the value→id intern runs once per *distinct*
+        key (not per row), the per-row expansion being a numpy take."""
         if len(key_columns) == 1:
-            enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
+            col = batch.column(key_columns[0])
+            if self._int_fast is None and len(col):  # decide on the first non-empty single key
+                arr = col.drop_null() if col.null_count else col
+                self._int_fast = pa.types.is_integer(col.type) and (
+                    len(arr) == 0 or pc.min(arr).as_py() >= 0
+                )
+            if self._int_fast and pa.types.is_integer(col.type):
+                # Integer values intern vectorially; any non-integer batch (e.g. a bool side of an
+                # int↔bool join) falls through to the dict path below, so int values and non-int values
+                # keep disjoint id spaces and equal-typed keys still match.
+                return self._encode_int(col)
+            enc = pc.dictionary_encode(col, null_encoding="encode")
             local_to_global = np.array(
                 [self._intern_single(type(v), v) for v in enc.dictionary.to_pylist()],
                 dtype=np.int64,
@@ -389,6 +439,47 @@ class HashJoin(TwoInputOperator):
             self._num_ids += 1
             self._multi_ids[key] = gid
         return gid
+
+    def _encode_int(self, col: pa.Array) -> np.ndarray:
+        """Per-row ids for a single non-negative-integer key column, fully vectorized. Null rows share the
+        one null id (``_intern_single(NoneType, None)``, so a null matches a null on either path); the rest
+        go through :meth:`_intern_ints`."""
+        n = len(col)
+        if n == 0:
+            return np.empty(0, dtype=np.int64)
+        if col.null_count:
+            valid = np.asarray(col.is_valid())
+            out = np.empty(n, dtype=np.int64)
+            out[~valid] = self._intern_single(type(None), None)  # same null id as the dict path
+            out[valid] = self._intern_ints(
+                np.asarray(col.drop_null().to_numpy(zero_copy_only=False))
+            )
+            return out
+        return self._intern_ints(np.asarray(col.to_numpy(zero_copy_only=False)))
+
+    def _intern_ints(self, keys: np.ndarray) -> np.ndarray:
+        """Gather a non-negative integer key array to dense global ids through the ``_int_id`` value→id
+        lookup, growing it to fit and assigning the next free ids to unseen values in one bulk pass.
+        """
+        if keys.size == 0:
+            return keys.astype(np.int64, copy=False)
+        if keys.min() < 0:  # a later negative can't index _int_id (batch 1 was non-negative)
+            raise ValueError("HashJoin integer fast path requires non-negative keys")
+        top = int(keys.max()) + 1
+        if top > self._int_id.size:  # grow the lookup to cover this batch's largest key value
+            grown = np.full(top, -1, dtype=np.int64)
+            grown[: self._int_id.size] = self._int_id
+            self._int_id = grown
+        ids = self._int_id[keys]
+        unseen = ids < 0
+        if unseen.any():  # assign the next free ids to the distinct new key values, in order
+            new_vals = np.unique(keys[unseen])
+            self._int_id[new_vals] = np.arange(
+                self._num_ids, self._num_ids + new_vals.size, dtype=np.int64
+            )
+            self._num_ids += int(new_vals.size)
+            ids = self._int_id[keys]
+        return cast(np.ndarray, ids)
 
     def _probe_and_emit(
         self,
