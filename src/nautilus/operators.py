@@ -329,6 +329,10 @@ class HashJoin(TwoInputOperator):
         self._single_ids: dict[type, dict[object, int]] = {}
         self._multi_ids: dict[tuple[tuple[type, object], ...], int] = {}
         self._num_ids = 0
+        # Single non-negative-integer key (the common case): intern vectorially through a value→id numpy
+        # array instead of a Python loop over distinct values, decided on the first non-empty single key.
+        self._int_fast: bool | None = None
+        self._int_id = np.empty(0, dtype=np.int64)  # key value → dense id (-1 = unseen)
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
         self._left_names: list[str] | None = None
         self._right_value_cols: list[str] | None = None
@@ -359,6 +363,8 @@ class HashJoin(TwoInputOperator):
         self._single_ids.clear()
         self._multi_ids.clear()
         self._num_ids = 0
+        self._int_fast = None
+        self._int_id = np.empty(0, dtype=np.int64)
 
     def _check_columns(self) -> None:
         """Once both input schemas are known, reject a right non-key column that collides with a left
@@ -383,11 +389,23 @@ class HashJoin(TwoInputOperator):
         shuffle routes them apart at parallelism > 1), while ``int32`` 1 and ``int64`` 1 share one id (both
         surface as Python ``int``, matching the shuffle, which encodes the value not the width).
 
-        The single-column case (the common one) is vectorized like the keyed shuffle: ``dictionary_encode``
-        finds the distinct values and a per-row index into them, so the value→id intern runs once per
-        *distinct* key, not once per row, and the per-row expansion is a numpy take."""
+        A single **non-negative integer** key (indices, ids — the common case) interns fully vectorized:
+        a value→id numpy array gathers each row's id and assigns unseen keys in bulk, with no per-key
+        Python at all. Other single keys use ``dictionary_encode`` so the value→id intern runs once per
+        *distinct* key (not per row), the per-row expansion being a numpy take."""
         if len(key_columns) == 1:
-            enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
+            col = batch.column(key_columns[0])
+            if self._int_fast is None and len(col):  # decide on the first non-empty single key
+                arr = col.drop_null() if col.null_count else col
+                self._int_fast = pa.types.is_integer(col.type) and (
+                    len(arr) == 0 or pc.min(arr).as_py() >= 0
+                )
+            if self._int_fast and pa.types.is_integer(col.type):
+                # Integer values intern vectorially; any non-integer batch (e.g. a bool side of an
+                # int↔bool join) falls through to the dict path below, so int values and non-int values
+                # keep disjoint id spaces and equal-typed keys still match.
+                return self._encode_int(col)
+            enc = pc.dictionary_encode(col, null_encoding="encode")
             local_to_global = np.array(
                 [self._intern_single(type(v), v) for v in enc.dictionary.to_pylist()],
                 dtype=np.int64,
@@ -422,6 +440,46 @@ class HashJoin(TwoInputOperator):
             self._num_ids += 1
             self._multi_ids[key] = gid
         return gid
+
+    def _encode_int(self, col: pa.Array) -> np.ndarray:
+        """Per-row ids for a single non-negative-integer key column, fully vectorized. Null rows share the
+        one null id (``_intern_single(NoneType, None)``, so a null matches a null on either path); the rest
+        go through :meth:`_intern_ints`."""
+        n = len(col)
+        if n == 0:
+            return np.empty(0, dtype=np.int64)
+        if col.null_count:
+            valid = np.asarray(col.is_valid())
+            out = np.empty(n, dtype=np.int64)
+            out[~valid] = self._intern_single(type(None), None)  # the same id the dict path gives a null
+            out[valid] = self._intern_ints(np.asarray(col.drop_null().to_numpy(zero_copy_only=False)))
+            return out
+        return self._intern_ints(np.asarray(col.to_numpy(zero_copy_only=False)))
+
+    def _intern_ints(self, keys: np.ndarray) -> np.ndarray:
+        """Map a non-negative integer key array to dense global ids through a value→id lookup array,
+        assigning ids to unseen values in one bulk pass — the vectorized replacement for the per-key
+        :meth:`_intern_single` loop, which dominated a high-cardinality join (once per row when keys are
+        all distinct)."""
+        if keys.size == 0:
+            return keys.astype(np.int64, copy=False)
+        if keys.min() < 0:  # decided non-negative on the first batch; a later negative can't index _int_id
+            raise ValueError("HashJoin integer fast path requires non-negative keys")
+        top = int(keys.max()) + 1
+        if top > self._int_id.size:  # grow the lookup to cover this batch's largest key value
+            grown = np.full(top, -1, dtype=np.int64)
+            grown[: self._int_id.size] = self._int_id
+            self._int_id = grown
+        ids = self._int_id[keys]
+        unseen = ids < 0
+        if unseen.any():  # assign the next free ids to the distinct new key values, in order
+            new_vals = np.unique(keys[unseen])
+            self._int_id[new_vals] = np.arange(
+                self._num_ids, self._num_ids + new_vals.size, dtype=np.int64
+            )
+            self._num_ids += int(new_vals.size)
+            ids = self._int_id[keys]
+        return ids
 
     def _probe_and_emit(
         self,
