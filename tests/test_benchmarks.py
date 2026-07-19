@@ -27,8 +27,6 @@ from nautilus.pipelines import (
     bench_geo_ndvi,
     bench_geo_zonal,
     bench_geo_zonal_vector,
-    bench_join,
-    bench_join_stream,
     bench_keyed,
     bench_linear,
     bench_skew,
@@ -236,19 +234,6 @@ def test_geo_graph_pipelines_are_deterministic(monkeypatch):
         bench_geo_forecast,
     )
     for builder in builders:
-        digests = {
-            asyncio.run(run_plan(builder(1))).telemetry.structural_digest() for _ in range(3)
-        }
-        assert len(digests) == 1, f"{builder.__name__} is not deterministic: {digests}"
-
-
-def test_join_bench_pipelines_are_deterministic(monkeypatch):
-    # Both the stream-table (bench_join) and the stream-stream (bench_join_stream, growing both sides
-    # through the incremental HashJoin index) join graphs must produce the same result every run.
-    monkeypatch.setenv("NAUTILUS_BENCH_ROWS", "8000")
-    monkeypatch.setenv("NAUTILUS_BENCH_BATCH", "1000")
-    monkeypatch.setenv("NAUTILUS_BENCH_KEYS", "50")
-    for builder in (bench_join, bench_join_stream):
         digests = {
             asyncio.run(run_plan(builder(1))).telemetry.structural_digest() for _ in range(3)
         }

@@ -236,28 +236,6 @@ def bench_join(parallelism: int = 1) -> LogicalGraph:
     return dsl_source(stream).join(dsl_source(table), on="key").to_graph(parallelism=parallelism)
 
 
-def bench_join_stream(parallelism: int = 1) -> LogicalGraph:
-    """Benchmark: a *stream-stream* inner equi-join — two large streams of ascending unique keys, joined
-    1:1 (output rows = one stream's rows). Unlike ``bench-join`` (a large stream against a small bounded
-    table), *both* sides grow, so each probes the other's still-growing buffer — the case whose index was
-    rebuilt per probe (quadratic) before it was made incremental. Scale via NAUTILUS_BENCH_* (each stream
-    is ``rows`` rows). A *graph* pipeline, run via ``run_plan`` / ``deploy``."""
-    p = bench_params()
-    total = (
-        p["num_batches"] * p["batch_rows"]
-    )  # cardinality = total ⇒ unique ascending keys, 1:1 match
-    left = SyntheticJoinStreamSource(
-        num_batches=p["num_batches"], batch_rows=p["batch_rows"], key_cardinality=total
-    )
-    right = SyntheticJoinStreamSource(
-        num_batches=p["num_batches"],
-        batch_rows=p["batch_rows"],
-        key_cardinality=total,
-        value_col="rval",
-    )
-    return dsl_source(left).join(dsl_source(right), on="key").to_graph(parallelism=parallelism)
-
-
 def _bench_inflight(default: int) -> int:
     """The async benchmarks' ``max_in_flight`` (env ``NAUTILUS_BENCH_INFLIGHT``). Raising it is how the
     async loop's wakeup mechanism is stressed: the cost of tracking the in-flight fetches per completion is
@@ -471,7 +449,6 @@ GraphBuilder = Callable[[int], LogicalGraph]
 GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
     "sentinel2-ndvi": sentinel2_ndvi,
     "bench-join": bench_join,
-    "bench-join-stream": bench_join_stream,
     "bench-async": bench_async,
     "bench-async-io": bench_async_io,
     "bench-geo-zonal": bench_geo_zonal,
