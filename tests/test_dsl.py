@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 
+import pyarrow.compute as pc
 import pytest
 
 from nautilus.api import linear_graph, one_input
@@ -171,3 +172,71 @@ def test_dsl_distributed_run_matches_single_process() -> None:
     distributed = joined.run(workers=2, parallelism=2)
     serial = joined.run()
     assert multiset(distributed) == multiset(serial)
+
+
+# --- column reshaping (.select / .drop / .rename / .with_column) --------------------------------
+
+
+def _reshape_src() -> Stream:
+    # three columns so each op has something to keep and something to change
+    return source(InMemorySource([data(id=[1, 2], lval=["a", "b"], scratch=[9, 8]), EOS_FRAME]))
+
+
+def test_dsl_select_keeps_only_named_columns_in_order() -> None:
+    rows = _reshape_src().select("lval", "id").collect()
+    assert all("scratch" not in r for r in rows)  # unnamed column dropped
+    assert list(rows[0].keys()) == ["lval", "id"]  # kept in the given order, not the source's
+    assert Counter((r["id"], r["lval"]) for r in rows) == Counter({(1, "a"): 1, (2, "b"): 1})
+
+
+def test_dsl_drop_removes_named_columns_keeping_the_rest() -> None:
+    rows = _reshape_src().drop("scratch").collect()
+    assert all("scratch" not in r for r in rows)
+    assert Counter((r["id"], r["lval"]) for r in rows) == Counter({(1, "a"): 1, (2, "b"): 1})
+
+
+def test_dsl_rename_maps_columns_and_leaves_others() -> None:
+    rows = _reshape_src().rename({"lval": "label"}).collect()
+    assert all("lval" not in r for r in rows)
+    assert Counter((r["id"], r["label"], r["scratch"]) for r in rows) == Counter(
+        {(1, "a", 9): 1, (2, "b", 8): 1}
+    )
+
+
+def test_dsl_with_column_adds_a_new_column() -> None:
+    rows = _reshape_src().with_column("id2", lambda b: pc.multiply(b["id"], 2)).collect()
+    assert Counter((r["id"], r["id2"]) for r in rows) == Counter({(1, 2): 1, (2, 4): 1})
+
+
+def test_dsl_with_column_replaces_an_existing_column_in_place() -> None:
+    rows = _reshape_src().with_column("id", lambda b: pc.add(b["id"], 10)).collect()
+    assert set(rows[0]) == {"id", "lval", "scratch"}  # replaced, not appended
+    assert Counter(r["id"] for r in rows) == Counter({11: 1, 12: 1})
+
+
+def test_dsl_reshaping_chains_and_matches_parallel() -> None:
+    # keyless, stateless -> a fresh instance per subtask, so a uniform run(parallelism) scales them and
+    # the output multiset is unchanged.
+    s = (
+        _reshape_src()
+        .select("id", "lval")
+        .rename({"lval": "label"})
+        .with_column("id2", lambda b: pc.multiply(b["id"], 2))
+    )
+    assert multiset(s.run(parallelism=3)) == multiset(s.run())
+
+
+@pytest.mark.parametrize(
+    "build, match",
+    [
+        (lambda: _reshape_src().select(), "needs at least one"),
+        (lambda: _reshape_src().select("id", "id"), "duplicate column"),
+        (lambda: _reshape_src().drop(" "), "must be non-empty"),
+        (lambda: _reshape_src().rename({}), "non-empty"),
+        (lambda: _reshape_src().rename({"a": "x", "b": "x"}), "same name"),
+        (lambda: _reshape_src().with_column("", lambda b: b["id"]), "non-empty"),
+    ],
+)
+def test_dsl_reshaping_rejects_bad_args_at_build_time(build, match) -> None:
+    with pytest.raises(ValueError, match=match):
+        build()
