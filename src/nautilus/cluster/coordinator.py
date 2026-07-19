@@ -126,9 +126,9 @@ def deploy(
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
     run_id = config.run_id or f"run-{started_at}"  # shared by the live reports and the final one
-    # Cluster security (Stage 5): one operator-provided secret authenticates every network connection, and
-    # optional TLS encrypts it. The local spawn path crosses no network for control (mp.Queue) but its data
-    # edges bind `host`, so a non-loopback local bind is fail-closed on the secret too.
+    # Read the cluster secret + optional TLS once (Stage 5). The local spawn path crosses no network for
+    # control (mp.Queue), but its data edges bind `host`, so a non-loopback local bind is fail-closed on
+    # the secret too; the daemons path (below) carries them on each dial.
     secret = cluster_secret()
     tls = tls_from_env()
     client_tls = tls[1] if tls else None

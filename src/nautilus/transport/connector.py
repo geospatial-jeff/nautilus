@@ -87,8 +87,7 @@ class SocketConnector(Connector):
         self._resolve = resolve
         self._capacity = capacity
         self._connect_timeout = connect_timeout
-        # Injected — transport never reaches the control plane to read them; the worker passes them in.
-        self._secret = secret
+        self._secret = secret  # shared secret + TLS, injected by the worker (see nautilus.security)
         self._tls = tls
         self._outbound: list[SocketChannel] = []
         self._inbound: list[SocketChannel] = []

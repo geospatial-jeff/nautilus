@@ -147,10 +147,9 @@ async def _serve(
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            # Prove the peer holds the shared secret BEFORE reading (and cloudpickle-loading) a Launch —
-            # this is what closes the arbitrary-code-execution-on-receipt surface to a stranger. Done
-            # *before* taking the single job slot, so a peer that connects and stalls mid-handshake cannot
-            # hold the slot for the auth timeout (a pre-auth head-of-line denial of service).
+            # Authenticate before reading (and cloudpickle-loading) a Launch, so a stranger's bytes are
+            # never deserialized; and before taking the single job slot, so a peer that connects then
+            # stalls mid-handshake cannot hold the slot for the auth timeout (a pre-auth head-of-line DoS).
             await authenticate_server(reader, writer, secret)
         except _GONE:
             await _close(writer)  # failed/stalled handshake: never touched the job slot

@@ -8,8 +8,7 @@ Two mechanisms, both keyed by one operator-provided shared secret:
 - **Authentication** (:mod:`.handshake`) — a mutual HMAC challenge-response run once per connection, on
   both planes, *before* any payload is read. It is what makes the cloudpickle control wire safe: an
   unauthenticated peer never gets its bytes deserialized, so the arbitrary-code-execution-on-receipt
-  surface is closed to anyone without the secret. It also gates the connection cheaply before a large
-  frame is allocated, so a pre-auth allocation flood cannot land.
+  surface is closed to anyone without the secret.
 - **Encryption** (:mod:`.tls`) — an optional TLS layer for confidentiality and integrity on a genuinely
   untrusted network (the authentication handshake alone covers an off-path attacker who merely reaches a
   published port; TLS additionally defeats an on-path attacker who can read or rewrite the cleartext).

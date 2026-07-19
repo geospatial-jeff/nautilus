@@ -216,6 +216,5 @@ compiler + cluster control plane (compile a graph and deploy it across worker pr
 `Stream` DSL, and the two-input inner equi-join run today. The same plan also runs across separate
 containers addressed by service DNS — a coordinator dialing long-lived worker daemons (Stage 4), with the
 control and data planes authenticated by a shared secret and optionally TLS-encrypted, and a non-loopback
-bind refused without one (Stage 5). Because the plan carries cloudpickled operator factories, that
-security rests on *authenticating the peer before deserializing its bytes*, not on a schema'd codec (see
-`nautilus.security`). `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.
+bind refused without one (Stage 5; `nautilus.security`). `IMPLEMENTATION_PLAN.md` has the stage-by-stage
+detail — including why that security authenticates the peer rather than replacing the cloudpickle codec.

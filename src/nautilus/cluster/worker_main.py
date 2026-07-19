@@ -140,8 +140,8 @@ async def run_worker_slice(
     spawn path) keeps the node label ``worker-<id>``, so single-machine reports are unchanged; a daemon
     passes its advertised host, so a multi-node report tags each row ``worker-<id>@<host>`` and a reader
     can tell *which container* an operator ran on — not just its logical worker id."""
-    # Data-plane security (Stage 5): the same shared secret and optional TLS authenticate and encrypt every
-    # cross-worker edge — injected here so nautilus.transport never reaches the control plane to read them.
+    # Read the cluster secret + optional TLS (Stage 5) and inject them into this worker's data-edge
+    # listener and connector below.
     secret = cluster_secret()
     tls = tls_from_env()
     server_tls = tls[0] if tls else None

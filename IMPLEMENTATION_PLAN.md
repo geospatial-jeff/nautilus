@@ -116,11 +116,11 @@ import-linter:
 
 ### Stage 5 — Security · **Done** (auth, TLS, fail-closed; codec-hardening and per-identity authz deferred)
 
-Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one. The keystone
-decision: because the plan legitimately carries lambda operator factories that only cloudpickle can
-serialize, the fix is **not** to replace the codec but to **authenticate the peer before deserializing its
-bytes** — so an unauthenticated party never gets a plan (or a frame) loaded. `nautilus.security` holds the
-one shared primitive both planes use.
+Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one. The decision
+that shapes the rest: because the plan legitimately carries lambda operator factories that only cloudpickle
+can serialize, the fix is **not** to replace the codec but to **authenticate the peer before deserializing
+its bytes** — so an unauthenticated party never gets a plan (or a frame) loaded. `nautilus.security` holds
+the one shared primitive both planes use.
 
 - **Authenticate both planes.** *Done.* A mutual HMAC challenge-response, keyed by one operator-provided
   secret (`NAUTILUS_CLUSTER_SECRET`, same value on every node), runs once per connection *before* any

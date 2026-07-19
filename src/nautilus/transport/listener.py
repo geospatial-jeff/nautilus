@@ -58,8 +58,7 @@ class EdgeListener:
         self._expected = frozenset(expected)
         self._handshake_timeout = handshake_timeout
         self._close_timeout = close_timeout
-        # Injected by the worker (transport never reaches the control plane to read them).
-        self._secret = secret
+        self._secret = secret  # shared secret + TLS, injected by the worker (see nautilus.security)
         self._tls = tls
         self._slots: dict[ChannelId, asyncio.Future[_Conn]] = {}
         self._claimed: set[ChannelId] = set()
