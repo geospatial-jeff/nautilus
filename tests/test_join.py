@@ -206,8 +206,8 @@ def test_join_stream_stream_many_interleaved_batches_matches_reference() -> None
         n += 16
         steps.append(("L", batch(id=lk.tolist(), lval=lv.tolist())))
         steps.append(("R", batch(id=rk.tolist(), rval=rv.tolist())))
-        left += list(zip(lk.tolist(), lv.tolist()))
-        right += list(zip(rk.tolist(), rv.tolist()))
+        left += list(zip(lk.tolist(), lv.tolist(), strict=True))
+        right += list(zip(rk.tolist(), rv.tolist(), strict=True))
     assert _triples(_drive(HashJoin("id"), steps)) == _reference(left, right)
 
 
