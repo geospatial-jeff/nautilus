@@ -50,6 +50,7 @@ nautilus run PIPELINE [options]
 | `--head` | `5` | rows of pipeline output to preview |
 | `--workers` | `1` | worker processes to deploy across (`>1` spawns and distributes) |
 | `--parallelism` | `--workers` | instances per operator (keyed operators shuffle by key); defaults to `--workers`, so asking for some number of workers gives that many ways of parallel work. Set it below `--workers` and the surplus workers are capped away (with a warning) |
+| `--key-groups` | `--parallelism` | keyed-shuffle rescale ceiling — the most instances a keyed edge can rescale to without re-hashing state; must be `>= --parallelism` |
 | `--daemons` | none | `host:port,…` of worker daemons to dial (or `$NAUTILUS_DAEMONS`); runs multi-node instead of spawning locally |
 
 Example: `uv run nautilus run wordcount --show markdown --save report.json`

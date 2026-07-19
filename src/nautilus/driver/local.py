@@ -28,6 +28,7 @@ async def run_local_chain(
     transforms: list[OneInputOperator],
     *,
     parallelism: int = 1,
+    key_groups: int | None = None,
     capacity: int = DEFAULT_CAPACITY,
     clock: Clock | None = None,
     telemetry: TelemetryConfig | None = None,
@@ -38,13 +39,15 @@ async def run_local_chain(
 
     Lowers the ``(source, transforms)`` chain to a plan and runs it through the compiled executor, so a
     single-process run uses the same engine as a distributed one. ``parallelism`` runs every transform as
-    that many in-process instances (keyed operators shuffle by their declared key) — for multiple worker
+    that many in-process instances (keyed operators shuffle by their declared key); ``key_groups`` sets the
+    keyed-shuffle rescale ceiling (``None`` defaults each to its parallelism). For multiple worker
     *processes* use :func:`nautilus.cluster.deploy`. ``registry`` lets a caller read snapshots while the
     run is in flight (the live dashboard does this via :func:`~nautilus.driver.run.run_compiled`); the
     default creates its own.
     """
     return await run_plan(
         graph_from_pipeline(source, transforms, parallelism),
+        key_groups=key_groups,
         capacity=capacity,
         clock=clock,
         telemetry=telemetry,

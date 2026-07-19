@@ -4,7 +4,7 @@ The operator types differ by how many inputs they have and whether they may ``aw
 
 * :class:`SourceOperator` has no input; it produces the frame sequence (data batches and EOS).
 * :class:`OneInputOperator` transforms a single input stream, synchronously.
-* :class:`TwoInputOperator` (reserved for joins) combines two inputs.
+* :class:`TwoInputOperator` combines two inputs (the base for joins — :class:`~nautilus.operators.HashJoin`).
 * :class:`AsyncOneInputOperator` transforms one input but does its I/O in an awaiting ``fetch`` the
   engine runs as bounded concurrent tasks, then folds each result into state and emits in a synchronous
   ``integrate`` — so I/O overlaps while keyed state stays single-writer.

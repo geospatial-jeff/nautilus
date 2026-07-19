@@ -2,9 +2,9 @@
 
 These run a hand-built join graph (two sources into one `two_input` vertex on ports 0 and 1) through
 `run_plan`, so they exercise `run_two_input`, the port-ordered mailbox, and the executor's list-valued
-edge wiring together — left/right dispatch and EOS only after both sides close. The concrete join
-operator lands in a later sub-stage; here a stub two-input operator isolates the actor/executor
-behavior.
+edge wiring together — left/right dispatch and EOS only after both sides close. A stub two-input operator
+isolates that actor/executor behavior from any real join's logic (the concrete
+:class:`~nautilus.operators.HashJoin` is exercised in ``test_join.py``).
 """
 
 from __future__ import annotations

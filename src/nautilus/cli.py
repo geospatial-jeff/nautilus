@@ -80,6 +80,7 @@ def _run(
     capacity: int,
     workers: int = 1,
     parallelism: int = 1,
+    key_groups: int | None = None,
     daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     # run_once is the bench harness's builder+runner — shared so the CLI and bench can't drift on how a
@@ -91,6 +92,7 @@ def _run(
             workers=workers,
             capacity=capacity,
             tier=tier,
+            key_groups=key_groups,
             daemons=daemons,
         )
     except (KeyError, ImportError, AttributeError) as e:
@@ -210,6 +212,12 @@ def run(
     parallelism: int | None = typer.Option(
         None, help="Instances per operator (keyed ops shuffle by key); defaults to --workers."
     ),
+    key_groups: int | None = typer.Option(
+        None,
+        "--key-groups",
+        help="Keyed-shuffle rescale ceiling (the max instances a keyed edge can rescale to without "
+        "re-hashing state); defaults to the parallelism. Must be >= parallelism.",
+    ),
     daemons: str = typer.Option(
         None,
         help="host:port,... of worker daemons to dial (or $NAUTILUS_DAEMONS); runs multi-node instead "
@@ -222,7 +230,14 @@ def run(
     # --parallelism to whichever actually sets the width.
     requested = len(roster) if roster else workers
     parallelism = _resolve_parallelism(parallelism, requested)
-    result = _run(pipeline, _tier(telemetry), capacity, workers, parallelism, roster)
+    if key_groups is not None and key_groups < parallelism:
+        # A key group maps to one instance, so fewer groups than instances can't spread the keys — the
+        # compiler rejects it too; catch it here for a clean message instead of a traceback.
+        raise typer.BadParameter(
+            f"--key-groups ({key_groups}) must be >= --parallelism ({parallelism})",
+            param_hint="--key-groups",
+        )
+    result = _run(pipeline, _tier(telemetry), capacity, workers, parallelism, key_groups, roster)
     report = result.telemetry
 
     if head > 0 and len(result) > 0:

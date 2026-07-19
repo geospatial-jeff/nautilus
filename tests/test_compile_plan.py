@@ -143,7 +143,7 @@ def test_default_key_groups_is_the_identity_table() -> None:
 # --- a two-input join: two sources shuffle into one two_input vertex on ports 0 and 1 -----------
 
 
-class _StubJoin:  # a placeholder two-input operator (the real HashJoin lands in a later sub-stage)
+class _StubJoin:  # a bare two-input operator — isolates the compiler from HashJoin's join logic
     pass
 
 
