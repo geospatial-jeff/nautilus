@@ -42,8 +42,9 @@ print(result.to_pylist())              # [{'word': 'the', 'count': 2}, ...]
 ```
 
 `.run(workers=…)` deploys the *same* graph across that many worker processes — the only change from the
-single-process run. `.join` combines two streams into an inner equi-join (both sides shuffled on the key,
-so rows with the same key are routed to one instance):
+single-process run. `.join` combines two streams into an equi-join — inner by default, or
+`how="left"/"right"/"outer"` to keep unmatched rows (both sides shuffled on the key, so rows with the
+same key are routed to one instance):
 
 ```python
 joined = source(orders).join(source(customers), on="customer_id").run(workers=2)

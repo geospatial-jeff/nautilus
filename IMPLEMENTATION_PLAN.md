@@ -61,7 +61,9 @@ independently-shippable sub-stages, each green across pytest / mypy / ruff / bla
 - **3.3 — `HashJoin` operator · Done.** The concrete inner symmetric-hash equi-join: buffers both sides
   by key, emits each match as the later side arrives (order-independent), drops the right's key columns
   and rejects an output column-name collision, clears at EOS. Verified in-process, parallel (co-partition),
-  and across worker processes (distributed result + digest match single-process).
+  and across worker processes (distributed result + digest match single-process). (Left/right/outer joins
+  were added later: they also flush the side's unmatched rows at EOS with the other side null, and run at
+  parallelism 1 only — see `DESIGN.md` for why. Inner joins still run at any width.)
 - **3.4 — Fluent `Stream` DSL · Done.** `nautilus.dsl.Stream` (`source(...)` → `map`/`filter`/`tokenize`/
   `count_by`/`apply`/`join` → `.run(workers=, parallelism=)`/`.collect()`) is the public
   surface for building a pipeline — immutable, join-capable, the same graph in-process and across workers.

@@ -33,10 +33,12 @@ so the names you will meet in `DESIGN.md` and the source are explained.
 - **Input port** — Which input of an operator an edge feeds: port 0 for a one-input transform (and a
   join's left side), port 1 for a join's right side. The port is what lets a two-input operator tell its
   two inbound edges apart.
-- **Equi-join (hash join)** — The built-in two-input operator (`HashJoin`): an *inner* join that emits a
-  row for every left and right row whose join keys are equal. The output is the left row's columns plus
-  the right's non-key columns; both inputs are co-partitioned on the join key, so a key's rows meet on one
-  instance. (How it buffers and matches the two sides is on `HashJoin`.)
+- **Equi-join (hash join)** — The built-in two-input operator (`HashJoin`): emits a row for every left and
+  right row whose join keys are equal. The output is the left row's columns plus the right's non-key
+  columns; both inputs are co-partitioned on the join key, so a key's rows meet on one instance. `how`
+  selects whether unmatched rows are also kept — `"inner"` (default) drops them, `"left"`/`"right"`/
+  `"outer"` keep one or both sides with the other side null. (How it buffers, matches, and flushes the
+  unmatched rows — and why an outer join is parallelism-1 only — is on `HashJoin`.)
 - **Sink** — The end of the graph: it consumes the final stream. Stage 0's sink collects the output
   batches into a list (it appears as `CollectSink` in the topology and telemetry). An **async sink**
   (`AsyncSink`) is an authored terminal that instead *writes* each batch to an external store.

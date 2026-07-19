@@ -239,18 +239,30 @@ class Stream:
         on: _Keys | None = None,
         left_on: _Keys | None = None,
         right_on: _Keys | None = None,
+        how: str = "inner",
         parallelism: int = 1,
     ) -> Stream:
-        """Inner equi-join with ``other`` (:class:`~nautilus.operators.HashJoin`). Give ``on`` for a shared
-        column name, or ``left_on``/``right_on`` for differently-named keys; both sides must name the same
-        number of columns. The two inputs are shuffled on their join keys so equal keys meet on one
-        instance. The output is this stream's columns followed by ``other``'s non-key columns.
+        """Equi-join with ``other`` (:class:`~nautilus.operators.HashJoin`). Give ``on`` for a shared column
+        name, or ``left_on``/``right_on`` for differently-named keys; both sides must name the same number
+        of columns. ``how`` is ``"inner"`` (default), ``"left"``, ``"right"``, or ``"outer"`` — an outer
+        join also keeps the unmatched rows on that side, with the other side's columns null. The two inputs
+        are shuffled on their join keys so equal keys meet on one instance. The output is this stream's
+        columns followed by ``other``'s non-key columns.
+
+        An inner join runs at any ``parallelism``; an outer join runs at ``parallelism=1`` only (see
+        :class:`~nautilus.operators.HashJoin` for why), so a ``how`` other than ``"inner"`` with
+        ``parallelism > 1`` is rejected here.
 
         Build each side from its own :func:`source`. If both inputs derive from one source (a diamond),
         that source is read once per branch, so it must be replayable — the built-in sources are."""
         if other is self:
             raise ValueError(
                 "a stream cannot be joined to itself; build the two inputs as separate streams"
+            )
+        if how != "inner" and parallelism > 1:
+            raise ValueError(
+                f"an outer join (how={how!r}) runs at parallelism 1 only, got parallelism={parallelism}; "
+                "use how='inner' to parallelize the join, or set parallelism=1"
             )
         left_keys, right_keys = _join_keys(on, left_on, right_on)
         # other's vertex ids are v0..v{m-1}; shift them past this stream's so the union has unique ids.
@@ -260,7 +272,7 @@ class Stream:
         other_edges = tuple(replace(e, src=remap[e.src], dst=remap[e.dst]) for e in other._edges)
         jid = f"v{shift + len(other._vertices)}"
         jvertex = LogicalVertex(
-            jid, lambda: HashJoin(left_keys, right_keys), "two_input", parallelism, None
+            jid, lambda: HashJoin(left_keys, right_keys, how), "two_input", parallelism, None
         )
         vertices = (*self._vertices, *other_vertices, jvertex)
         edges = (

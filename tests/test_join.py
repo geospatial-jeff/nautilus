@@ -1,10 +1,11 @@
-"""HashJoin: the inner symmetric-hash equi-join.
+"""HashJoin: the symmetric-hash equi-join, inner and outer.
 
-Unit tests drive the operator directly (open / process_left / process_right / close) to pin its
-semantics — completeness, order-independence, the column-collision and key-arity guards, and buffer
-clearing. Integration tests run a two-source join graph through the real compiler + executor, and
-across worker processes, to prove the keyed shuffle co-partitions both sides so the parallel and
-distributed results match the serial one.
+Unit tests drive the operator directly (open / process_left / process_right / on_eos / close) to pin its
+semantics — completeness, order-independence, the column-collision and key-arity guards, buffer clearing,
+and the ``how`` variants (which unmatched rows an outer join flushes at end of stream, and where their
+null and key columns come from). Integration tests run a two-source join graph through the real compiler
++ executor, and across worker processes, to prove the keyed shuffle co-partitions both sides so the
+parallel and distributed results match the serial one.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def _drive(join: HashJoin, steps: list[tuple[str, pa.RecordBatch]]) -> list[pa.R
     join.open(OperatorContext("j"))
     for side, b in steps:
         (join.process_left if side == "L" else join.process_right)(b, coll)
-    join.on_eos(coll)  # a no-op for the inner join; here to assert it stays one
+    join.on_eos(coll)  # no-op for inner; for an outer join this is where unmatched rows are flushed
     join.close()
     return coll.drain()
 
@@ -177,6 +178,91 @@ def test_join_demote_preserves_ids_assigned_on_the_fast_path() -> None:
     assert _triples(out) == Counter({(3, "a", 30): 1, (3, "d", 30): 1, (10**9, "c", 90): 1})
 
 
+# --- outer joins: left / right / outer additionally flush the side's unmatched rows at end of stream --
+
+
+def _outer_ref(
+    left: list[tuple[object, object]], right: list[tuple[object, object]], how: str
+) -> Counter[tuple[object, object, object]]:
+    """A plain-Python reference for ``how`` over (key, value) pair lists: the inner cross-product, plus —
+    for left/outer — each left row whose key has no right match with a null ``rval``, and — for
+    right/outer — each unmatched right row with a null ``lval`` and its key carried into the ``id``
+    column. Mirrors null==null (a null key matches a null key)."""
+    out: Counter[tuple[object, object, object]] = Counter(
+        (lk, lv, rv) for lk, lv in left for rk, rv in right if lk == rk
+    )
+    rkeys = {rk for rk, _ in right}
+    lkeys = {lk for lk, _ in left}
+    if how in ("left", "outer"):
+        out += Counter((lk, lv, None) for lk, lv in left if lk not in rkeys)
+    if how in ("right", "outer"):
+        out += Counter((rk, None, rv) for rk, rv in right if rk not in lkeys)
+    return out
+
+
+@pytest.mark.parametrize("how", ["inner", "left", "right", "outer"])
+def test_join_how_matches_reference(how: str) -> None:
+    left = [(1, "a"), (1, "b"), (2, "c"), (3, "d")]  # keys 1,2 match; 3 is left-only
+    right = [(1, 10), (2, 20), (2, 21), (4, 40)]  # key 4 is right-only
+    out = _drive(
+        HashJoin("id", "id", how),
+        [
+            ("L", batch(id=[k for k, _ in left], lval=[v for _, v in left])),
+            ("R", batch(id=[k for k, _ in right], rval=[v for _, v in right])),
+        ],
+    )
+    assert _triples(out) == _outer_ref(left, right, how)
+
+
+def test_outer_join_flush_is_order_independent() -> None:
+    # The unmatched flush reads a presence bitmap over the shared id space, not arrival order, so feeding
+    # right-before-left yields the same outer result as left-before-right.
+    left = [(1, "a"), (3, "d")]
+    right = [(1, 10), (4, 40)]
+    lb = batch(id=[k for k, _ in left], lval=[v for _, v in left])
+    rb = batch(id=[k for k, _ in right], rval=[v for _, v in right])
+    expected = _outer_ref(left, right, "outer")
+    assert _triples(_drive(HashJoin("id", "id", "outer"), [("L", lb), ("R", rb)])) == expected
+    assert _triples(_drive(HashJoin("id", "id", "outer"), [("R", rb), ("L", lb)])) == expected
+
+
+def test_outer_join_null_key_matches_null_key() -> None:
+    # null==null (nautilus join semantics): a null-key left row is matched by a null-key right row, so it
+    # is NOT emitted as unmatched; a null key with no counterpart on the other side IS unmatched.
+    out = _drive(
+        HashJoin("id", "id", "outer"),
+        [("L", batch(id=[None, 5], lval=["a", "b"])), ("R", batch(id=[None, 7], rval=[10, 70]))],
+    )
+    assert _triples(out) == Counter({(None, "a", 10): 1, (5, "b", None): 1, (7, None, 70): 1})
+
+
+def test_right_outer_key_column_comes_from_the_right() -> None:
+    # With differently-named keys, an unmatched right row has no left row to supply the join column, so
+    # the output's *left* key column takes the right key's value and the other left columns are null.
+    out = _drive(
+        HashJoin("lid", "rid", "right"),
+        [("L", batch(lid=[1], lval=["a"])), ("R", batch(rid=[1, 2], rval=[10, 20]))],
+    )
+    rows = [r for b in out for r in b.to_pylist()]
+    assert {"lid": 1, "lval": "a", "rval": 10} in rows  # the match
+    assert {"lid": 2, "lval": None, "rval": 20} in rows  # key 2 carried from the right, lval null
+
+
+def test_outer_join_empty_side_emits_the_other_untouched() -> None:
+    # A left/outer join whose right side sent a schema but no rows must flush every left row with null
+    # right columns — the degenerate all-unmatched case.
+    out = _drive(
+        HashJoin("id", "id", "left"),
+        [("L", batch(id=[1, 2], lval=["a", "b"])), ("R", batch(id=[], rval=[]))],
+    )
+    assert _triples(out) == Counter({(1, "a", None): 1, (2, "b", None): 1})
+
+
+def test_join_rejects_unknown_how() -> None:
+    with pytest.raises(ValueError, match="how"):
+        HashJoin("id", how="cross")
+
+
 # --- through the engine: co-partitioning makes the parallel and distributed results match serial -----
 
 _LEFT = [data(id=[1, 1, 2, 3], lval=["a", "b", "c", "d"]), EOS_FRAME]
@@ -226,6 +312,7 @@ def _two_source_join(
     left_on: str | list[str],
     right_on: str | list[str],
     parallelism: int,
+    how: str = "inner",
 ) -> LogicalGraph:
     lk = (left_on,) if isinstance(left_on, str) else tuple(left_on)
     rk = (right_on,) if isinstance(right_on, str) else tuple(right_on)
@@ -233,7 +320,7 @@ def _two_source_join(
         vertices=(
             source("L", lambda: InMemorySource(list(left_frames))),
             source("R", lambda: InMemorySource(list(right_frames))),
-            two_input("j", lambda: HashJoin(left_on, right_on), parallelism=parallelism),
+            two_input("j", lambda: HashJoin(left_on, right_on, how), parallelism=parallelism),
         ),
         edges=(LogicalEdge("L", "j", 0, lk), LogicalEdge("R", "j", 1, rk)),
     )
@@ -281,3 +368,26 @@ async def test_join_negative_keys_co_partition_across_parallelism() -> None:
     assert Counter((r["id"], r["lval"], r["rval"]) for r in rows) == Counter(
         {(-1, "a", 10): 1, (-1, "c", 10): 1, (2, "b", 20): 1}
     )
+
+
+@pytest.mark.parametrize("how", ["left", "right", "outer"])
+async def test_outer_join_runs_through_the_engine(how: str) -> None:
+    # An outer join flushes each side's unmatched rows at end of stream; through the real compiler +
+    # executor at parallelism 1 the result matches the inner result plus those unmatched rows.
+    rows = (await run_plan(_two_source_join(_LEFT, _RIGHT, "id", "id", 1, how))).to_pylist()
+    expected = dict(_EXPECTED)  # id 3 is left-only, id 4 right-only
+    if how in ("left", "outer"):
+        expected[(3, "d", None)] = 1
+    if how in ("right", "outer"):
+        expected[(4, None, 40)] = 1
+    assert Counter((r["id"], r["lval"], r["rval"]) for r in rows) == Counter(expected)
+
+
+def test_outer_join_open_rejects_multiple_subtasks() -> None:
+    # An outer join is parallelism-1 only: a wider shuffle can route an instance no rows on a side, leaving
+    # the absent side's null columns untypable (see HashJoin). This open-time backstop catches a hand-built
+    # graph that asks for a parallel outer join (the DSL rejects it earlier — test_dsl). An inner join at
+    # the same width opens fine.
+    with pytest.raises(ValueError, match="parallelism 1 only"):
+        HashJoin("id", "id", "outer").open(OperatorContext("j", num_subtasks=2))
+    HashJoin("id", "id", "inner").open(OperatorContext("j", num_subtasks=2))

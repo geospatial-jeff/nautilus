@@ -93,10 +93,13 @@ dimension. `nautilus.tensors` converts these to and from numpy.
    the run's one key-group count, so their group tables are identical and an equal key co-partitions to
    the same join instance from either side. It forwards EOS only after *both* inputs close — the existing termination
    rule (mechanism 3), unchanged for a second input. (A linear graph carries no edges; the compiler reads
-   its positional adjacency, so it lowers byte-for-byte as before.) The built-in `HashJoin` is an inner
-   equi-join whose result is independent of the order the two sides arrive; like the keyed aggregations it
-   holds unbounded state until EOS — an accepted MVP tradeoff, since the inputs here are bounded. How it
-   buffers is the operator's concern.
+   its positional adjacency, so it lowers byte-for-byte as before.) The built-in `HashJoin` is an equi-join
+   — inner by default, or an outer join that also keeps one or both sides' unmatched rows, flushed once at
+   EOS — whose result is independent of the order the two sides arrive; like the keyed aggregations it
+   holds unbounded state until EOS, an accepted MVP tradeoff since the inputs here are bounded. An outer
+   join runs single-instance in this MVP: co-partitioning an outer completion across instances needs the
+   input schema to reach an instance the shuffle starved of a side, which dynamic (schema-on-first-batch)
+   typing can't supply — deferred engine work. How it buffers and enforces that is the operator's concern.
 8. **Async I/O stages** (`core.operator.AsyncSink` / `AsyncOneInputOperator`, driven by
    `runtime.actor.run_async_sink` / `run_async_transform`) — the operators besides a source that may
    `await`, so a pipeline does its I/O inside the streaming model: a transform enriches a record from an
@@ -213,7 +216,7 @@ cause-and-effect. See `docs/telemetry-reference.md`.
 
 The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, the
 compiler + cluster control plane (compile a graph and deploy it across worker processes), the fluent
-`Stream` DSL, and the two-input inner equi-join run today. The same plan also runs across separate
+`Stream` DSL, and the two-input equi-join (inner, and single-instance outer) run today. The same plan also runs across separate
 containers addressed by service DNS — a coordinator dialing long-lived worker daemons (Stage 4), with the
 control and data planes authenticated by a shared secret and optionally TLS-encrypted, and a non-loopback
 bind refused without one (Stage 5; `nautilus.security`). `IMPLEMENTATION_PLAN.md` has the stage-by-stage

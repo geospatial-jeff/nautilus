@@ -93,6 +93,28 @@ def test_dsl_join_co_partitions_when_parallel() -> None:
     assert multiset(joined.run(parallelism=2)) == multiset(joined.run())
 
 
+@pytest.mark.parametrize(
+    "how, extra",
+    [
+        ("inner", {}),
+        ("left", {(2, "c", None): 1}),  # id 2 is left-only
+        ("right", {(3, None, 30): 1}),  # id 3 is right-only
+        ("outer", {(2, "c", None): 1, (3, None, 30): 1}),
+    ],
+)
+def test_dsl_outer_join_keeps_unmatched_rows(how: str, extra: dict) -> None:
+    joined = _left().join(_right(), on="id", how=how)
+    expected = Counter({(1, "a", 10): 1, (1, "b", 10): 1, **extra})
+    assert Counter((r["id"], r["lval"], r["rval"]) for r in joined.collect()) == expected
+
+
+def test_dsl_rejects_outer_join_above_parallelism_one() -> None:
+    # An outer join is parallelism-1 only (see HashJoin); the DSL rejects a wider one at build time rather
+    # than letting it silently drop unmatched rows at run time.
+    with pytest.raises(ValueError, match="parallelism 1 only"):
+        _left().join(_right(), on="id", how="outer", parallelism=2)
+
+
 def test_dsl_rejects_a_self_join() -> None:
     s = _left()
     with pytest.raises(ValueError, match="cannot be joined to itself"):

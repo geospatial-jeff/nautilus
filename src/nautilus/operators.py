@@ -761,6 +761,24 @@ class _SideBuffer:
             self._index = (rows.take(pa.array(order)), start, count)
         return self._index
 
+    def rows_and_ids(self) -> tuple[pa.RecordBatch, np.ndarray]:
+        """All buffered rows and their key ids, in arrival order — for the end-of-stream outer-join pass
+        that emits the rows whose key never matched the other side."""
+        rows = self._batches[0] if len(self._batches) == 1 else pa.concat_batches(self._batches)
+        ids = self._key_ids[0] if len(self._key_ids) == 1 else np.concatenate(self._key_ids)
+        return rows, ids
+
+    def present(self, num_ids: int) -> np.ndarray:
+        """A boolean array indexed by key id: ``True`` where at least one buffered row carries that id. The
+        other side reads it to decide which of its rows found no match (an outer join's unmatched rows).
+        """
+        seen = np.zeros(num_ids, dtype=bool)
+        if self._key_ids:
+            ids = self._key_ids[0] if len(self._key_ids) == 1 else np.concatenate(self._key_ids)
+            if len(ids):
+                seen[ids] = True
+        return seen
+
     def clear(self) -> None:
         self._batches.clear()
         self._key_ids.clear()
@@ -768,31 +786,42 @@ class _SideBuffer:
 
 
 class HashJoin(TwoInputOperator):
-    """An inner equi-join: for every left row and right row whose join keys are equal, emit one joined row.
+    """An equi-join: for every left row and right row whose join keys are equal, emit one joined row.
+    ``how`` selects which non-matching rows are also kept: ``"inner"`` (default) keeps only matched pairs;
+    ``"left"`` also keeps each left row that found no right match (its right columns null); ``"right"``
+    keeps each unmatched right row (its left columns null); ``"outer"`` keeps both. Unmatched rows are
+    emitted at end of stream — the point at which a row's key is known to have no match on the other side.
 
     It is a *symmetric hash join* — each side's rows are buffered as they arrive, indexed by key, and a
     new batch on one side is matched against every buffered row on the other — so each pair is emitted
     exactly once, when the later of the two arrives, independent of arrival order. Both inputs are
     co-partitioned on the join value by the keyed shuffle, so every row of a given key reaches the same
-    instance from either side and the match is purely local.
+    instance from either side and the match is purely local. An *inner* join runs at any parallelism. An
+    *outer* join runs at parallelism 1 only: a wider shuffle can route an instance zero rows on a side,
+    and because a side's schema is learned from its first batch, such an instance could not type the
+    absent side's null columns — so it would silently drop that side's unmatched rows.
 
     The output row is the left row's columns followed by the right row's *non-key* columns: the join key
     appears once (from the left), and the right's key columns are dropped (they equal the left's by the
     join condition). A non-key right column whose name collides with a left column name is rejected —
-    rename one side. ``left_on`` and ``right_on`` name the equi-join columns on each side (a string or a
-    sequence) and must have equal length; column *i* of ``left_on`` is matched against column *i* of
-    ``right_on``. Keys are matched by value *and* scalar type — the same distinction the keyed shuffle
-    draws — so an integer key column does not join a boolean one (an int ``1`` and a bool ``True`` are
-    different keys), matching how they co-partition. A null key matches a null key (``null == null``), as
-    nulls co-partition like any other key.
+    rename one side. For an unmatched *right* row (a right/outer join), that join-key column takes the
+    right row's key value and the other left columns are null. ``left_on`` and ``right_on`` name the
+    equi-join columns on each side (a string or a sequence) and must have equal length; column *i* of
+    ``left_on`` is matched against column *i* of ``right_on``. Keys are matched by value *and* scalar type
+    — the same distinction the keyed shuffle draws — so an integer key column does not join a boolean one
+    (an int ``1`` and a bool ``True`` are different keys), matching how they co-partition. A null key
+    matches a null key (``null == null``), as nulls co-partition like any other key.
 
     State is both sides' buffered rows, held until end of stream and then cleared — the same
-    unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. Matches are
-    emitted as they form, so there is no end-of-stream flush.
+    unbounded-until-EOS tradeoff the keyed aggregations carry, and fine for a bounded input. Matched pairs
+    are emitted as they form; an outer join additionally flushes its unmatched rows once at end of stream.
     """
 
     def __init__(
-        self, left_on: str | Sequence[str], right_on: str | Sequence[str] | None = None
+        self,
+        left_on: str | Sequence[str],
+        right_on: str | Sequence[str] | None = None,
+        how: str = "inner",
     ) -> None:
         self.left_on = (left_on,) if isinstance(left_on, str) else tuple(left_on)
         ro: str | Sequence[str] = left_on if right_on is None else right_on
@@ -802,8 +831,21 @@ class HashJoin(TwoInputOperator):
                 f"left_on {self.left_on} and right_on {self.right_on} must name the same number of "
                 "columns (column i of left_on is matched against column i of right_on)"
             )
+        if how not in ("inner", "left", "right", "outer"):
+            raise ValueError(f"how must be 'inner', 'left', 'right', or 'outer', got {how!r}")
+        self.how = how
 
     def open(self, ctx: OperatorContext) -> None:
+        # An outer join's end-of-stream flush needs, on every instance, both input schemas and every row
+        # of each key — neither of which a keyed shuffle guarantees an instance that it routed no rows on
+        # a side. So restrict it to a single instance (the DSL rejects this earlier; this is the backstop
+        # for a hand-built graph). An inner join emits nothing at EOS, so it is unaffected.
+        if self.how != "inner" and ctx.num_subtasks > 1:
+            raise ValueError(
+                f"an outer join (how={self.how!r}) runs at parallelism 1 only, but this instance is "
+                f"1 of {ctx.num_subtasks}; use how='inner' to run wider, or set the join's parallelism "
+                "to 1"
+            )
         # Each side's rows accumulate in a _SideBuffer, indexed by key id for a vectorized probe. They
         # grow until close() — the documented unbounded-state tradeoff.
         self._left_buf = _SideBuffer()
@@ -819,13 +861,17 @@ class HashJoin(TwoInputOperator):
         self._int_fast: bool | None = None
         self._int_id = np.empty(0, dtype=np.int64)  # key value → dense id (-1 = unseen)
         # Output schema parts, captured from the first batch of each side (no schema exists until then).
+        # The full schemas are kept too, so an outer join can build correctly-typed null columns at EOS.
         self._left_names: list[str] | None = None
         self._right_value_cols: list[str] | None = None
+        self._left_schema: pa.Schema | None = None
+        self._right_schema: pa.Schema | None = None
         self._checked = False
 
     def process_left(self, batch: pa.RecordBatch, out: Collector) -> None:
         if self._left_names is None:
             self._left_names = list(batch.schema.names)
+            self._left_schema = batch.schema
             self._check_columns()
         ids = self._encode(batch, self.left_on)
         self._probe_and_emit(batch, ids, self._right_buf, out, query_is_left=True)
@@ -836,11 +882,72 @@ class HashJoin(TwoInputOperator):
         if self._right_value_cols is None:
             keys = set(self.right_on)
             self._right_value_cols = [c for c in batch.schema.names if c not in keys]
+            self._right_schema = batch.schema
             self._check_columns()
         ids = self._encode(batch, self.right_on)
         self._probe_and_emit(batch, ids, self._left_buf, out, query_is_left=False)
         if batch.num_rows:
             self._right_buf.add(batch, ids)
+
+    def on_eos(self, out: Collector) -> None:
+        # Inner join: nothing to flush — every match was emitted as it formed. An outer join emits the rows
+        # whose key never appeared on the other side: an unmatched left row (left/outer) with null right
+        # columns, an unmatched right row (right/outer) with null left columns and the join key from the
+        # right. A row is unmatched iff its key id has no rows on the other side (the shared id space makes
+        # that a presence lookup, not a re-probe).
+        if self.how in ("left", "outer"):
+            self._flush_unmatched(self._left_buf, self._right_buf, out, query_is_left=True)
+        if self.how in ("right", "outer"):
+            self._flush_unmatched(self._right_buf, self._left_buf, out, query_is_left=False)
+
+    def _flush_unmatched(
+        self, query_buf: _SideBuffer, other_buf: _SideBuffer, out: Collector, *, query_is_left: bool
+    ) -> None:
+        # A side that never established its schema (sent no batch, not even an empty one) leaves the null
+        # columns untypable, so there is nothing well-formed to emit; skip it.
+        if query_buf.empty or self._left_names is None or self._right_value_cols is None:
+            return
+        assert self._left_schema is not None and self._right_schema is not None
+        # A row is unmatched iff its key id has no rows on the other side. Every buffered id is < _num_ids
+        # (the shared counter), so it indexes the other side's presence bitmap directly.
+        other_present = other_buf.present(self._num_ids)
+        rows, ids = query_buf.rows_and_ids()
+        idx = np.nonzero(~other_present[ids])[0]
+        if idx.size == 0:
+            return
+        picked = rows.take(pa.array(idx))
+        n = int(idx.size)
+        if query_is_left:
+            left_arrays: list[pa.Array] = list(picked.columns)  # the whole left row
+            right_arrays = [
+                pa.nulls(n, self._right_schema.field(c).type) for c in self._right_value_cols
+            ]
+        else:
+            key_of = dict(
+                zip(self.left_on, self.right_on, strict=True)
+            )  # left key col → right key col
+            left_arrays = [
+                self._left_null_or_key(name, key_of, picked, n) for name in self._left_names
+            ]
+            right_arrays = [picked.column(c) for c in self._right_value_cols]
+        out.emit(
+            pa.RecordBatch.from_arrays(
+                [*left_arrays, *right_arrays], names=[*self._left_names, *self._right_value_cols]
+            )
+        )
+
+    def _left_null_or_key(
+        self, name: str, key_of: dict[str, str], right_rows: pa.RecordBatch, n: int
+    ) -> pa.Array:
+        # Building a left-side column for an unmatched *right* row: a join-key column takes the right row's
+        # key value (cast to the left column's type, so the output key column keeps one type across matched
+        # and unmatched rows); every other left column is null.
+        assert self._left_schema is not None
+        left_type = self._left_schema.field(name).type
+        if name in key_of:
+            col = right_rows.column(key_of[name])
+            return col if col.type == left_type else pc.cast(col, left_type)
+        return pa.nulls(n, left_type)
 
     def close(self) -> None:
         self._left_buf.clear()
