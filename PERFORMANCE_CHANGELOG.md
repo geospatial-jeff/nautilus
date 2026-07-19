@@ -36,7 +36,15 @@ starts from evidence, not a cold read.
   recently-added delta probed directly and merged amortized. That is feature-sized, not a tweak. A
   constant-factor attempt (store the sort `order` + a zero-copy `Table` instead of reordering every
   buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
-  common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.
+  common stream-table case (a `combine_chunks` per emit) and no change to the asymptote. The full delta
+  index *was* then built and merged (PR #22) — lazy per-row folding into per-id buckets, a cached
+  vectorized path for a stable side, and it did take the synthetic `bench-join-stream` from O(n²) to O(n)
+  (5.7× at 1M rows). But it was **reverted**: the per-batch bucket bookkeeping (a Python loop over the
+  batch's distinct keys, which the old `argsort`-once path did not have) regressed the *real* join
+  workloads that never reach the O(n²) regime — the geospatial join cases `geo-anomaly` (+10–19%) and
+  `geo-forecast` (+37%), both moderate-scale / high-cardinality. No real workload joins two large unbounded
+  streams, so the win was synthetic and the cost was not. A future attempt must not slow the common,
+  high-cardinality, bounded-ish join — measure `geo-anomaly`/`geo-forecast`, not just `bench-join`.
 
 - **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
   by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
