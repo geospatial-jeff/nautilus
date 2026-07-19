@@ -240,3 +240,58 @@ def test_dsl_reshaping_chains_and_matches_parallel() -> None:
 def test_dsl_reshaping_rejects_bad_args_at_build_time(build, match) -> None:
     with pytest.raises(ValueError, match=match):
         build()
+
+
+# --- union (.union — keyless concat, SQL UNION ALL) ---------------------------------------------
+
+
+def _u_left() -> Stream:
+    return source(InMemorySource([data(id=[1, 2], v=["a", "b"]), EOS_FRAME]))
+
+
+def _u_right() -> Stream:
+    return source(InMemorySource([data(id=[2, 3], v=["b", "c"]), EOS_FRAME]))
+
+
+def test_dsl_union_builds_a_keyless_two_input_dag_and_concatenates() -> None:
+    u = _u_left().union(_u_right())
+    graph = u.to_graph()
+    assert [(vx.id, vx.kind) for vx in graph.vertices] == [
+        ("v0", "source"),  # left
+        ("v1", "source"),  # right, relabelled past the left's ids
+        ("v2", "two_input"),
+    ]
+    # both edges into the union carry no key — a keyless merge, not a shuffle
+    ports = sorted((e.dst_input_port, e.src, e.key_columns) for e in graph.edges)
+    assert ports == [(0, "v0", None), (1, "v1", None)]
+    # every row from both sides, duplicates kept: (2, "b") is on both -> count 2
+    assert Counter((r["id"], r["v"]) for r in u.collect()) == Counter(
+        {(1, "a"): 1, (2, "b"): 2, (3, "c"): 1}
+    )
+
+
+def test_dsl_union_matches_serial_when_parallel() -> None:
+    u = _u_left().union(_u_right())
+    assert multiset(u.run(parallelism=2)) == multiset(u.run())
+
+
+def test_dsl_union_distributed_matches_single_process() -> None:
+    u = _u_left().union(_u_right())
+    assert multiset(u.run(workers=2, parallelism=2)) == multiset(u.run())
+
+
+def test_dsl_union_of_three_streams_chains_and_relabels() -> None:
+    # a.union(b).union(c): the second union splices in an operand that is itself a multi-vertex unioned
+    # stream, exercising _combine's id-remap on a non-trivial subgraph.
+    a = source(InMemorySource([data(id=[1], v=["a"]), EOS_FRAME]))
+    b = source(InMemorySource([data(id=[2], v=["b"]), EOS_FRAME]))
+    c = source(InMemorySource([data(id=[3], v=["c"]), EOS_FRAME]))
+    u = a.union(b).union(c)
+    assert len({vx.id for vx in u.to_graph().vertices}) == 5  # 3 sources + 2 unions, all unique
+    assert Counter(r["id"] for r in u.collect()) == Counter({1: 1, 2: 1, 3: 1})
+
+
+def test_dsl_rejects_a_self_union() -> None:
+    s = _u_left()
+    with pytest.raises(ValueError, match="unioned with itself"):
+        s.union(s)

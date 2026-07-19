@@ -1147,3 +1147,33 @@ class HashJoin(TwoInputOperator):
         out.emit(
             pa.RecordBatch.from_arrays(arrays, names=[*self._left_names, *self._right_value_cols])
         )
+
+
+class Union(TwoInputOperator):
+    """Concatenates two input streams into one (SQL ``UNION ALL``): every batch from either side is
+    forwarded unchanged and duplicates are kept — no dedup, no key, no buffering, so it holds no state and
+    runs at any parallelism. The actor forwards EOS downstream once *both* inputs close.
+
+    A single output stream carries one schema, so the two inputs must share theirs. The first batch (from
+    whichever side arrives first) fixes the schema; a later batch — from either side — whose schema differs
+    is rejected. Schemas are compared by column names and types, ignoring metadata; nautilus learns them
+    from the data, so a mismatch surfaces at run time, not when the graph is built."""
+
+    def open(self, ctx: OperatorContext) -> None:
+        self._schema: pa.Schema | None = None
+
+    def _forward(self, batch: pa.RecordBatch, out: Collector) -> None:
+        if self._schema is None:
+            self._schema = batch.schema
+        elif not batch.schema.equals(self._schema):
+            raise ValueError(
+                f"union: both inputs must share a schema; got {batch.schema} "
+                f"after {self._schema}"
+            )
+        out.emit(batch)
+
+    def process_left(self, batch: pa.RecordBatch, out: Collector) -> None:
+        self._forward(batch, out)
+
+    def process_right(self, batch: pa.RecordBatch, out: Collector) -> None:
+        self._forward(batch, out)
