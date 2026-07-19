@@ -1,0 +1,19 @@
+name: runner-smoke
+on:
+  push:
+    branches: [test/runner-smoke]
+jobs:
+  smoke:
+    runs-on: [self-hosted, nautilus-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - name: host
+        run: |
+          uname -a
+          nproc
+          grep -m1 'model name' /proc/cpuinfo
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -e ".[dev,fast,geo]"
+      - name: real nautilus workload
+        run: uv run nautilus bench bench-linear --rows 500000 --trials 3
