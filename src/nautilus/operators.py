@@ -1013,14 +1013,25 @@ class HashJoin(TwoInputOperator):
         total = int(qcount.sum())
         if total == 0:
             return
-        query_take = np.repeat(np.arange(nq), qcount)  # each query row repeated by its match count
-        # The other-side rows for query row i are grouped[qstart[i] : qstart[i] + qcount[i]]; expand those
-        # ranges into one index array via the running-offset trick (no per-row Python).
-        out_starts = np.zeros(nq, dtype=np.int64)
-        np.cumsum(qcount[:-1], out=out_starts[1:])
-        other_take = np.repeat(qstart - out_starts, qcount) + np.arange(total)
-        query_rows = query.take(pa.array(query_take))
-        other_rows = grouped.take(pa.array(other_take))
+        if total == nq and int(qcount.max()) == 1:
+            # The foreign-key / stream-enrichment shape: every query row matches exactly one buffered row
+            # (the other side's key is unique over this batch). Then `query_take` would be `arange(nq)` —
+            # an identity take that needlessly copies the whole batch — and each row's lone match sits at
+            # its run start, so the other-side gather is just `qstart`. Emit the query side in place and
+            # do one take instead of two, skipping the repeat/cumsum index-expansion entirely.
+            query_rows = query
+            other_rows = grouped.take(pa.array(qstart))
+        else:
+            query_take = np.repeat(
+                np.arange(nq), qcount
+            )  # each query row repeated by its match count
+            # The other-side rows for query row i are grouped[qstart[i] : qstart[i] + qcount[i]]; expand
+            # those ranges into one index array via the running-offset trick (no per-row Python).
+            out_starts = np.zeros(nq, dtype=np.int64)
+            np.cumsum(qcount[:-1], out=out_starts[1:])
+            other_take = np.repeat(qstart - out_starts, qcount) + np.arange(total)
+            query_rows = query.take(pa.array(query_take))
+            other_rows = grouped.take(pa.array(other_take))
         left_rows, right_rows = (
             (query_rows, other_rows) if query_is_left else (other_rows, query_rows)
         )
