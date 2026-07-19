@@ -4,14 +4,14 @@
     "bench-async": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-async",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -22,21 +22,21 @@
       },
       "structural_digest": "dcadefe06461176a694f222c424654a403c7fced1e87fde86b55d0bccc06aa55",
       "throughput_rows_per_sec": {
-        "iqr": 2920245.794163257,
-        "max": 129361263.29358685,
-        "median": 119041518.38671412,
-        "min": 108033157.49811605,
-        "rel_spread": 0.024531321792088105,
+        "iqr": 264221.9264203161,
+        "max": 59825921.06832001,
+        "median": 59265908.75535213,
+        "min": 58562091.50326798,
+        "rel_spread": 0.004458244747600449,
         "samples": [
-          108033157.49811605,
-          114937578.7424121,
-          116539310.18464753,
-          117219950.94031072,
-          119041518.38671412,
-          119133376.86234938,
-          119459555.97881079,
-          121779018.2634549,
-          129361263.29358685
+          58562091.50326798,
+          58819529.922044426,
+          59129717.467519075,
+          59258909.327113286,
+          59265908.75535213,
+          59350031.04947216,
+          59393939.39393939,
+          59584372.402327515,
+          59825921.06832001
         ]
       },
       "trials": 9
@@ -44,14 +44,14 @@
     "bench-async-io": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-async-io",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -62,21 +62,21 @@
       },
       "structural_digest": "dcadefe06461176a694f222c424654a403c7fced1e87fde86b55d0bccc06aa55",
       "throughput_rows_per_sec": {
-        "iqr": 1624343.5245096534,
-        "max": 112964484.7188608,
-        "median": 107789473.68421052,
-        "min": 103873305.04088604,
-        "rel_spread": 0.015069593244962605,
+        "iqr": 789262.6098312587,
+        "max": 55384955.019592695,
+        "median": 54242858.301126994,
+        "min": 53280947.19796119,
+        "rel_spread": 0.01455053502987803,
         "samples": [
-          103873305.04088604,
-          105212832.87901028,
-          107288180.89485219,
-          107449006.90615128,
-          107789473.68421052,
-          108606060.60606061,
-          108912524.41936184,
-          109956719.44337918,
-          112964484.7188608
+          53280947.19796119,
+          54036939.31398416,
+          54071878.87278409,
+          54188671.09455154,
+          54242858.301126994,
+          54662417.95353651,
+          54861141.48261535,
+          55094567.514891975,
+          55384955.019592695
         ]
       },
       "trials": 9
@@ -84,14 +84,14 @@
     "bench-backpressure": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-backpressure",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -102,17 +102,17 @@
       },
       "structural_digest": "065c7c2a4a0b7e870336bfb35f216ebc69786f7802143597a08166fe8cb12f29",
       "throughput_rows_per_sec": {
-        "iqr": 947401.5341454297,
-        "max": 31977057.277144905,
-        "median": 31547312.16598554,
-        "min": 30365988.350102127,
-        "rel_spread": 0.03003113321225897,
+        "iqr": 86420.643560756,
+        "max": 28466633.572087083,
+        "median": 28380090.497737557,
+        "min": 28242313.37507915,
+        "rel_spread": 0.0030451151509768935,
         "samples": [
-          30365988.350102127,
-          30676958.349254873,
-          31547312.16598554,
-          31624359.883400302,
-          31977057.277144905
+          28242313.37507915,
+          28360039.56478734,
+          28380090.497737557,
+          28446460.208348095,
+          28466633.572087083
         ]
       },
       "trials": 5
@@ -120,14 +120,14 @@
     "bench-chain-dist": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-chain",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -138,19 +138,19 @@
       },
       "structural_digest": "0bc7cff84d2b28b3a791835aeac36a0e7c8f2e0c447edcfb474879701a16cf9d",
       "throughput_rows_per_sec": {
-        "iqr": 77944.1720756269,
-        "max": 1226477.2023596128,
-        "median": 1187229.9899242248,
-        "min": 1057225.2822986334,
-        "rel_spread": 0.06565212531449084,
+        "iqr": 32924.563154203584,
+        "max": 1161490.4435991019,
+        "median": 1145756.067857245,
+        "min": 1096729.1856023693,
+        "rel_spread": 0.028736101931171102,
         "samples": [
-          1057225.2822986334,
-          1069005.4949444735,
-          1182273.902722062,
-          1187229.9899242248,
-          1191909.194205469,
-          1215258.54761232,
-          1226477.2023596128
+          1096729.1856023693,
+          1119737.5615090213,
+          1127229.7024068057,
+          1145756.067857245,
+          1151540.9992828115,
+          1161275.3909414224,
+          1161490.4435991019
         ]
       },
       "trials": 7
@@ -158,14 +158,14 @@
     "bench-fanout": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-fanout",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -176,17 +176,17 @@
       },
       "structural_digest": "6c72d9c72c3a48a468c728dab5529d15ea29c8237a7b8414bfd860071ddf79b0",
       "throughput_rows_per_sec": {
-        "iqr": 143471.55878239404,
-        "max": 8246021.560574949,
-        "median": 8026608.369768894,
-        "min": 7080805.57621842,
-        "rel_spread": 0.017874493456384363,
+        "iqr": 174549.36659969995,
+        "max": 3714046.2427745666,
+        "median": 3691004.1360294116,
+        "min": 3492200.6630795156,
+        "rel_spread": 0.04729048252638129,
         "samples": [
-          7080805.57621842,
-          7992909.345358419,
-          8026608.369768894,
-          8136380.904140813,
-          8246021.560574949
+          3492200.6630795156,
+          3522401.151236894,
+          3691004.1360294116,
+          3696950.517836594,
+          3714046.2427745666
         ]
       },
       "trials": 5
@@ -194,14 +194,14 @@
     "bench-geo-anomaly": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-anomaly",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -212,17 +212,17 @@
       },
       "structural_digest": "daef5e1ed26aa6c5a5f2a94a57702945c9dabbe08ea62534c28f5d6f075796ad",
       "throughput_rows_per_sec": {
-        "iqr": 391690.0531340726,
-        "max": 21149298.36668967,
-        "median": 20551841.76319123,
-        "min": 20128216.147839412,
-        "rel_spread": 0.019058635116371785,
+        "iqr": 209298.20200778544,
+        "max": 18965869.759552572,
+        "median": 18586975.567020345,
+        "min": 18487649.562623587,
+        "rel_spread": 0.011260476523095671,
         "samples": [
-          20128216.147839412,
-          20548949.48591864,
-          20551841.76319123,
-          20940639.539052714,
-          21149298.36668967
+          18487649.562623587,
+          18490817.06004388,
+          18586975.567020345,
+          18700115.262051664,
+          18965869.759552572
         ]
       },
       "trials": 5
@@ -230,14 +230,14 @@
     "bench-geo-climatology": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-climatology",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -248,17 +248,17 @@
       },
       "structural_digest": "370c18c50c7b04734fa56c8ca76dcbcbe5a0ac7d50addc13893c4b7814c5699b",
       "throughput_rows_per_sec": {
-        "iqr": 1175560.4331785515,
-        "max": 21945063.78577175,
-        "median": 21895678.34874221,
-        "min": 20703305.639510456,
-        "rel_spread": 0.05368915337788935,
+        "iqr": 85219.44469489902,
+        "max": 20538790.43751849,
+        "median": 20327518.064593397,
+        "min": 20004085.80183861,
+        "rel_spread": 0.0041923192208760006,
         "samples": [
-          20703305.639510456,
-          20733935.98827266,
-          21895678.34874221,
-          21909496.42145121,
-          21945063.78577175
+          20004085.80183861,
+          20318595.371109337,
+          20327518.064593397,
+          20403814.815804236,
+          20538790.43751849
         ]
       },
       "trials": 5
@@ -266,14 +266,14 @@
     "bench-geo-forecast": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-forecast",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -284,17 +284,17 @@
       },
       "structural_digest": "80054cd6c951538c4751728b4adc3a70737ea33ac6cbde4b7529eefbbb66a9f8",
       "throughput_rows_per_sec": {
-        "iqr": 132941.25000512972,
-        "max": 23188199.94802381,
-        "median": 22875508.85936433,
-        "min": 22525234.460710872,
-        "rel_spread": 0.005811510066177558,
+        "iqr": 220220.59086543694,
+        "max": 18444362.874839168,
+        "median": 18339735.868991017,
+        "min": 18171105.773439966,
+        "rel_spread": 0.012007838740894181,
         "samples": [
-          22525234.460710872,
-          22797179.48656722,
-          22875508.85936433,
-          22930120.73657235,
-          23188199.94802381
+          18171105.773439966,
+          18197740.53297804,
+          18339735.868991017,
+          18417961.123843476,
+          18444362.874839168
         ]
       },
       "trials": 5
@@ -302,14 +302,14 @@
     "bench-geo-ndvi": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-ndvi",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -320,17 +320,17 @@
       },
       "structural_digest": "d316a5266116127a2dadbd27fab9c5c7c56feb2a10ee5e2be028b3169a956725",
       "throughput_rows_per_sec": {
-        "iqr": 1998230.3796231002,
-        "max": 98866413.53123921,
-        "median": 97999572.30229674,
-        "min": 96582701.06221548,
-        "rel_spread": 0.020390194902679886,
+        "iqr": 1121380.4333016947,
+        "max": 58089187.47623273,
+        "median": 57668134.799788594,
+        "min": 54995391.705069125,
+        "rel_spread": 0.019445408407864885,
         "samples": [
-          96582701.06221548,
-          96774422.43527474,
-          97999572.30229674,
-          98772652.81489784,
-          98866413.53123921
+          54995391.705069125,
+          56873709.293089755,
+          57668134.799788594,
+          57995089.72639145,
+          58089187.47623273
         ]
       },
       "trials": 5
@@ -338,14 +338,14 @@
     "bench-geo-zonal": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-zonal",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -356,17 +356,17 @@
       },
       "structural_digest": "81bce604423503dca0d038d373d93b58e9317fdeeb58cb4fdf1647042c0b1a89",
       "throughput_rows_per_sec": {
-        "iqr": 2123108.3460368216,
-        "max": 55027904.519475535,
-        "median": 53787897.28181776,
-        "min": 50804185.881518275,
-        "rel_spread": 0.039471859903965956,
+        "iqr": 158277.89222979918,
+        "max": 31310250.59437597,
+        "median": 30786113.49957008,
+        "min": 30578238.01008834,
+        "rel_spread": 0.005141210573137447,
         "samples": [
-          50804185.881518275,
-          52288061.336254105,
-          53787897.28181776,
-          54411169.68229093,
-          55027904.519475535
+          30578238.01008834,
+          30734086.21475898,
+          30786113.49957008,
+          30892364.10698878,
+          31310250.59437597
         ]
       },
       "trials": 5
@@ -374,14 +374,14 @@
     "bench-geo-zonal-vector": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-geo-zonal-vector",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -392,17 +392,17 @@
       },
       "structural_digest": "a958c69f20915b83cda73320b74705bd0dde372bad02e8bdfd64cde81a27f490",
       "throughput_rows_per_sec": {
-        "iqr": 1846881.6353908032,
-        "max": 49978341.347176716,
-        "median": 49111097.173440374,
-        "min": 45717994.62846912,
-        "rel_spread": 0.03760619781855759,
+        "iqr": 141475.7645991966,
+        "max": 27459227.568148877,
+        "median": 27388154.366328552,
+        "min": 27249634.5961998,
+        "rel_spread": 0.005165582269870994,
         "samples": [
-          45717994.62846912,
-          48016884.019459546,
-          49111097.173440374,
-          49863765.65485035,
-          49978341.347176716
+          27249634.5961998,
+          27288253.333952885,
+          27388154.366328552,
+          27429729.09855208,
+          27459227.568148877
         ]
       },
       "trials": 5
@@ -410,14 +410,14 @@
     "bench-join": {
       "deterministic": true,
       "environment": {
-        "commit": "dfc6a5f",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-join",
-      "recorded_at": "2026-07-19T09:00:22+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -428,17 +428,17 @@
       },
       "structural_digest": "91ebe41f808210a5cb3550552dbddf5035c45214ccfdd53f75d145daf8b3a56f",
       "throughput_rows_per_sec": {
-        "iqr": 2837006.2995120585,
-        "max": 60022102.7479092,
-        "median": 59226053.63984674,
-        "min": 51798943.162778705,
-        "rel_spread": 0.04790132256259848,
+        "iqr": 288623.6268685572,
+        "max": 28742616.033755273,
+        "median": 28679035.25046382,
+        "min": 28413432.308236126,
+        "rel_spread": 0.01006392385057267,
         "samples": [
-          51798943.162778705,
-          56423978.66067668,
-          59226053.63984674,
-          59260984.96018874,
-          60022102.7479092
+          28413432.308236126,
+          28437557.489563435,
+          28679035.25046382,
+          28726181.116431993,
+          28742616.033755273
         ]
       },
       "trials": 5
@@ -446,14 +446,14 @@
     "bench-join-dist": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-join",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -462,19 +462,19 @@
         "tier": 1,
         "workers": 2
       },
-      "structural_digest": "e47a7c587f8c344c14f52739ab6367f09c0859be89968e77ff3031c14ae7e110",
+      "structural_digest": "11d18e4aa17816944e16faa107c0eb7cf2356429f9f23dcacdd6c5c2b96aa7fd",
       "throughput_rows_per_sec": {
-        "iqr": 19202.30976267974,
-        "max": 870665.7134810771,
-        "median": 862815.3109636976,
-        "min": 827647.2756552163,
-        "rel_spread": 0.022255411463702763,
+        "iqr": 43895.944238169934,
+        "max": 939584.0103237631,
+        "median": 922696.1752146563,
+        "min": 883263.8134963716,
+        "rel_spread": 0.047573562584626486,
         "samples": [
-          827647.2756552163,
-          846189.8004471937,
-          862815.3109636976,
-          865392.1102098734,
-          870665.7134810771
+          883263.8134963716,
+          891781.3082453181,
+          922696.1752146563,
+          935677.2524834881,
+          939584.0103237631
         ]
       },
       "trials": 5
@@ -482,14 +482,14 @@
     "bench-join-wide": {
       "deterministic": true,
       "environment": {
-        "commit": "dfc6a5f",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-join",
-      "recorded_at": "2026-07-19T09:00:22+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 100000,
@@ -500,17 +500,17 @@
       },
       "structural_digest": "e0fae4e3de4318d7252861a4765e5e7514af59834526bf24477598a56d338f46",
       "throughput_rows_per_sec": {
-        "iqr": 932401.5151516944,
-        "max": 59476316.01819394,
-        "median": 58386132.55975997,
-        "min": 55339146.84277917,
-        "rel_spread": 0.015969571442283035,
+        "iqr": 39775.792598146945,
+        "max": 27814277.391646005,
+        "median": 27692340.89621496,
+        "min": 27656154.436825585,
+        "rel_spread": 0.0014363463438218608,
         "samples": [
-          55339146.84277917,
-          57818821.90584822,
-          58386132.55975997,
-          58751223.420999914,
-          59476316.01819394
+          27656154.436825585,
+          27670132.828347497,
+          27692340.89621496,
+          27709908.620945644,
+          27814277.391646005
         ]
       },
       "trials": 5
@@ -518,14 +518,14 @@
     "bench-keyed": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-keyed",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -536,17 +536,17 @@
       },
       "structural_digest": "67cd2f834847d3c5bf6a0527a4152375c156f0d9ad1160570d2851288f107c9e",
       "throughput_rows_per_sec": {
-        "iqr": 9851374.690531746,
-        "max": 95176915.79943235,
-        "median": 91581247.15521164,
-        "min": 70821541.71066526,
-        "rel_spread": 0.1075697808945063,
+        "iqr": 573578.3924989551,
+        "max": 46158293.18651067,
+        "median": 45521266.96832579,
+        "min": 37136212.62458472,
+        "rel_spread": 0.01260022909507456,
         "samples": [
-          70821541.71066526,
-          84610597.14045417,
-          91581247.15521164,
-          94461971.83098592,
-          95176915.79943235
+          37136212.62458472,
+          45521266.96832579,
+          45521266.96832579,
+          46094845.36082474,
+          46158293.18651067
         ]
       },
       "trials": 5
@@ -554,14 +554,14 @@
     "bench-keyed-dist": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-keyed",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -572,17 +572,17 @@
       },
       "structural_digest": "fe76f59462aa15008a06348bd3e34ec144d27fd854a96a738641e1127e05c5c7",
       "throughput_rows_per_sec": {
-        "iqr": 18450.215828579618,
-        "max": 464190.8774002137,
-        "median": 455634.286024851,
-        "min": 439866.1189582463,
-        "rel_spread": 0.0404934755668789,
+        "iqr": 52887.6294264709,
+        "max": 496892.0170401927,
+        "median": 448849.56699816626,
+        "min": 428197.477686077,
+        "rel_spread": 0.11782929808794261,
         "samples": [
-          439866.1189582463,
-          440026.7684919104,
-          455634.286024851,
-          458476.98432049004,
-          464190.8774002137
+          428197.477686077,
+          437099.73148880334,
+          448849.56699816626,
+          489987.36091527424,
+          496892.0170401927
         ]
       },
       "trials": 5
@@ -590,14 +590,14 @@
     "bench-keyed-wide": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-keyed",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 1000,
@@ -608,17 +608,17 @@
       },
       "structural_digest": "4597615e387add25587562e37efb83300b19a0df53c813a6a80e25747ba9f1b7",
       "throughput_rows_per_sec": {
-        "iqr": 125132.44450608082,
-        "max": 6395736.056810021,
-        "median": 6318261.357581338,
-        "min": 6234445.339746322,
-        "rel_spread": 0.019804885778574716,
+        "iqr": 9013.702450911049,
+        "max": 3410173.2872504625,
+        "median": 3397983.8743863874,
+        "min": 3389563.7759848447,
+        "rel_spread": 0.00265266192663694,
         "samples": [
-          6234445.339746322,
-          6253218.750195029,
-          6318261.357581338,
-          6378351.19470111,
-          6395736.056810021
+          3389563.7759848447,
+          3390653.446583872,
+          3397983.8743863874,
+          3399667.1490347832,
+          3410173.2872504625
         ]
       },
       "trials": 5
@@ -626,14 +626,14 @@
     "bench-linear": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-linear",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -644,17 +644,17 @@
       },
       "structural_digest": "f0943a2c31353e4ec26c161de1fc930777fee380990f95ccdc8af9015e3088dc",
       "throughput_rows_per_sec": {
-        "iqr": 8236199.230653942,
-        "max": 194952889.75230694,
-        "median": 186788273.6156352,
-        "min": 138225895.3168044,
-        "rel_spread": 0.044093770295249024,
+        "iqr": 1358591.1359446198,
+        "max": 96307101.72744723,
+        "median": 93134106.72853829,
+        "min": 91939532.75309208,
+        "rel_spread": 0.014587471589807156,
         "samples": [
-          138225895.3168044,
-          185493530.49907577,
-          186788273.6156352,
-          193729729.7297297,
-          194952889.75230694
+          91939532.75309208,
+          92362632.30556834,
+          93134106.72853829,
+          93721223.44151296,
+          96307101.72744723
         ]
       },
       "trials": 5
@@ -662,14 +662,14 @@
     "bench-skew": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "82124bc",
         "nautilus_version": "0.0.1",
-        "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
-        "processor": "unknown",
-        "python_version": "3.14.4"
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "x86_64",
+        "python_version": "3.14.6"
       },
       "pipeline": "bench-skew",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T16:01:48+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -680,17 +680,17 @@
       },
       "structural_digest": "67cd2f834847d3c5bf6a0527a4152375c156f0d9ad1160570d2851288f107c9e",
       "throughput_rows_per_sec": {
-        "iqr": 689139.4101282991,
-        "max": 25805309.734513275,
-        "median": 23704524.033930253,
-        "min": 22931844.084795985,
-        "rel_spread": 0.029072062748101448,
+        "iqr": 65735.39929961972,
+        "max": 13230142.030510258,
+        "median": 13213633.677021082,
+        "min": 12931679.413844077,
+        "rel_spread": 0.004974816231960146,
         "samples": [
-          22931844.084795985,
-          23447616.82787554,
-          23704524.033930253,
-          24136756.23800384,
-          25805309.734513275
+          12931679.413844077,
+          13159189.012426423,
+          13213633.677021082,
+          13224924.411726043,
+          13230142.030510258
         ]
       },
       "trials": 5
