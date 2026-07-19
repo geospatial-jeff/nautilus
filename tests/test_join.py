@@ -177,6 +177,53 @@ def test_join_demote_preserves_ids_assigned_on_the_fast_path() -> None:
     assert _triples(out) == Counter({(3, "a", 30): 1, (3, "d", 30): 1, (10**9, "c", 90): 1})
 
 
+# --- the incremental index at scale: growing-both-sides, lazy folding, batch compaction ---------------
+# The small tests above all fit the single-batch / stable path. These drive many interleaved batches so
+# both sides keep growing (the bucket-gather path), rows fold in lazily across many probes, and the
+# buffered batches compact — the machinery a stream-stream join exercises that a stream-table one never
+# does. Each must still equal a brute-force cross product.
+
+
+def _reference(left: list, right: list) -> Counter:
+    return Counter(
+        (lk, lv, rv) for lk, lv in left for rk, rv in right if lk == rk and type(lk) is type(rk)
+    )
+
+
+def test_join_stream_stream_many_interleaved_batches_matches_reference() -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    steps: list[tuple[str, pa.RecordBatch]] = []
+    left: list[tuple[int, int]] = []
+    right: list[tuple[int, int]] = []
+    n = 0
+    for _ in range(
+        60
+    ):  # 60 batches/side of ~16 rows over 15 keys → folding, growing path, compaction
+        lk, lv = rng.integers(0, 15, 16), np.arange(n, n + 16)
+        rk, rv = rng.integers(0, 15, 16), np.arange(1000 + n, 1016 + n)
+        n += 16
+        steps.append(("L", batch(id=lk.tolist(), lval=lv.tolist())))
+        steps.append(("R", batch(id=rk.tolist(), rval=rv.tolist())))
+        left += list(zip(lk.tolist(), lv.tolist(), strict=True))
+        right += list(zip(rk.tolist(), rv.tolist(), strict=True))
+    assert _triples(_drive(HashJoin("id"), steps)) == _reference(left, right)
+
+
+def test_join_all_of_one_side_then_the_other_hits_the_stable_path() -> None:
+    # All right batches first, then all left: when the left probes, the right has stopped growing, so every
+    # left probe takes the cached (stable) CSR path. Same result as the interleaved arrival.
+    import numpy as np
+
+    rng = np.random.default_rng(9)
+    rights = [(int(k), 1000 + i) for i in range(80) for k in [rng.integers(0, 12)]]
+    lefts = [(int(k), i) for i in range(80) for k in [rng.integers(0, 12)]]
+    steps = [("R", batch(id=[k], rval=[v])) for k, v in rights]
+    steps += [("L", batch(id=[k], lval=[v])) for k, v in lefts]
+    assert _triples(_drive(HashJoin("id"), steps)) == _reference(lefts, rights)
+
+
 # --- through the engine: co-partitioning makes the parallel and distributed results match serial -----
 
 _LEFT = [data(id=[1, 1, 2, 3], lval=["a", "b", "c", "d"]), EOS_FRAME]
