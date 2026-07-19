@@ -4,8 +4,8 @@ A :class:`Stream` is an immutable handle on a dataflow under construction: every
 *new* Stream that adds one operator, so a Stream value is reusable and side-effect-free. :func:`source`
 starts one; per-batch verbs (``.map`` / ``.filter`` / ``.tokenize``), column reshaping (``.select`` /
 ``.drop`` / ``.rename`` / ``.with_column``), keyed aggregation (``.count_by`` / ``.agg_by``), and
-``.apply`` extend it; ``.join`` combines two; and ``.run`` / ``.collect`` execute it. The same graph runs
-in one process or across workers — ``.run(workers=…)`` is the only thing that changes.
+``.apply`` extend it; ``.join`` and ``.union`` combine two; and ``.run`` / ``.collect`` execute it. The
+same graph runs in one process or across workers — ``.run(workers=…)`` is the only thing that changes.
 
 This is a value layer that sits *above* :mod:`nautilus.api`: it knows the concrete operators (so it can
 build them for you) but it only ever produces a :class:`~nautilus.api.LogicalGraph`. The runners live at
@@ -37,6 +37,7 @@ from nautilus.operators import (
     KeyedCount,
     MapBatch,
     Tokenize,
+    Union,
     from_batches,
 )
 
@@ -339,23 +340,65 @@ class Stream:
                 "use how='inner' to parallelize the join, or set parallelism=1"
             )
         left_keys, right_keys = _join_keys(on, left_on, right_on)
-        # other's vertex ids are v0..v{m-1}; shift them past this stream's so the union has unique ids.
+        return self._combine(
+            other,
+            lambda: HashJoin(left_keys, right_keys, how),
+            left_keys=left_keys,
+            right_keys=right_keys,
+            parallelism=parallelism,
+            copartitioned=True,
+        )
+
+    def union(self, other: Stream, *, parallelism: int = 1) -> Stream:
+        """Concatenate ``other`` onto this stream (:class:`~nautilus.operators.Union`, SQL ``UNION ALL``):
+        every row from both inputs, duplicates kept, no key. The two streams must share a schema, checked
+        at run time (nautilus learns schemas from the data). Unlike ``.join`` the inputs are not shuffled —
+        each side's batches flow straight through — so it holds no state and runs at any ``parallelism``.
+
+        Build each side from its own :func:`source`. If both inputs derive from one source (a diamond),
+        that source is read once per branch, so it must be replayable — the built-in sources are."""
+        if other is self:
+            raise ValueError(
+                "a stream cannot be unioned with itself; build the two inputs as separate streams"
+            )
+        return self._combine(
+            other,
+            Union,
+            left_keys=None,
+            right_keys=None,
+            parallelism=parallelism,
+            copartitioned=False,
+        )
+
+    def _combine(
+        self,
+        other: Stream,
+        factory: Callable[[], object],
+        *,
+        left_keys: tuple[str, ...] | None,
+        right_keys: tuple[str, ...] | None,
+        parallelism: int,
+        copartitioned: bool,
+    ) -> Stream:
+        """Splice ``other``'s subgraph into this one and append a two-input vertex fed by this stream's
+        tail (left, port 0) and ``other``'s tail (right, port 1). ``other``'s vertex ids are shifted past
+        this stream's so all ids stay unique. The two edges carry ``left_keys``/``right_keys`` — the key
+        columns a join co-partitions on, or ``None`` for a keyless merge like ``union`` (``copartitioned``
+        then says which it is, so a parallel union is not mistaken for an unkeyed join)."""
         shift = len(self._vertices)
         remap = {f"v{i}": f"v{shift + i}" for i in range(len(other._vertices))}
         other_vertices = tuple(replace(v, id=remap[v.id]) for v in other._vertices)
         other_edges = tuple(replace(e, src=remap[e.src], dst=remap[e.dst]) for e in other._edges)
-        jid = f"v{shift + len(other._vertices)}"
-        jvertex = LogicalVertex(
-            jid, lambda: HashJoin(left_keys, right_keys, how), "two_input", parallelism, None
-        )
-        vertices = (*self._vertices, *other_vertices, jvertex)
+        vid = f"v{shift + len(other._vertices)}"
+        vertex = LogicalVertex(vid, factory, "two_input", parallelism, None, copartitioned)
+        vertices = (*self._vertices, *other_vertices, vertex)
         edges = (
             *self._edges,
             *other_edges,
-            LogicalEdge(self._tail, jid, 0, left_keys),
-            LogicalEdge(remap[other._tail], jid, 1, right_keys),
+            LogicalEdge(self._tail, vid, 0, left_keys),
+            LogicalEdge(remap[other._tail], vid, 1, right_keys),
         )
-        return Stream(vertices, edges, jid, shift + len(other._vertices) + 1)
+        return Stream(vertices, edges, vid, shift + len(other._vertices) + 1)
 
     # --- sink terminal --------------------------------------------------------------------------
 

@@ -59,6 +59,11 @@ class LogicalVertex:
     input is co-partitioned on — which the compiler copies onto the synthesized port-0 edge. In an
     explicit-edge graph the edge carries the keying instead (a join keys its two inputs on different
     columns), so a ``two_input`` vertex leaves ``key_columns`` ``None``.
+
+    ``copartitioned`` (``two_input`` only) says whether the operator correlates its two inputs and so needs
+    equal keys to reach the same instance: ``True`` for a join, whose inbound edges must therefore be keyed
+    when it runs parallel; ``False`` for a keyless merge like ``union`` that forwards each side
+    independently and so parallelizes with keyless edges.
     """
 
     id: str
@@ -66,6 +71,7 @@ class LogicalVertex:
     kind: str
     parallelism: int = 1
     key_columns: tuple[str, ...] | None = None
+    copartitioned: bool = True
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -90,6 +96,12 @@ class LogicalVertex:
             raise ValueError(
                 f"key_columns is only meaningful on a one_input vertex; {self.id!r} is {self.kind!r} "
                 "(a join keys its inputs on its edges)"
+            )
+        if not self.copartitioned and self.kind != _TWO_INPUT:
+            # Only a two-input vertex correlates two inputs; the flag has no meaning elsewhere.
+            raise ValueError(
+                f"copartitioned=False is only meaningful on a two_input vertex; {self.id!r} is "
+                f"{self.kind!r}"
             )
 
 
@@ -218,14 +230,16 @@ class LogicalGraph:
                 )
             if (
                 v.kind == _TWO_INPUT
+                and v.copartitioned
                 and v.parallelism > 1
                 and any(e.key_columns is None for e in ins)
             ):
                 # A keyless edge into a parallel stage routes by position, not key (a forward or a
-                # round-robin), so it scatters a key across instances — fine for a stateless one-input
-                # stage, but for a join it splits a key's two sides onto different instances so they never
-                # meet and matches vanish silently. Both join inputs must be keyed so equal keys
-                # co-partition. (Harmless at parallelism 1, where a single instance owns everything.)
+                # round-robin), so it scatters a key across instances. For an operator that correlates its
+                # two inputs (a join, copartitioned=True) that splits a key's two sides onto different
+                # instances so they never meet and matches vanish silently — both inputs must be keyed. A
+                # keyless merge (union, copartitioned=False) forwards each side independently, so scatter is
+                # fine and it is exempt. (Harmless at parallelism 1, where a single instance owns all.)
                 raise ValueError(
                     f"two_input vertex {v.id!r} runs at parallelism {v.parallelism} but an input edge is "
                     "keyless; both inputs must carry key_columns so equal keys co-partition to the same "
@@ -282,17 +296,27 @@ def one_input(
     )
 
 
-def two_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:
-    """Build a two-input (join) vertex. Its keying lives on its two inbound :class:`LogicalEdge`\\ s (port
-    0 = left, port 1 = right), each co-partitioned on its own columns, so it carries no ``key_columns``.
+def two_input(
+    id: str, factory: VertexFactory, *, parallelism: int = 1, copartitioned: bool = True
+) -> LogicalVertex:
+    """Build a two-input vertex. Its keying lives on its two inbound :class:`LogicalEdge`\\ s (port 0 =
+    left, port 1 = right), so it carries no ``key_columns``.
 
-    When hand-building the IR, those edges' ``key_columns`` must name the same columns the join operator
-    joins on (its ``left_on``/``right_on``): the edge decides where a row goes, the operator decides what
-    matches, so a mismatch shuffles on different columns than it joins and silently mis-joins. The fluent
-    :meth:`nautilus.dsl.Stream.join` derives both from one ``on=`` / ``left_on=`` / ``right_on=``, so they
-    cannot drift.
+    ``copartitioned`` (default ``True``) is for an operator that correlates its two inputs — a join — whose
+    inbound edges' ``key_columns`` must then name the same columns the operator joins on (its
+    ``left_on``/``right_on``): the edge decides where a row goes, the operator decides what matches, so a
+    mismatch shuffles on different columns than it joins and silently mis-joins. Pass ``copartitioned=False``
+    for a keyless merge (a ``union``) that forwards each side independently and so runs parallel with
+    keyless edges. The fluent :meth:`nautilus.dsl.Stream.join` / :meth:`~nautilus.dsl.Stream.union` set
+    both, so they cannot drift.
     """
-    return LogicalVertex(id=id, factory=factory, kind=_TWO_INPUT, parallelism=parallelism)
+    return LogicalVertex(
+        id=id,
+        factory=factory,
+        kind=_TWO_INPUT,
+        parallelism=parallelism,
+        copartitioned=copartitioned,
+    )
 
 
 def async_one_input(id: str, factory: VertexFactory, *, parallelism: int = 1) -> LogicalVertex:
