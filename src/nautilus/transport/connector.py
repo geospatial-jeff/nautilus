@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import ssl
 from collections.abc import Callable
 
 from nautilus.runtime.channel import DEFAULT_CAPACITY, Channel
 from nautilus.runtime.connector import ChannelId, Connector
+from nautilus.security import authenticate_client
 from nautilus.transport.handshake import write_handshake
 from nautilus.transport.listener import EdgeListener
 from nautilus.transport.socket_channel import SocketChannel
@@ -78,11 +80,15 @@ class SocketConnector(Connector):
         *,
         capacity: int = DEFAULT_CAPACITY,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        secret: bytes | None = None,
+        tls: ssl.SSLContext | None = None,
     ) -> None:
         self._listener = listener
         self._resolve = resolve
         self._capacity = capacity
         self._connect_timeout = connect_timeout
+        self._secret = secret  # shared secret + TLS, injected by the worker (see nautilus.security)
+        self._tls = tls
         self._outbound: list[SocketChannel] = []
         self._inbound: list[SocketChannel] = []
 
@@ -97,7 +103,10 @@ class SocketConnector(Connector):
         for attempt in range(_DIAL_ATTEMPTS):
             try:
                 return await asyncio.wait_for(
-                    asyncio.open_connection(host, port), self._connect_timeout
+                    asyncio.open_connection(
+                        host, port, ssl=self._tls, server_hostname=host if self._tls else None
+                    ),
+                    self._connect_timeout,
                 )
             except socket.gaierror as exc:
                 last = exc
@@ -110,8 +119,10 @@ class SocketConnector(Connector):
         reader, writer = await self._dial(host, port)
         try:
             _enable_keepalive(writer)
-            # Announce the edge before the SocketChannel starts its read loop, so the bytes after the
+            # Prove the shared secret before announcing the edge, so a hijacker cannot even claim a slot;
+            # then announce the edge before the SocketChannel starts its read loop, so the bytes after the
             # preamble are exactly the frame stream a socketpair channel would carry.
+            await authenticate_client(reader, writer, self._secret)
             await write_handshake(writer, channel_id)
         except Exception:
             writer.close()  # no SocketChannel wraps it yet, so close the raw socket ourselves

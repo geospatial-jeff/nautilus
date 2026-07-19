@@ -214,5 +214,7 @@ cause-and-effect. See `docs/telemetry-reference.md`.
 The single-process semantics core, tensor columns, the credit transport, the telemetry subsystem, the
 compiler + cluster control plane (compile a graph and deploy it across worker processes), the fluent
 `Stream` DSL, and the two-input inner equi-join run today. The same plan also runs across separate
-containers addressed by service DNS — a coordinator dialing long-lived worker daemons (Stage 4); securing
-that path on an untrusted network is Stage 5. `IMPLEMENTATION_PLAN.md` has the stage-by-stage detail.
+containers addressed by service DNS — a coordinator dialing long-lived worker daemons (Stage 4), with the
+control and data planes authenticated by a shared secret and optionally TLS-encrypted, and a non-loopback
+bind refused without one (Stage 5; `nautilus.security`). `IMPLEMENTATION_PLAN.md` has the stage-by-stage
+detail — including why that security authenticates the peer rather than replacing the cloudpickle codec.

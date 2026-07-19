@@ -39,6 +39,7 @@ from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS
 from nautilus.core.time import SystemClock
 from nautilus.driver.result import RunResult
 from nautilus.pipelines import EXAMPLES, GRAPH_EXAMPLES, load_pipeline
+from nautilus.security.secret import SecretError
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport
@@ -302,9 +303,11 @@ def worker(
     """Run a long-lived worker daemon a coordinator dials — the multi-node worker. It binds a control
     port, waits, and runs one job per coordinator connection, then returns to idle.
 
-    Security: the daemon runs whatever plan a coordinator sends — i.e. it executes that code — with no
-    authentication or encryption, so run it only on a trusted, private network and never publish its
-    ports. Hardening this is Stage 5."""
+    Security: the daemon runs whatever plan a coordinator sends — i.e. it executes that code — so it
+    authenticates every coordinator and data-edge peer with a shared secret (``NAUTILUS_CLUSTER_SECRET``,
+    the same value on every node) and refuses to bind a non-loopback interface — the default here — without
+    one. Set ``NAUTILUS_CLUSTER_TLS_CERT``/``_KEY``/``_CA`` to additionally encrypt the wire (mutual TLS)
+    for an untrusted network."""
     from nautilus.cluster.daemon import healthcheck as probe
     from nautilus.cluster.daemon import run_daemon
 
@@ -319,7 +322,11 @@ def worker(
         )
         raise typer.Exit(code=2)
     host, port = _split_host_port(listen)
-    run_daemon(host, port, bind, advertise_host)
+    try:
+        run_daemon(host, port, bind, advertise_host)
+    except SecretError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
 
 
 @app.command()
@@ -750,6 +757,9 @@ def dashboard(
             )
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
+    except SecretError as e:  # fail-closed: non-loopback dashboard bind without a token
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     except OSError as e:
         console.print(
             f"[red]could not bind {host}:{port}[/red]: {e}  (try --port 0 or another --port)"
@@ -778,6 +788,9 @@ def serve(
         asyncio.run(_serve_report(report.read_text(), host=host, port=port, on_ready=on_ready))
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
+    except SecretError as e:  # fail-closed: non-loopback dashboard bind without a token
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     except OSError as e:
         console.print(
             f"[red]could not bind {host}:{port}[/red]: {e}  (try --port 0 or another --port)"

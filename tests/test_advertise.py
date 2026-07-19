@@ -35,10 +35,13 @@ def _wc(result: RunResult) -> Counter:
     return Counter((row["word"], row["count"]) for row in result.to_pylist())
 
 
-def test_bind_all_interfaces_advertise_loopback_matches_serial() -> None:
+def test_bind_all_interfaces_advertise_loopback_matches_serial(monkeypatch) -> None:
     # The real container scenario, hermetically: bind 0.0.0.0 (all interfaces) but advertise a routable
     # host (127.0.0.1). Peers dial the advertised host and reach the all-interfaces listener, so the keyed
-    # shuffle crosses a socket and the result matches the single-process run.
+    # shuffle crosses a socket and the result matches the single-process run. A non-loopback bind now
+    # requires the cluster secret (fail-closed), so this also drives the data-plane auth handshake end to
+    # end — every cross-worker edge authenticates before it carries a frame.
+    monkeypatch.setenv("NAUTILUS_CLUSTER_SECRET", "test-cluster-secret-long-enough-0123456789")
     serial = asyncio.run(
         run_local_chain(InMemorySource(_frames()), [Tokenize("line", "word"), KeyedCount("word")])
     )

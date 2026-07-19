@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import selectors
 import socket
+import ssl
 import time
 from abc import ABC, abstractmethod
 from contextlib import suppress
@@ -31,6 +32,7 @@ from typing import Any
 from nautilus.cluster.control_link import Abort, Launch, encode, take_message
 from nautilus.cluster.launcher import reap
 from nautilus.cluster.rendezvous import WorkerCrashed, recv_event
+from nautilus.security import authenticate_client_sync
 from nautilus.telemetry import TelemetryConfig
 
 # Bound the control dial. A daemon can be milliseconds slow to bind even behind a healthcheck, and a
@@ -101,10 +103,18 @@ def _enable_keepalive(sock: socket.socket) -> None:
                 sock.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
 
 
-def _dial_control(host: str, port: int, connect_timeout: float) -> socket.socket:
+def _dial_control(
+    host: str,
+    port: int,
+    connect_timeout: float,
+    secret: bytes | None = None,
+    client_tls: ssl.SSLContext | None = None,
+) -> socket.socket:
     """Dial a daemon's control port, retrying a refused/transient connect with backoff until
     ``connect_timeout`` — the daemon may be slightly slow to bind. Raises ``ConnectionError`` if it never
-    accepts in time. Returns a blocking socket with keepalive on."""
+    accepts in time. Once connected, wrap in TLS if configured and run the shared-secret handshake, so no
+    Launch is sent to (nor any reply read from) an endpoint that cannot prove the secret. Returns a
+    blocking socket with keepalive on."""
     deadline = time.monotonic() + connect_timeout
     last: Exception | None = None
     while True:
@@ -121,11 +131,23 @@ def _dial_control(host: str, port: int, connect_timeout: float) -> socket.socket
             last = exc
             time.sleep(min(_CONTROL_DIAL_BACKOFF, max(0.0, deadline - time.monotonic())))
             continue
-        sock.settimeout(
-            None
-        )  # blocking sends; reads are gated by the selector, so they never block
-        _enable_keepalive(sock)
-        return sock
+        try:
+            if (
+                client_tls is not None
+            ):  # TLS handshake on the blocking socket before anything nautilus
+                sock = client_tls.wrap_socket(sock, server_hostname=host)
+            # Mutual shared-secret proof; raises AuthError on failure. Wrapped so a failed TLS or auth
+            # handshake closes the socket instead of leaking the fd on the way out.
+            authenticate_client_sync(sock, secret)
+            sock.settimeout(
+                None
+            )  # blocking sends; reads are selector-driven (recv only when readable)
+            _enable_keepalive(sock)
+            return sock
+        except BaseException:
+            with suppress(OSError):
+                sock.close()
+            raise
 
 
 class _DaemonConn:
@@ -151,6 +173,10 @@ class _DaemonConn:
         same thing here, the worker is gone."""
         try:
             chunk = self._sock.recv(65536)
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            # A TLS socket can be TCP-readable without a full record yet; that is not a drop. (These
+            # subclass OSError, so they must be caught before the OSError arm below.)
+            return False
         except OSError:
             return True
         if not chunk:
@@ -185,15 +211,21 @@ class RemoteCohort(WorkerCohort):
         config: TelemetryConfig,
         effective: int,
         connect_timeout: float,
+        secret: bytes | None = None,
+        client_tls: ssl.SSLContext | None = None,
     ) -> RemoteCohort:
         """Dial the first ``effective`` daemons on the roster, assign ``worker_id = roster index``, and
-        send each its ``Launch`` (the plan, placement, capacity, config). Surplus roster entries are left
-        untouched. On any failure, closes every connection already opened."""
+        send each its ``Launch`` (the plan, placement, capacity, config). Each dial runs the shared-secret
+        handshake (and TLS if configured), so a Launch never reaches an unauthenticated daemon. Surplus
+        roster entries are left untouched. On any failure, closes every connection already opened.
+        """
         conns: dict[int, _DaemonConn] = {}
         try:
             for worker_id in range(effective):
                 host, port = daemons[worker_id]
-                conns[worker_id] = _DaemonConn(_dial_control(host, port, connect_timeout))
+                conns[worker_id] = _DaemonConn(
+                    _dial_control(host, port, connect_timeout, secret, client_tls)
+                )
             for worker_id, conn in conns.items():
                 try:
                     conn.send(Launch(worker_id, plan_bytes, placement, capacity, config))

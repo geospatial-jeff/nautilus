@@ -33,6 +33,7 @@ from nautilus.driver.meta import make_run_meta
 from nautilus.driver.result import RunResult
 from nautilus.driver.run import plan_to_topology
 from nautilus.runtime.channel import DEFAULT_CAPACITY
+from nautilus.security import cluster_secret, require_secret_for_bind, tls_from_env
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.telemetry.report import NullSink, RunReport, Sink, build_report
@@ -125,12 +126,27 @@ def deploy(
     started_at = clk.now_micros()
     wall0 = perf_counter_ns()
     run_id = config.run_id or f"run-{started_at}"  # shared by the live reports and the final one
+    # Read the cluster secret + optional TLS once (Stage 5). The local spawn path crosses no network for
+    # control (mp.Queue), but its data edges bind `host`, so a non-loopback local bind is fail-closed on
+    # the secret too; the daemons path (below) carries them on each dial.
+    secret = cluster_secret()
+    tls = tls_from_env()
+    client_tls = tls[1] if tls else None
     if daemons is not None:
         cohort: WorkerCohort = RemoteCohort.launch(
-            daemons, plan_bytes, placement, capacity, worker_config, effective, connect_timeout
+            daemons,
+            plan_bytes,
+            placement,
+            capacity,
+            worker_config,
+            effective,
+            connect_timeout,
+            secret,
+            client_tls,
         )
     else:
         advertise = advertise_host if advertise_host is not None else host
+        require_secret_for_bind(host, secret)
         cohort = LocalCohort(
             *spawn_workers(
                 plan_bytes, placement, host, advertise, capacity, worker_config, effective

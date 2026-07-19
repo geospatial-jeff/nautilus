@@ -4,14 +4,21 @@
 # mounted volume the integration test reads back. Each worker advertises its service name, binds all
 # interfaces, and only becomes a depends_on target once its control port accepts (the healthcheck).
 #
-# No `ports:` — the worker control and data ports stay on the internal bridge. Binding 0.0.0.0 with no
-# auth (Stage 4) is contained only while the ports are not published to the host; securing this is Stage 5.
+# No `ports:` — the worker control and data ports stay on the internal bridge. The daemons bind 0.0.0.0,
+# so (Stage 5) they authenticate every peer with the cluster secret below and refuse to bind without it.
+
+# The shared secret every service authenticates with (Stage 5). A demo value so the harness runs
+# hermetically; inject a real one (`export NAUTILUS_CLUSTER_SECRET=$(openssl rand -hex 32)`) in any real
+# deployment, and add NAUTILUS_CLUSTER_TLS_* to encrypt.
+x-cluster-env: &cluster-env
+  NAUTILUS_CLUSTER_SECRET: ${NAUTILUS_CLUSTER_SECRET:-compose-demo-secret-change-me-0123456789}
 
 services:
   worker-0:
     build: .
     image: nautilus:stage4
     command: worker --listen 0.0.0.0:9000 --advertise worker-0 --bind 0.0.0.0
+    environment: *cluster-env
     healthcheck:
       test: ["CMD", "nautilus", "worker", "--healthcheck", "127.0.0.1:9000"]
       interval: 1s
@@ -23,6 +30,7 @@ services:
     build: .
     image: nautilus:stage4
     command: worker --listen 0.0.0.0:9000 --advertise worker-1 --bind 0.0.0.0
+    environment: *cluster-env
     healthcheck:
       test: ["CMD", "nautilus", "worker", "--healthcheck", "127.0.0.1:9000"]
       interval: 1s
@@ -33,6 +41,7 @@ services:
   coordinator:
     build: .
     image: nautilus:stage4
+    environment: *cluster-env
     depends_on:
       worker-0:
         condition: service_healthy

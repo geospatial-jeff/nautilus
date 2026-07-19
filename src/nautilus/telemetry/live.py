@@ -31,6 +31,8 @@ from nautilus.driver.meta import make_run_meta
 from nautilus.driver.pipeline import graph_from_pipeline
 from nautilus.driver.run import plan_to_topology, run_compiled
 from nautilus.runtime.channel import DEFAULT_CAPACITY
+from nautilus.security import dashboard_token, is_loopback
+from nautilus.security.secret import SecretError
 from nautilus.telemetry import RecorderRegistry, TelemetryConfig
 from nautilus.telemetry.report import RunMeta, RunReport, Topology, build_report
 
@@ -141,7 +143,12 @@ class _Server(ThreadingHTTPServer):
     )
 
 
-def _handler_class(source: Snapshotter, html: bytes) -> type[BaseHTTPRequestHandler]:
+def _handler_class(
+    source: Snapshotter, html: bytes, token: str | None
+) -> type[BaseHTTPRequestHandler]:
+    import hashlib
+    import hmac
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: object) -> None:
             pass  # quiet
@@ -154,8 +161,29 @@ def _handler_class(source: Snapshotter, html: bytes) -> type[BaseHTTPRequestHand
             with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                 self.wfile.write(body)
 
+        def _authorized(self) -> bool:
+            # When a token is configured, every route but the health probe needs `Authorization: Bearer
+            # <token>` (constant-time compared). No token ⇒ open (the loopback-only default).
+            if token is None:
+                return True
+            header = self.headers.get("Authorization", "")
+            prefix = "Bearer "
+            if not header.startswith(prefix):
+                return False
+            # Compare fixed-width digests so neither the token's length nor the match boundary is timeable.
+            return hmac.compare_digest(
+                hashlib.sha256(header[len(prefix) :].encode()).digest(),
+                hashlib.sha256(token.encode()).digest(),
+            )
+
         def do_GET(self) -> None:  # noqa: N802 (stdlib handler API)
             path = self.path.split("?", 1)[0]
+            if path == "/healthz":
+                self._send(200, "text/plain", b"ok")
+                return
+            if not self._authorized():
+                self._send(401, "text/plain", b"unauthorized: set Authorization: Bearer <token>")
+                return
             if path in ("/", "/index.html"):
                 self._send(200, "text/html; charset=utf-8", html)
             elif path == "/api/telemetry.json":
@@ -165,8 +193,6 @@ def _handler_class(source: Snapshotter, html: bytes) -> type[BaseHTTPRequestHand
                     self._send(503, "application/json", b'{"error":"snapshot timed out"}')
                 except Exception as e:  # never crash the server thread
                     self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
-            elif path == "/healthz":
-                self._send(200, "text/plain", b"ok")
             else:
                 self._send(404, "text/plain", b"not found")
 
@@ -179,7 +205,15 @@ class LiveServer:
     def __init__(
         self, source: Snapshotter, html: bytes, *, host: str = "127.0.0.1", port: int = 8787
     ) -> None:
-        self._httpd = _Server((host, port), _handler_class(source, html))
+        # The report exposes the whole run; on a non-loopback bind it must be token-gated (fail-closed),
+        # so an exposed dashboard is never open. Loopback (the default) needs no token.
+        token = dashboard_token()
+        if token is None and not is_loopback(host):
+            raise SecretError(
+                f"refusing to serve the dashboard on {host!r} (non-loopback) without a token: set "
+                f"NAUTILUS_DASHBOARD_TOKEN (or NAUTILUS_CLUSTER_SECRET), or bind 127.0.0.1"
+            )
+        self._httpd = _Server((host, port), _handler_class(source, html, token))
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._stopped = False
         self.host = host

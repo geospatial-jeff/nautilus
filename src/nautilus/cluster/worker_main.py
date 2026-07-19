@@ -36,6 +36,7 @@ from nautilus.compile.plan import PhysicalPlan
 from nautilus.runtime.channel import Channel
 from nautilus.runtime.connector import ChannelId, Connector, Deployment, InProcessConnector
 from nautilus.runtime.execute import execute
+from nautilus.security import cluster_secret, tls_from_env
 from nautilus.telemetry import TelemetryConfig
 from nautilus.telemetry.model import InstanceSnapshot
 from nautilus.transport.connector import SocketConnector
@@ -139,10 +140,22 @@ async def run_worker_slice(
     spawn path) keeps the node label ``worker-<id>``, so single-machine reports are unchanged; a daemon
     passes its advertised host, so a multi-node report tags each row ``worker-<id>@<host>`` and a reader
     can tell *which container* an operator ran on — not just its logical worker id."""
+    # Read the cluster secret + optional TLS (Stage 5) and inject them into this worker's data-edge
+    # listener and connector below.
+    secret = cluster_secret()
+    tls = tls_from_env()
+    server_tls = tls[0] if tls else None
+    client_tls = tls[1] if tls else None
     listener: EdgeListener | None = None
     try:
         plan = cast(PhysicalPlan, cloudpickle.loads(plan_bytes))
-        listener = EdgeListener(bind_host, 0, cross_worker_inbound(plan, placement, worker_id))
+        listener = EdgeListener(
+            bind_host,
+            0,
+            cross_worker_inbound(plan, placement, worker_id),
+            secret=secret,
+            tls=server_tls,
+        )
         await listener.start()
         # Register the routable advertised host with the concrete bound port — never the bind host, which
         # is 0.0.0.0 (undialable) when binding all interfaces.
@@ -159,7 +172,13 @@ async def run_worker_slice(
         connector = HybridConnector(
             is_local,
             InProcessConnector(capacity),
-            SocketConnector(listener, edge_resolver(placement, address_book), capacity=capacity),
+            SocketConnector(
+                listener,
+                edge_resolver(placement, address_book),
+                capacity=capacity,
+                secret=secret,
+                tls=client_tls,
+            ),
         )
         node = f"worker-{worker_id}" if node_host is None else f"worker-{worker_id}@{node_host}"
         deployment = Deployment(

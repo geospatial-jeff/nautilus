@@ -22,10 +22,13 @@ up for everyone else. Only an absent edge is an error; an out-of-order-but-valid
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Iterable
 from contextlib import suppress
+from typing import Any
 
 from nautilus.runtime.connector import ChannelId
+from nautilus.security import authenticate_server
 from nautilus.transport.handshake import read_handshake
 
 _Conn = tuple[asyncio.StreamReader, asyncio.StreamWriter]
@@ -47,12 +50,16 @@ class EdgeListener:
         *,
         handshake_timeout: float = _HANDSHAKE_TIMEOUT,
         close_timeout: float = _CLOSE_TIMEOUT,
+        secret: bytes | None = None,
+        tls: ssl.SSLContext | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._expected = frozenset(expected)
         self._handshake_timeout = handshake_timeout
         self._close_timeout = close_timeout
+        self._secret = secret  # shared secret + TLS, injected by the worker (see nautilus.security)
+        self._tls = tls
         self._slots: dict[ChannelId, asyncio.Future[_Conn]] = {}
         self._claimed: set[ChannelId] = set()
         self._accept_tasks: set[asyncio.Task[None]] = set()
@@ -64,7 +71,14 @@ class EdgeListener:
         """Bind the server and create one slot per expected edge. Call once, before any producer dials."""
         loop = asyncio.get_running_loop()
         self._slots = {cid: loop.create_future() for cid in self._expected}
-        self._server = await asyncio.start_server(self._on_accept, self._host, self._port)
+        # Bound the TLS handshake so a non-negotiating peer can't hold the accept (default 60s); the kwarg
+        # is only valid with ssl set.
+        extra: dict[str, Any] = (
+            {"ssl_handshake_timeout": self._handshake_timeout} if self._tls is not None else {}
+        )
+        self._server = await asyncio.start_server(
+            self._on_accept, self._host, self._port, ssl=self._tls, **extra
+        )
 
     @property
     def address(self) -> tuple[str, int]:
@@ -95,6 +109,9 @@ class EdgeListener:
         if task is not None:
             self._accept_tasks.add(task)
         try:
+            # Prove the shared secret before reading the edge preamble, so an unauthenticated peer can
+            # neither claim a slot nor inject frames into an edge (an AuthError falls to the reject below).
+            await authenticate_server(reader, writer, self._secret)
             channel_id = await asyncio.wait_for(read_handshake(reader), self._handshake_timeout)
             slot = self._slots.get(channel_id)
             if slot is None or slot.done():  # unknown edge, or a second connection for one taken
@@ -104,7 +121,9 @@ class EdgeListener:
         except asyncio.CancelledError:
             writer.close()  # close() cancelled this in-flight handshake — release the socket
             raise
-        except Exception:  # bad magic / timeout / truncated / foreign preamble — reject, stay up
+        except (
+            Exception
+        ):  # failed auth / bad magic / timeout / truncated / foreign preamble — reject
             await self._reject(writer)
         finally:
             if task is not None:
