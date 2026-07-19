@@ -738,13 +738,16 @@ EVENT_SPECS: dict[str, EventSpec] = {
     ]
 }
 
-#: Metrics whose values are provably reproducible and that define run identity in structural_digest().
+#: The metrics that define run identity in structural_digest(): per-instance row and EOS counts. The
+#: computation conserves them — the same input yields the same totals however the engine places, routes,
+#: or batches the work — so the digest matches across machines and worker counts. Batch counts are
+#: excluded on purpose: deterministic within one run but not portable, because a distributed operator (a
+#: join over a TCP shuffle) chunks its output by cross-worker arrival timing, so batches_out differs by
+#: machine while every row and result is identical. Chunking is framing, not a correctness property.
 STRUCTURAL_METRICS: frozenset[str] = frozenset(
     {
         "operator.rows_in",
         "operator.rows_out",
-        "operator.batches_in",
-        "operator.batches_out",
         "eos.received",
     }
 )
