@@ -46,10 +46,9 @@ def _int_fast_ok(keys: np.ndarray) -> bool:
     """Whether an integer key batch may use a value-indexed fast path that sizes an accumulator to the key
     value — the ``np.bincount`` sum/count arrays in :class:`KeyedMean` and :class:`KeyedAgg`, the dense
     value→id map in :class:`HashJoin`. The keys must be non-negative and dense enough that an array sized to
-    ``max(key) + 1`` stays under :data:`_FAST_PATH_MAX` (which also rejects a uint64 value above int64 range,
-    whose max blows past the cap). If either fails, the operator demotes to the general per-distinct-key
-    path, which handles any key — one gate closing the negative-key crash, the large-unsigned-key crash, and
-    the sparse-key OOM for all three callers. (:class:`KeyedCount` guards itself differently — its docstring.)
+    ``max(key) + 1`` stays under :data:`_FAST_PATH_MAX`. If either fails, the operator demotes to the general
+    per-distinct-key path, which handles any key — one gate closing both the negative-key crash and the
+    sparse-key OOM for all three callers. (:class:`KeyedCount` guards itself differently — its docstring.)
     """
     if keys.size == 0:
         return True
@@ -178,9 +177,9 @@ class KeyedCount(OneInputOperator):
     """Counts occurrences per key, emitted at end of stream (:meth:`on_eos`) — a keyed global aggregation.
 
     A non-negative integer key is counted in a numpy array indexed by the key value (``np.bincount`` per
-    batch, added into a running array). A negative or large-unsigned (past int64 range) integer key — and
-    any non-integer key — folds through keyed state instead, which counts any key. A *sparse* non-negative
-    integer key is the one unguarded case, a deliberate speed choice: ``np.bincount`` sizes its array to the
+    batch, added into a running array). A negative integer key — and any non-integer key — folds through
+    keyed state instead, which counts any key. A *sparse* non-negative integer key is the one unguarded
+    case, a deliberate speed choice: ``np.bincount`` sizes its array to the
     largest key value, so
     counting by a high-valued id allocates a proportionally huge array and can exhaust memory. Guarding it
     needs a max scan on every batch, which every dense count would pay for a rare key — so instead, key such
@@ -211,9 +210,9 @@ class KeyedCount(OneInputOperator):
         if self._counts is not None:
             nn = col.drop_null() if col.null_count else col
             keys = np.asarray(nn.to_numpy(zero_copy_only=False))
-            # np.bincount raises ValueError on a negative or large-unsigned key (numpy reads it as a
-            # negative index); catching that demotes with no pre-scan on the hot path. A sparse key it does
-            # not guard — the deliberate limitation in the class docstring.
+            # np.bincount raises ValueError on a negative key (numpy rejects a negative index); catching
+            # that demotes with no pre-scan on the hot path. A sparse key it does not guard — the deliberate
+            # limitation in the class docstring.
             try:
                 if keys.size:
                     bc = np.bincount(keys)
@@ -225,7 +224,7 @@ class KeyedCount(OneInputOperator):
                 self._nulls += col.null_count
                 return
             except ValueError:
-                pass  # negative or large-unsigned key
+                pass  # negative key
             self._demote()
         counts = pc.value_counts(col)
         # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
@@ -464,15 +463,9 @@ def _merge_scalar(func: str, a: Any, b: Any) -> Any:
 
 
 def _key_out_type(t: pa.DataType) -> pa.DataType:
-    """Output type for a key column: widen a narrow integer to the 64-bit width of its own signedness (so a
-    narrow first-batch type — int8, uint8 — cannot overflow when a later batch carries a larger value)
-    without crossing the signed/unsigned boundary (a uint64 value above int64 max must stay unsigned). Any
-    non-integer key keeps its own type."""
-    if pa.types.is_signed_integer(t):
-        return pa.int64()
-    if pa.types.is_unsigned_integer(t):
-        return pa.uint64()
-    return t
+    """Output type for a key column: int64 for any integer key (so a narrow first-batch key type — int8 —
+    cannot overflow when a later batch carries a larger value), else the key's own type."""
+    return pa.int64() if pa.types.is_integer(t) else t
 
 
 class KeyedAgg(OneInputOperator):

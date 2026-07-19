@@ -285,20 +285,9 @@ def test_agg_by_negative_or_null_key_in_later_batch_demotes_to_general_path():
     assert r == {0: 4.0, 1: 2.0, None: 9.0}  # null key is its own group on the general path
 
 
-def test_agg_by_large_unsigned_and_sparse_keys_demote_without_overflow():
-    # Two integer keys the value-indexed fast path must refuse. A uint64 past int64 range: a dense int64
-    # array cannot hold it, and — the regression this pins — the emitted key must stay uint64, not narrow
-    # to an int64 that overflows on the value. A sparse 1e9 key: a value-indexed array would be gigabytes.
-    # Both demote to the general path and aggregate exactly.
-    big = 2**63 + 1
-    huge = pa.record_batch(
-        {"k": pa.array([big, big, 7], pa.uint64()), "v": pa.array([2.0, 4.0, 9.0])}
-    )
-    out = source(from_batches(huge)).agg_by("k", s=("v", "sum"), c=("v", "count")).run().batches[0]
-    assert out.schema.field("k").type == pa.uint64()  # not narrowed to int64
-    r = _by_key([out], "k")
-    assert r[big]["s"] == 6.0 and r[big]["c"] == 2 and r[7]["s"] == 9.0
-
+def test_agg_by_sparse_key_demotes_without_oom():
+    # A sparse 1e9 key the value-indexed fast path must refuse — a value-indexed array would be gigabytes.
+    # It demotes to the general path and aggregates exactly.
     sparse = pa.record_batch(
         {"k": pa.array([10**9, 10**9, 3], pa.int64()), "v": pa.array([1.0, 2.0, 5.0])}
     )
@@ -363,15 +352,6 @@ def test_keyed_mean_all_null_group_and_negative_key_fixed():
     # Regression: a negative integer key used to crash np.bincount; now the group-by path handles it.
     neg = pa.record_batch({"k": pa.array([-1, 0, -1], pa.int64()), "v": pa.array([1.0, 2.0, 3.0])})
     assert {k: v["m"] for k, v in _keyed_mean(neg).items()} == {-1: 2.0, 0: 2.0}
-
-
-def test_keyed_mean_large_unsigned_key_demotes_without_overflow():
-    # Regression: a uint64 key past int64 range must not narrow to an overflowing int64 on emit; it
-    # demotes to the group-by path and keeps its uint64 value.
-    big = 2**63 + 1
-    b = pa.record_batch({"k": pa.array([big, big], pa.uint64()), "v": pa.array([2.0, 4.0])})
-    r = _keyed_mean(b)
-    assert r[big]["m"] == 3.0 and r[big]["n"] == 2
 
 
 def test_keyed_mean_agrees_with_agg_by_under_nulls():

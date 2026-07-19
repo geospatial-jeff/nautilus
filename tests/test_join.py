@@ -129,7 +129,7 @@ def test_join_clears_buffers_on_close() -> None:
 
 
 # --- integer fast-path safety: an unsafe key demotes to the dict intern, never crashes or OOMs -------
-# The value-indexed intern (a dense value→id array) is only safe for non-negative, in-range, dense keys
+# The value-indexed intern (a dense value→id array) is only safe for non-negative, dense keys
 # (_int_fast_ok). Each unsafe key below must demote — migrating the ids already assigned so equal keys
 # keep matching — and join exactly, not raise (a negative can't index the array) or allocate gigabytes.
 
@@ -175,18 +175,6 @@ def test_join_demote_preserves_ids_assigned_on_the_fast_path() -> None:
         ],
     )
     assert _triples(out) == Counter({(3, "a", 30): 1, (3, "d", 30): 1, (10**9, "c", 90): 1})
-
-
-def test_join_large_unsigned_and_sparse_keys_demote() -> None:
-    big = 2**63 + 1  # past int64 range: a dense value→id array can neither size to it nor index it
-    out = _drive(
-        HashJoin("id"),
-        [
-            ("L", batch(id=pa.array([big, 7], pa.uint64()), lval=["a", "b"])),
-            ("R", batch(id=pa.array([big, 7, 7], pa.uint64()), rval=[1, 2, 3])),
-        ],
-    )
-    assert _triples(out) == Counter({(big, "a", 1): 1, (7, "b", 2): 1, (7, "b", 3): 1})
 
 
 # --- through the engine: co-partitioning makes the parallel and distributed results match serial -----

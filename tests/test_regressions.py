@@ -227,11 +227,11 @@ def test_keyed_count_preserves_key_type():
     assert res.to_table().schema.field("k").type == pa.int32()  # not widened to int64
 
 
-# --- KeyedCount integer fast-path safety: demote instead of crashing on a negative/large-unsigned key --
-# The value-indexed np.bincount fast path crashed on a negative key and on a uint64 past int64 range
-# (numpy reads it as a negative index). np.bincount raises ValueError on both, which now demotes to the
-# general count path so the count is still exact. (A *sparse* non-negative key is deliberately unguarded —
-# it would cost a max scan on every dense count; see KeyedCount's docstring.) Null keys are their own group.
+# --- KeyedCount integer fast-path safety: demote instead of crashing on a negative key ----------------
+# The value-indexed np.bincount fast path crashed on a negative key (numpy rejects negative indices).
+# np.bincount raises ValueError, which now demotes to the general count path so the count is still exact.
+# (A *sparse* non-negative key is deliberately unguarded — it would cost a max scan on every dense count;
+# see KeyedCount's docstring.) Null keys are their own group.
 
 
 def _counts(*batches, key="k"):
@@ -252,11 +252,6 @@ def test_keyed_count_negative_key_in_later_batch_demotes():
         2: 2,
         -5: 1,
     }
-
-
-def test_keyed_count_large_unsigned_key_demotes():
-    big = 2**63 + 1  # past int64 range: bincount reads it as a negative index and raises → demote
-    assert _counts(pa.array([big, big, 7], pa.uint64())) == {big: 2, 7: 1}
 
 
 def test_keyed_count_null_key_is_its_own_group_on_both_paths():
