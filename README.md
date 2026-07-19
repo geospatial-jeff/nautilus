@@ -73,7 +73,7 @@ nautilus task "make Tokenize faster" --on wordcount
 # scale with environment variables; vary --parallelism / --workers to exercise shuffle and transport.
 NAUTILUS_BENCH_ROWS=2000000 nautilus run bench-skew --parallelism 4 --save report.json
 nautilus bench bench-keyed        # measure throughput over many trials: median ± IQR, vs the baseline
-nautilus bench-check              # re-run benchmarks/baseline.json (incl. a 2-worker TCP run); CI gate
+nautilus bench-check              # re-run the benchmarks, gate throughput vs this CPU's baseline; CI gate
 ```
 
 Run your own pipeline with `nautilus run mymodule:builder`, where `builder()` returns

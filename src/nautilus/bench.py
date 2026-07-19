@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 import platform
+import re
 import statistics
 import subprocess
 from collections.abc import Iterator, Sequence
@@ -89,12 +90,36 @@ class Environment:
     commit: str | None
 
 
+def _cpu_model() -> str:
+    """The CPU model, used to decide whether two runs are throughput-comparable. ``platform.processor()``
+    is empty on Linux, so read ``/proc/cpuinfo``'s ``model name`` — GitHub-hosted runners share one OS
+    image but land on different physical CPUs, so this is what actually varies between runs. Fall back to
+    the architecture, then ``"unknown"``."""
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or platform.machine() or "unknown"
+
+
+def cpu_slug(model: str) -> str:
+    """A filesystem-safe slug for a CPU model — the name of its per-CPU throughput baseline file
+    (``benchmarks/baselines/<slug>.json``). Drops vendor noise (``(R)``/``(TM)``/``CPU``) and the clock
+    suffix (``@ 2.80GHz``) so the same silicon at a different advertised frequency slugs the same.
+    """
+    s = re.sub(r"\(r\)|\(tm\)|\bcpu\b|@.*", " ", model.lower())
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "unknown"
+
+
 def current_environment() -> Environment:
     return Environment(
         nautilus_version=nautilus.__version__,
         python_version=platform.python_version(),
         platform=platform.platform(),
-        processor=platform.processor() or "unknown",
+        processor=_cpu_model(),
         commit=_git_commit(),
     )
 
@@ -377,8 +402,8 @@ def measure_like(result: BenchResult, **overrides: object) -> BenchResult:
 #                     anchor — reported, never failed (checked first, before the digest comparison).
 #   OUTPUT-CHANGED  the structural digest differs — the change altered results. Machine-independent,
 #                   always a failure (a "faster" run that computes something else is not faster).
-#   machine-differs digests match but the baseline ran on different hardware, so throughput is not
-#                   comparable — reported, never failed.
+#   machine-differs digests match but the baseline ran on different hardware — a different CPU model or
+#                   OS image — so throughput is not comparable — reported, never failed.
 #   REGRESSED       median throughput fell by more than the noise-aware threshold.
 #   IMPROVED        median throughput rose by more than the threshold.
 #   unchanged       within the noise floor — no claim either way.
@@ -395,6 +420,15 @@ class Comparison:
     noise: float
 
 
+def _same_machine(a: Environment, b: Environment) -> bool:
+    """Whether two runs are on comparable hardware, so a throughput delta is meaningful. Both the OS image
+    (``platform``) and the CPU model (``processor``) must match: GitHub-hosted runners share one image but
+    land on different physical CPUs, and a memory-bound pipeline's throughput swings with the CPU — so an
+    identical platform string alone is not enough, and a mismatch reads as ``machine-differs`` (throughput
+    skipped, digest still checked) rather than a false regression."""
+    return a.platform == b.platform and a.processor == b.processor
+
+
 def compare(
     base: BenchResult, current: BenchResult, *, min_threshold: float = DEFAULT_THRESHOLD
 ) -> Comparison:
@@ -408,7 +442,7 @@ def compare(
         status = "nondeterministic"
     elif base.structural_digest != current.structural_digest:
         status = "OUTPUT-CHANGED"
-    elif base.environment.platform != current.environment.platform:
+    elif not _same_machine(base.environment, current.environment):
         status = "machine-differs"
     elif delta < -threshold:
         status = "REGRESSED"

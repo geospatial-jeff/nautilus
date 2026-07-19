@@ -20,9 +20,9 @@ def test_summarize_single_sample_has_zero_spread():
     assert s.median == 1234 and s.iqr == 0 and s.rel_spread == 0
 
 
-def _result(median, *, spread=0.02, digest="A", platform="linux", pipeline="p"):
+def _result(median, *, spread=0.02, digest="A", platform="linux", processor="cpu", pipeline="p"):
     stats = Stats((median,), median, median * spread, spread, median, median)
-    env = Environment("0.0.1", "3.12", platform, "cpu", "abc1234")
+    env = Environment("0.0.1", "3.12", platform, processor, "abc1234")
     scale = {
         "rows": 1,
         "batch": 1,
@@ -69,6 +69,35 @@ def test_compare_does_not_judge_perf_across_machines_but_still_checks_output():
         _result(1000, platform="linux", digest="A"), _result(1000, platform="darwin", digest="B")
     )
     assert changed_output.status == "OUTPUT-CHANGED"  # correctness is machine-independent
+
+
+def test_compare_treats_a_different_cpu_as_machine_differs():
+    # The GitHub-hosted-runner case: same OS image, different physical CPU. A big throughput drop is not
+    # comparable across CPUs, so it is machine-differs (never a false regression) — the whole point of the
+    # CPU-aware gate. The digest is still checked regardless of CPU.
+    drop = bench.compare(_result(1000, processor="Xeon-8370C"), _result(600, processor="EPYC-7763"))
+    assert drop.status == "machine-differs" and not bench.is_failure(drop.status)
+    changed = bench.compare(
+        _result(1000, processor="Xeon-8370C", digest="A"),
+        _result(1000, processor="EPYC-7763", digest="B"),
+    )
+    assert changed.status == "OUTPUT-CHANGED"  # correctness is CPU-independent
+
+
+def test_compare_gates_throughput_on_the_same_cpu():
+    # Same platform and CPU -> a real regression is judged, not excused.
+    c = bench.compare(_result(1000, processor="Xeon-8370C"), _result(700, processor="Xeon-8370C"))
+    assert c.status == "REGRESSED" and bench.is_failure(c.status)
+
+
+def test_cpu_slug_names_the_per_cpu_baseline_file():
+    # Drops vendor noise and the clock suffix so one CPU maps to one stable, filesystem-safe file name.
+    assert (
+        bench.cpu_slug("Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz")
+        == "intel-xeon-platinum-8370c"
+    )
+    assert bench.cpu_slug("AMD EPYC 7763 64-Core Processor") == "amd-epyc-7763-64-core-processor"
+    assert bench.cpu_slug("") == "unknown"
 
 
 def test_measure_reduces_trials_to_a_stable_deterministic_result():
