@@ -1,0 +1,700 @@
+{
+  "note": "Throughput is machine-specific (see each entry's environment); re-baseline per machine. structural_digest is portable and anchors output correctness across machines. Maintained by `nautilus bench --update` / `nautilus bench-check`.",
+  "results": {
+    "bench-async": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-async",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "88c9c5b16d9807a2fba8d4ba9472e2fdbc45c3d2206cb5d7692f9980a4092ba9",
+      "throughput_rows_per_sec": {
+        "iqr": 918845.1982159466,
+        "max": 58809188.93577122,
+        "median": 56966394.18710264,
+        "min": 56374360.99095556,
+        "rel_spread": 0.016129600816896638,
+        "samples": [
+          56374360.99095556,
+          56506095.329260394,
+          56572990.951884314,
+          56598516.68029667,
+          56966394.18710264,
+          57164340.64369125,
+          57491836.15010026,
+          57698433.23271524,
+          58809188.93577122
+        ]
+      },
+      "trials": 9
+    },
+    "bench-async-io": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-async-io",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "88c9c5b16d9807a2fba8d4ba9472e2fdbc45c3d2206cb5d7692f9980a4092ba9",
+      "throughput_rows_per_sec": {
+        "iqr": 786075.502395235,
+        "max": 53763360.21001312,
+        "median": 53519639.47628063,
+        "min": 44810002.23264121,
+        "rel_spread": 0.014687608326353092,
+        "samples": [
+          44810002.23264121,
+          48583670.20890319,
+          52829354.32076018,
+          52830744.93287707,
+          53519639.47628063,
+          53528203.7605014,
+          53615429.82315542,
+          53695756.86232543,
+          53763360.21001312
+        ]
+      },
+      "trials": 9
+    },
+    "bench-backpressure": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-backpressure",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "b84d50a36da34f25321105f160b00b9a6b194a3b66d898a573923449e5a191ae",
+      "throughput_rows_per_sec": {
+        "iqr": 324863.82919212803,
+        "max": 28200646.339749895,
+        "median": 28167005.824152693,
+        "min": 27173571.621987544,
+        "rel_spread": 0.011533488196092295,
+        "samples": [
+          27173571.621987544,
+          27865879.902811524,
+          28167005.824152693,
+          28190743.73200365,
+          28200646.339749895
+        ]
+      },
+      "trials": 5
+    },
+    "bench-chain-dist": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-chain",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 4,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 2
+      },
+      "structural_digest": "6c5ed7cecb16bafb1c2dc1b2aa0f1a079fd06e7ca87c1bd6f89596f76a297b23",
+      "throughput_rows_per_sec": {
+        "iqr": 37765.241052250145,
+        "max": 1114520.6879126613,
+        "median": 1076212.7931106596,
+        "min": 967585.4876318331,
+        "rel_spread": 0.03509086799005093,
+        "samples": [
+          967585.4876318331,
+          1040229.7063366193,
+          1074373.1164050526,
+          1076212.7931106596,
+          1092510.4377031066,
+          1097622.8671430654,
+          1114520.6879126613
+        ]
+      },
+      "trials": 7
+    },
+    "bench-fanout": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-fanout",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "fa2bf53a32bd18e100c3f41ed3a6d628b1baa8cde63f04ca686ea098022056fd",
+      "throughput_rows_per_sec": {
+        "iqr": 10322.36579506984,
+        "max": 3663018.071945727,
+        "median": 3655099.8350304337,
+        "min": 3604858.617594255,
+        "rel_spread": 0.002824099548838696,
+        "samples": [
+          3604858.617594255,
+          3646077.4577954323,
+          3655099.8350304337,
+          3656399.823590502,
+          3663018.071945727
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-anomaly": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-anomaly",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "09ce899e22d20510efdabfe659e93b86781880e5f288a11c910d0832a73948da",
+      "throughput_rows_per_sec": {
+        "iqr": 132785.35415021703,
+        "max": 18031511.735179387,
+        "median": 17918207.509374987,
+        "min": 17513719.458418295,
+        "rel_spread": 0.007410638261709068,
+        "samples": [
+          17513719.458418295,
+          17861734.240473766,
+          17918207.509374987,
+          17994519.594623983,
+          18031511.735179387
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-climatology": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-climatology",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "63889dcbe00b5b391af711fff00f0787638ca0df2fec3a973e0222036bd05f29",
+      "throughput_rows_per_sec": {
+        "iqr": 8681.407850138843,
+        "max": 21419485.108531043,
+        "median": 21387396.21690492,
+        "min": 21252601.70293283,
+        "rel_spread": 0.00040591233089313264,
+        "samples": [
+          21252601.70293283,
+          21379912.663755458,
+          21387396.21690492,
+          21388594.071605597,
+          21419485.108531043
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-forecast": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-forecast",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "8613c32916b64704d5b06c32298387365c03d722c7a7df068fa316214e93b0f9",
+      "throughput_rows_per_sec": {
+        "iqr": 116898.35059011355,
+        "max": 17123101.784013644,
+        "median": 17044111.63498153,
+        "min": 16788425.08414252,
+        "rel_spread": 0.006858576914633088,
+        "samples": [
+          16788425.08414252,
+          16952170.24601152,
+          17044111.63498153,
+          17069068.596601635,
+          17123101.784013644
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-ndvi": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-ndvi",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "6a8893976f76a579d6ffd24fbed87d28d5ea34c9514b3bce52bca49ff57c9994",
+      "throughput_rows_per_sec": {
+        "iqr": 215763.63456071168,
+        "max": 58171773.84548986,
+        "median": 57576841.893657655,
+        "min": 57251711.558642745,
+        "rel_spread": 0.0037474030784671953,
+        "samples": [
+          57251711.558642745,
+          57494492.259052016,
+          57576841.893657655,
+          57710255.89361273,
+          58171773.84548986
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-zonal": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-zonal",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "746a499e56bae81ac4190a35edd9ef00557a3d96a4e9042ada4b3540013f43ee",
+      "throughput_rows_per_sec": {
+        "iqr": 124089.18076458573,
+        "max": 30379593.7848014,
+        "median": 30297651.78760313,
+        "min": 30173180.238070156,
+        "rel_spread": 0.00409566990981655,
+        "samples": [
+          30173180.238070156,
+          30224121.55745489,
+          30297651.78760313,
+          30348210.738219477,
+          30379593.7848014
+        ]
+      },
+      "trials": 5
+    },
+    "bench-geo-zonal-vector": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-geo-zonal-vector",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 1,
+        "rows": 1000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "4aa20c600f45681612dee9f1d3fb7d3efc7797c45d7b49965688b844e66e86e3",
+      "throughput_rows_per_sec": {
+        "iqr": 249198.896684777,
+        "max": 27019576.71957672,
+        "median": 26618492.917847026,
+        "min": 26438739.448508725,
+        "rel_spread": 0.00936187099149011,
+        "samples": [
+          26438739.448508725,
+          26594384.693762027,
+          26618492.917847026,
+          26843583.590446804,
+          27019576.71957672
+        ]
+      },
+      "trials": 5
+    },
+    "bench-join": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-join",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "bdc42d2b409d7aa7f3202421d77047fed8c08dc5d0582677b5d13f3b37c9376f",
+      "throughput_rows_per_sec": {
+        "iqr": 201495.3279580213,
+        "max": 28357299.08981867,
+        "median": 28113318.410744265,
+        "min": 27713970.486829404,
+        "rel_spread": 0.0071672552138496185,
+        "samples": [
+          27713970.486829404,
+          27939381.29996524,
+          28113318.410744265,
+          28140876.62792326,
+          28357299.08981867
+        ]
+      },
+      "trials": 5
+    },
+    "bench-join-dist": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-join",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 4,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 2
+      },
+      "structural_digest": "e553426b696e754869f6550ce9ab76ac1d1a0bbd81839fee19a4555bacd6b017",
+      "throughput_rows_per_sec": {
+        "iqr": 7988.589417390642,
+        "max": 905865.3557913149,
+        "median": 894713.5259559709,
+        "min": 875580.3136689331,
+        "rel_spread": 0.008928656140360801,
+        "samples": [
+          875580.3136689331,
+          891820.8849243332,
+          894713.5259559709,
+          899809.4743417238,
+          905865.3557913149
+        ]
+      },
+      "trials": 5
+    },
+    "bench-join-wide": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-join",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 100000,
+        "parallelism": 1,
+        "rows": 2000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "a808382e0b620ad472344af4a149109c2d44ff6493eed5d66510f6776b236a51",
+      "throughput_rows_per_sec": {
+        "iqr": 253013.07304010913,
+        "max": 27360183.383532796,
+        "median": 27281466.56832845,
+        "min": 26919619.20746899,
+        "rel_spread": 0.009274174187315742,
+        "samples": [
+          26919619.20746899,
+          27094596.110572193,
+          27281466.56832845,
+          27347609.183612302,
+          27360183.383532796
+        ]
+      },
+      "trials": 5
+    },
+    "bench-keyed": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "2f1ca49a9eb564e5e124e1966b87388d1ec2c7ebccdc4a581624f1b9ec2be759",
+      "throughput_rows_per_sec": {
+        "iqr": 1148461.881408833,
+        "max": 46052643.62554361,
+        "median": 45531568.2281059,
+        "min": 44366923.925027564,
+        "rel_spread": 0.025223420279644707,
+        "samples": [
+          44366923.925027564,
+          44851538.11859117,
+          45531568.2281059,
+          46000000.0,
+          46052643.62554361
+        ]
+      },
+      "trials": 5
+    },
+    "bench-keyed-dist": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 4,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 2
+      },
+      "structural_digest": "fdc397b1ae9757abcc74aa81f6f5911afb48b1973bc65ed3e94a3307c12cba44",
+      "throughput_rows_per_sec": {
+        "iqr": 8669.847202044155,
+        "max": 481976.54363573645,
+        "median": 473967.63327130105,
+        "min": 465380.4965039332,
+        "rel_spread": 0.018292065941729607,
+        "samples": [
+          465380.4965039332,
+          468593.01456289197,
+          473967.63327130105,
+          477262.8617649361,
+          481976.54363573645
+        ]
+      },
+      "trials": 5
+    },
+    "bench-keyed-wide": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-keyed",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 1000,
+        "parallelism": 16,
+        "rows": 2000000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "79fdb14d69dc1a79b599da697c15c5d7723fa7f6eb7b53423b78103acc193a8d",
+      "throughput_rows_per_sec": {
+        "iqr": 10313.429407578427,
+        "max": 3402033.4678453016,
+        "median": 3387575.4999095607,
+        "min": 3340441.1372486264,
+        "rel_spread": 0.003044486951760564,
+        "samples": [
+          3340441.1372486264,
+          3387123.1635667873,
+          3387575.4999095607,
+          3397436.5929743657,
+          3402033.4678453016
+        ]
+      },
+      "trials": 5
+    },
+    "bench-linear": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-linear",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "29076be29427ffffe25b18de6a8fded4bd6fe6ba7c14a17cb1e1566802a3732a",
+      "throughput_rows_per_sec": {
+        "iqr": 1130834.7052421272,
+        "max": 94072650.5741739,
+        "median": 92682521.35765412,
+        "min": 91624743.20931293,
+        "rel_spread": 0.012201164671365923,
+        "samples": [
+          91624743.20931293,
+          91981668.19431715,
+          92682521.35765412,
+          93112502.89955927,
+          94072650.5741739
+        ]
+      },
+      "trials": 5
+    },
+    "bench-skew": {
+      "deterministic": true,
+      "environment": {
+        "commit": "b7b4125",
+        "nautilus_version": "0.0.1",
+        "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+        "processor": "AMD EPYC 7763 64-Core Processor",
+        "python_version": "3.14.6"
+      },
+      "pipeline": "bench-skew",
+      "recorded_at": "2026-07-19T20:19:35+00:00",
+      "scale": {
+        "batch": 4096,
+        "keys": 500,
+        "parallelism": 1,
+        "rows": 200000,
+        "tier": 1,
+        "workers": 1
+      },
+      "structural_digest": "2f1ca49a9eb564e5e124e1966b87388d1ec2c7ebccdc4a581624f1b9ec2be759",
+      "throughput_rows_per_sec": {
+        "iqr": 136382.83783694915,
+        "max": 12900173.110213503,
+        "median": 12757846.680616321,
+        "min": 12749762.372473227,
+        "rel_spread": 0.010690114190207576,
+        "samples": [
+          12749762.372473227,
+          12750570.342205323,
+          12757846.680616321,
+          12886953.180042272,
+          12900173.110213503
+        ]
+      },
+      "trials": 5
+    }
+  },
+  "version": 1
+}
