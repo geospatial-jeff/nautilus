@@ -24,6 +24,14 @@ jobs:
       - run: uv pip install -e ".[dev,fast,geo]"
       - name: Re-record the baseline at each entry's recorded scale
         run: uv run nautilus bench-check --update
+      - name: Confirm the fresh baseline passes its own gate
+        # A single sweep can land a lucky-high or unlucky-low median that would immediately fail the
+        # gate — the failure mode that makes a locally-recorded baseline useless. Re-check the
+        # just-written baseline on this same VM, back-to-back (lower drift than across VM instances):
+        # a self-consistent baseline clears the widened threshold, a too-noisy sweep fails here and
+        # so never reaches the PR step below. --update is omitted, so this only validates, never
+        # overwrites what the PR will carry.
+        run: uv run nautilus bench-check --threshold 0.20
       - name: Open a PR if the baseline moved
         env:
           GH_TOKEN: ${{ github.token }}
