@@ -65,6 +65,30 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-19 — HashJoin one-to-one probe fast path: ~1.3× on foreign-key / stream-table joins
+
+- **Commit:** `da2d470`.
+- **Change:** `HashJoin._probe_and_emit` (`operators.py`) built each output batch with two `pc.take`s —
+  one gathering the query rows, one the matching buffered rows — plus a two-`np.repeat`+`cumsum` index
+  expansion, even when every query row matches exactly one buffered row (the foreign-key /
+  stream-enrichment shape: a join on the other side's unique key, which is what `bench-join` and most real
+  lookups are). In that case the query-side index is the identity `arange(nq)`, so its `take` needlessly
+  copies the whole batch, and the expansion collapses to `other_take == qstart`. It now detects that case
+  (`total == nq and qcount.max() == 1`) and emits the query side in place with a single `take`, skipping
+  the second take, both repeats, and the cumsum. cProfile put the removed `pc.take` as the probe's
+  second-heaviest call. The general many-to-many path is unchanged.
+- **Impact (`nautilus bench bench-join`, median of trials, before = the change's parent operators.py;
+  Linux x86_64):** at the baseline scale (200k rows, 500 keys) **44.1M → 58.1M rows/s (+31.8%)**; at 1M
+  rows / 1000 keys **50.6M → 67.7M (+33.8%)**; at 2M rows / 100k keys (`bench-join-wide`) **44.1M → 57.9M
+  (+31.3%)**. The distributed case (`bench-join-dist`, 2 workers) is transport-bound, not probe-bound, so
+  it is unchanged (958k → 963k, within noise) — its baseline is left as-is.
+- **Correctness:** the fast path is provably the general path's result for the all-ones case
+  (`query_take == arange(nq)`, `other_take == qstart` — verified algebraically), so the output is
+  identical; structural digest unchanged (`91ebe41…` at the 200k/500 scale) and full `pytest` green
+  (451 passed).
+
+---
+
 ## 2026-07-18 — HashJoin vectorized integer-key intern: 6× on high-cardinality joins
 
 - **Commit:** `41dc3d9`.
