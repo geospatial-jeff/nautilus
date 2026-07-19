@@ -1,0 +1,33 @@
+#!/bin/bash
+# Installs the GitHub Actions runner and registers it as an unattended systemd service.
+# NOTE: shell variables are written $${VAR} here — the doubled $$ escapes Terraform's templatefile, which
+# otherwise treats a single dollar-brace as one of its own injected values (github_repo, runner_token,
+# runner_labels, runner_name).
+set -euxo pipefail
+
+# git: checkout; libicu: the .NET-based runner needs it; tar/findutils: setup.
+dnf install -y git tar findutils libicu
+
+RUNNER_DIR=/opt/actions-runner
+mkdir -p "$${RUNNER_DIR}"
+cd "$${RUNNER_DIR}"
+
+# Latest runner release, so this does not rot as new versions ship.
+VER=$(curl -sSL https://api.github.com/repos/actions/runner/releases/latest | grep -oP '"tag_name": "v\K[^"]+')
+curl -sSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v$${VER}/actions-runner-linux-x64-$${VER}.tar.gz"
+tar xzf runner.tar.gz
+rm -f runner.tar.gz
+chown -R ec2-user:ec2-user "$${RUNNER_DIR}"
+
+# config.sh refuses to run as root, so register as ec2-user. --replace re-registers a same-named runner
+# (so re-provisioning is idempotent from GitHub's side).
+sudo -u ec2-user ./config.sh \
+  --url "https://github.com/${github_repo}" \
+  --token "${runner_token}" \
+  --labels "${runner_labels}" \
+  --name "${runner_name}" \
+  --unattended --replace
+
+# Run it as a systemd service owned by ec2-user (never root).
+./svc.sh install ec2-user
+./svc.sh start
