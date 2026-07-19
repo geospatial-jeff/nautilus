@@ -1,0 +1,33 @@
+name: bench-check
+
+# The throughput + output-correctness regression gate for benchmarks/baseline.json.
+#
+# Two checks run here, with different reach. The structural-digest check is machine-independent and
+# always active: it fails the moment a change alters what a benchmark computes, so it is the real
+# reason this gate runs on every code PR. The throughput check is comparable only within one runner
+# image, so it is active only while this runner matches the image the baseline was recorded on
+# (bench-baseline.yml records it here); when GitHub bumps the image the platform string drifts, every
+# entry reports `machine-differs`, and the gate passes without a throughput claim — re-run
+# bench-baseline.yml to re-record. The threshold is widened far past the local 7% default because
+# GitHub-hosted runners are shared VMs whose run-to-run throughput varies well beyond it; a change
+# must clear both 20% and twice the measured noise to count as a regression.
+on:
+  pull_request:
+    paths: ["src/**", "benchmarks/**", "pyproject.toml"]
+  push:
+    branches: [main]
+    paths: ["src/**", "benchmarks/**", "pyproject.toml"]
+
+concurrency:
+  group: bench-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-check:
+    runs-on: ubuntu-24.04 # pinned, not -latest: the baseline is only comparable within one image
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -e ".[dev,fast,geo]" # geo: the bench-geo-* pipelines in the baseline
+      - run: uv run nautilus bench-check --threshold 0.20
