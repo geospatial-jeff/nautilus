@@ -28,11 +28,19 @@ combinator shuffles its input on the key so each key's rows meet on one instance
 |---|---|
 | `.map(fn)` | A pure batch → batch function (`MapBatch`). |
 | `.filter(mask_fn)` | Keep rows where `mask_fn(batch)` (a boolean Arrow array) is true (`FilterRows`). |
+| `.select(*cols)` | Keep only these columns, in this order. |
+| `.drop(*cols)` | Drop these columns, keeping the rest in their original order. |
+| `.rename({old: new})` | Rename columns by an `{old: new}` mapping; unnamed columns and their order are unchanged. |
+| `.with_column(name, fn)` | Add a column `name = fn(batch)` (an Arrow array, one value per row), replacing it if it already exists. |
 | `.tokenize(in_col, out_col="word", lowercase=True)` | Split a string column into one row per whitespace token (`Tokenize`). |
 | `.count_by(key_col, count_col="count")` | Count occurrences per key, emitted at end of stream; shuffled on `key_col` (`KeyedCount`). |
 | `.agg_by(key_cols, **aggs)` | Grouped `sum`/`count`/`mean`/`min`/`max` per key, emitted at end of stream; shuffled on `key_cols` (`KeyedAgg`). Each keyword names an output column as `(input_col, func)`, e.g. `.agg_by("lat", mean=("temp", "mean"), hi=("temp", "max"))`. Its `count` is `COUNT(col)` — non-null values of that column; `.count_by` is the separate `COUNT(*)`, rows per key. |
 | `.apply(operator, key_columns=None)` | The escape hatch: append any `OneInputOperator` instance. Keyed by `key_columns` if given, else the operator's own `key_columns()`. At parallelism > 1 the instance is deep-copied per subtask. |
 | `.join(other, on=…, how="inner")` | Equi-join with another stream — inner or outer — see below. |
+
+The column ops (`.select` / `.drop` / `.rename` / `.with_column`) resolve names against each batch's
+schema at run time — nautilus learns schemas from the first batch — so a name absent from the actual data
+raises when the stream runs, not when you build it.
 
 ## Joining
 

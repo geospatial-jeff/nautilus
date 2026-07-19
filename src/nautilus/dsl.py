@@ -2,9 +2,10 @@
 
 A :class:`Stream` is an immutable handle on a dataflow under construction: every combinator returns a
 *new* Stream that adds one operator, so a Stream value is reusable and side-effect-free. :func:`source`
-starts one; ``.map`` / ``.filter`` / ``.tokenize`` / ``.count_by`` / ``.apply`` extend
-it; ``.join`` combines two; and ``.run`` / ``.collect`` execute it. The same graph runs in one process or
-across workers — ``.run(workers=…)`` is the only thing that changes.
+starts one; per-batch verbs (``.map`` / ``.filter`` / ``.tokenize``), column reshaping (``.select`` /
+``.drop`` / ``.rename`` / ``.with_column``), keyed aggregation (``.count_by`` / ``.agg_by``), and
+``.apply`` extend it; ``.join`` combines two; and ``.run`` / ``.collect`` execute it. The same graph runs
+in one process or across workers — ``.run(workers=…)`` is the only thing that changes.
 
 This is a value layer that sits *above* :mod:`nautilus.api`: it knows the concrete operators (so it can
 build them for you) but it only ever produces a :class:`~nautilus.api.LogicalGraph`. The runners live at
@@ -49,6 +50,19 @@ _Keys = str | Sequence[str]
 
 def _norm(columns: _Keys) -> tuple[str, ...]:
     return (columns,) if isinstance(columns, str) else tuple(columns)
+
+
+def _reshape_cols(verb: str, columns: tuple[str, ...]) -> list[str]:
+    """Build-time validation for a ``select``/``drop`` column list: at least one name, none blank, and no
+    duplicate (a duplicate would name two output columns the same). A name's *presence* is a run-time
+    check, not this one (see the column-reshaping comment)."""
+    if not columns:
+        raise ValueError(f"{verb}() needs at least one column name")
+    if any(not c or not c.strip() for c in columns):
+        raise ValueError(f"{verb}(): column names must be non-empty")
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"{verb}(): duplicate column name in {list(columns)}")
+    return list(columns)
 
 
 def source(src: SourceOperator | pa.RecordBatch | Sequence[Any]) -> Stream:
@@ -172,6 +186,66 @@ class Stream:
             (lambda: operator) if parallelism == 1 else (lambda: copy.deepcopy(operator))
         )
         return self._extend(factory, key_columns=keys, parallelism=parallelism)
+
+    # --- column reshaping -----------------------------------------------------------------------
+    # Vectorized batch -> batch column ops, each lowered to a MapBatch. They carry no state, so a
+    # parallelism>1 instance can share the one stateless function; column names resolve at run time
+    # against each batch's schema (learned from the first batch), so a name absent from the actual data
+    # raises then, not at build time — the same contract .map's opaque function already has.
+
+    def select(self, *columns: str, parallelism: int = 1) -> Stream:
+        """Keep only ``columns``, in the given order, dropping the rest (Arrow ``RecordBatch.select``)."""
+        cols = _reshape_cols("select", columns)
+        return self._extend(
+            lambda: MapBatch(lambda b: b.select(cols)), key_columns=None, parallelism=parallelism
+        )
+
+    def drop(self, *columns: str, parallelism: int = 1) -> Stream:
+        """Drop ``columns``, keeping the rest in their original order (Arrow ``RecordBatch.drop_columns``)."""
+        cols = _reshape_cols("drop", columns)
+        return self._extend(
+            lambda: MapBatch(lambda b: b.drop_columns(cols)),
+            key_columns=None,
+            parallelism=parallelism,
+        )
+
+    def rename(self, mapping: dict[str, str], *, parallelism: int = 1) -> Stream:
+        """Rename columns by an ``{old: new}`` mapping; unnamed columns and column order are unchanged. At
+        run time every ``old`` must be present (a missing one raises), and the result must have no duplicate
+        names (renaming onto an existing column raises)."""
+        if not mapping:
+            raise ValueError("rename() needs a non-empty {old: new} mapping")
+        if any(not k or not k.strip() or not v or not v.strip() for k, v in mapping.items()):
+            raise ValueError("rename(): column names must be non-empty")
+        if len(set(mapping.values())) != len(mapping):
+            raise ValueError(f"rename(): two columns renamed to the same name in {mapping}")
+        table = dict(mapping)
+
+        def _rename(b: pa.RecordBatch) -> pa.RecordBatch:
+            missing = [c for c in table if c not in b.schema.names]
+            if missing:
+                raise KeyError(f"rename(): column(s) {missing} not in schema {b.schema.names}")
+            names = [table.get(n, n) for n in b.schema.names]
+            if len(set(names)) != len(names):
+                raise ValueError(f"rename(): produces duplicate column names {names}")
+            return b.rename_columns(names)
+
+        return self._extend(lambda: MapBatch(_rename), key_columns=None, parallelism=parallelism)
+
+    def with_column(
+        self, name: str, fn: Callable[[pa.RecordBatch], pa.Array], *, parallelism: int = 1
+    ) -> Stream:
+        """Add a column ``name`` computed by ``fn(batch) -> Array`` (one value per row), replacing it if it
+        already exists and leaving the other columns unchanged."""
+        if not name or not name.strip():
+            raise ValueError("with_column(): name must be a non-empty column name")
+
+        def _with(b: pa.RecordBatch) -> pa.RecordBatch:
+            col = fn(b)
+            i = b.schema.get_field_index(name)
+            return b.set_column(i, name, col) if i >= 0 else b.append_column(name, col)
+
+        return self._extend(lambda: MapBatch(_with), key_columns=None, parallelism=parallelism)
 
     # --- async one-input combinators ------------------------------------------------------------
 
