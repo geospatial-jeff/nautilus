@@ -410,14 +410,14 @@
     "bench-join": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "dfc6a5f",
         "nautilus_version": "0.0.1",
         "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
         "processor": "unknown",
         "python_version": "3.14.4"
       },
       "pipeline": "bench-join",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T09:00:22+00:00",
       "scale": {
         "batch": 4096,
         "keys": 500,
@@ -428,17 +428,17 @@
       },
       "structural_digest": "91ebe41f808210a5cb3550552dbddf5035c45214ccfdd53f75d145daf8b3a56f",
       "throughput_rows_per_sec": {
-        "iqr": 4553035.459302127,
-        "max": 45142985.51050208,
-        "median": 40437468.55820505,
-        "min": 35388570.92542044,
-        "rel_spread": 0.11259447293909014,
+        "iqr": 2837006.2995120585,
+        "max": 60022102.7479092,
+        "median": 59226053.63984674,
+        "min": 51798943.162778705,
+        "rel_spread": 0.04790132256259848,
         "samples": [
-          35388570.92542044,
-          39237332.81265254,
-          40437468.55820505,
-          43790368.27195467,
-          45142985.51050208
+          51798943.162778705,
+          56423978.66067668,
+          59226053.63984674,
+          59260984.96018874,
+          60022102.7479092
         ]
       },
       "trials": 5
@@ -482,14 +482,14 @@
     "bench-join-wide": {
       "deterministic": true,
       "environment": {
-        "commit": "c20cd70",
+        "commit": "dfc6a5f",
         "nautilus_version": "0.0.1",
         "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
         "processor": "unknown",
         "python_version": "3.14.4"
       },
       "pipeline": "bench-join",
-      "recorded_at": "2026-07-19T04:24:20+00:00",
+      "recorded_at": "2026-07-19T09:00:22+00:00",
       "scale": {
         "batch": 4096,
         "keys": 100000,
@@ -500,17 +500,17 @@
       },
       "structural_digest": "e0fae4e3de4318d7252861a4765e5e7514af59834526bf24477598a56d338f46",
       "throughput_rows_per_sec": {
-        "iqr": 857534.4735981822,
-        "max": 38143567.16182195,
-        "median": 37590412.62691459,
-        "min": 35725119.63804054,
-        "rel_spread": 0.02281258474359472,
+        "iqr": 932401.5151516944,
+        "max": 59476316.01819394,
+        "median": 58386132.55975997,
+        "min": 55339146.84277917,
+        "rel_spread": 0.015969571442283035,
         "samples": [
-          35725119.63804054,
-          37154667.535382055,
-          37590412.62691459,
-          38012202.00898024,
-          38143567.16182195
+          55339146.84277917,
+          57818821.90584822,
+          58386132.55975997,
+          58751223.420999914,
+          59476316.01819394
         ]
       },
       "trials": 5
