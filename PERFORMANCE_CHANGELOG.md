@@ -27,17 +27,6 @@ mid-stream), since a throughput figure is only comparable on the same hardware.
 Costs measured during the join work (2026-06-29) and left unfixed, with the reason — so the next loop
 starts from evidence, not a cold read.
 
-- **Stream-stream join is super-linear (≈O(n²)).** A key-unique 1:1 stream⋈stream at fixed batch 4096
-  fell from ~906k rows/s at 100k rows to ~425k at 400k (wall grew 0.34s → 2.83s for 4× the rows). The
-  symmetric hash join buffers both sides until EOS and re-probes the *growing* state, so the buffered
-  side's grouped index (an `argsort` + `unique` over the whole buffer) rebuilds on every probe — O(n) per
-  probe, O(n²) over the run. The stream-table benchmarks (`bench-join`) don't show it: the bounded table is
-  indexed once and reused. The real fix is a delta index: a large, rarely-rebuilt main index plus a small
-  recently-added delta probed directly and merged amortized. That is feature-sized, not a tweak. A
-  constant-factor attempt (store the sort `order` + a zero-copy `Table` instead of reordering every
-  buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
-  common stream-table case (a `combine_chunks` per emit) and no change to the asymptote.
-
 - **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
   by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
   stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
@@ -56,6 +45,30 @@ starts from evidence, not a cold read.
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
 
 ---
+
+## 2026-07-18 — HashJoin incremental index: stream-stream join O(n²) → O(n), 5.7× at 1M rows
+
+- **Commit:** `aeb4418`.
+- **Change:** `_SideBuffer` (`operators.py`) re-sorted the whole buffer (`argsort` + `np.unique`) on every
+  probe to build its grouped index. A stream-table join hides it — the bounded table is indexed once — but
+  a stream-stream join (both sides growing, probing each other every batch) rebuilt an O(n) index per
+  probe, O(n²) over the run. Rewritten around a lazily-built, incrementally-folded per-id index: `add` is
+  O(1) (it only holds the batch and its key ids); folding into per-id buckets is deferred to the next probe
+  and done once per row, so the large stream in a stream-table join — added to constantly, probed rarely —
+  never pays to index rows it is not matched against. A stable side (nothing new since the last probe)
+  flattens the buckets into a reordered-rows CSR once and caches it (the same fully-vectorized shape the old
+  index had, so stream-table is unchanged); a growing side gathers matches straight from the buckets,
+  O(matches), never re-sorting. Buffered rows compact at doubling (lazily, in `_take`) so a take runs over
+  few Arrow chunks, and `_int_id` / the per-id arrays grow by doubling so dense ascending keys stay
+  amortized O(1). Resolves the "Stream-stream join is super-linear" open item.
+- **Impact (`nautilus.bench.measure("bench-join-stream", rows=…)`, median of 5–7; Linux x86_64):** at 300k
+  rows **1.22M → 1.97M rows/s (1.6×)**; at 1M rows **0.37M → 2.09M rows/s (5.7×)** — the new path's
+  throughput stays flat as n grows where the old collapses quadratically, so the factor widens with scale.
+  `bench-join` (stream-table, the common case) unchanged: **40.6M vs 42.4M rows/s**, within noise.
+- **Correctness:** structural digest identical before → after at every scale (`9525351…` at 300k,
+  `3661e8c4…` at 1M); new scale tests drive many interleaved batches (growing path, lazy fold, compaction)
+  and an all-of-one-side-then-the-other case (stable path) against a brute-force cross product; full
+  `pytest` green (431 passed) including the distributed join co-partition tests.
 
 ## 2026-07-18 — HashJoin vectorized integer-key intern: 6× on high-cardinality joins
 
