@@ -227,6 +227,38 @@ def test_keyed_count_preserves_key_type():
     assert res.to_table().schema.field("k").type == pa.int32()  # not widened to int64
 
 
+# --- KeyedCount integer fast-path safety: demote instead of crashing on a negative key ----------------
+# The value-indexed np.bincount fast path crashed on a negative key (numpy rejects negative indices).
+# np.bincount raises ValueError, which now demotes to the general count path so the count is still exact.
+# (A *sparse* non-negative key is deliberately unguarded — it would cost a max scan on every dense count;
+# see KeyedCount's docstring.) Null keys are their own group.
+
+
+def _counts(*batches, key="k"):
+    from nautilus.testing import data
+
+    res = run(from_batches(*[data(**{key: b}) for b in batches]), [KeyedCount(key)])
+    return {r[key]: r["count"] for r in res.to_pylist()}
+
+
+def test_keyed_count_negative_key_demotes():
+    assert _counts(pa.array([-1, 0, -1, 2], pa.int64())) == {-1: 2, 0: 1, 2: 1}
+
+
+def test_keyed_count_negative_key_in_later_batch_demotes():
+    # The fast path latches on the first (non-negative) batch; a later negative key must not crash.
+    assert _counts(pa.array([1, 2], pa.int64()), pa.array([-5, 2], pa.int64())) == {
+        1: 1,
+        2: 2,
+        -5: 1,
+    }
+
+
+def test_keyed_count_null_key_is_its_own_group_on_both_paths():
+    assert _counts(pa.array([0, 1, 0, None, None], pa.int64())) == {0: 2, 1: 1, None: 2}  # fast
+    assert _counts(pa.array(["a", "b", "a", None])) == {"a": 2, "b": 1, None: 1}  # general
+
+
 # --- R14 / R17: IR + compiler validation -------------------------------------------------------
 
 

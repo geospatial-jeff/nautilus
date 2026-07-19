@@ -285,6 +285,20 @@ def test_agg_by_negative_or_null_key_in_later_batch_demotes_to_general_path():
     assert r == {0: 4.0, 1: 2.0, None: 9.0}  # null key is its own group on the general path
 
 
+def test_agg_by_sparse_key_demotes_without_oom():
+    # A sparse 1e9 key the value-indexed fast path must refuse — a value-indexed array would be gigabytes.
+    # It demotes to the general path and aggregates exactly.
+    sparse = pa.record_batch(
+        {"k": pa.array([10**9, 10**9, 3], pa.int64()), "v": pa.array([1.0, 2.0, 5.0])}
+    )
+    r = {
+        row["k"]: row["s"]
+        for b in source(from_batches(sparse)).agg_by("k", s=("v", "sum")).run().batches
+        for row in b.to_pylist()
+    }
+    assert r == {10**9: 3.0, 3: 5.0}
+
+
 def test_agg_by_empty_stream_emits_nothing():
     out = source(from_batches()).agg_by("k", m=("v", "mean")).run().batches
     assert sum(b.num_rows for b in out) == 0

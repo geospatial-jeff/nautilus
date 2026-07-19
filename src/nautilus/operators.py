@@ -36,6 +36,25 @@ def _add(a: int, b: int) -> int:
     return a + b
 
 
+#: Ceiling on a value-indexed fast-path array: ~268M entries, ~2 GB as int64. Sizing an accumulator to
+#: ``max(key) + 1`` past this costs more memory than the fast path saves. Generous — dense category-id keys
+#: sit far below it; only a sparse or hashed integer id reaches it.
+_FAST_PATH_MAX = 1 << 28
+
+
+def _int_fast_ok(keys: np.ndarray) -> bool:
+    """Whether an integer key batch may use a value-indexed fast path that sizes an accumulator to the key
+    value — the ``np.bincount`` sum/count arrays in :class:`KeyedMean` and :class:`KeyedAgg`, the dense
+    value→id map in :class:`HashJoin`. The keys must be non-negative and dense enough that an array sized to
+    ``max(key) + 1`` stays under :data:`_FAST_PATH_MAX`. If either fails, the operator demotes to the general
+    per-distinct-key path, which handles any key — one gate closing both the negative-key crash and the
+    sparse-key OOM for all three callers. (:class:`KeyedCount` guards itself differently — its docstring.)
+    """
+    if keys.size == 0:
+        return True
+    return bool(keys.min() >= 0) and int(keys.max()) < _FAST_PATH_MAX
+
+
 class InMemorySource(SourceOperator):
     """Yields a fixed, pre-built sequence of frames; used by deterministic tests. A bounded
     source must end its frame list with ``EOS_FRAME``; :func:`from_batches` appends it for you."""
@@ -157,9 +176,15 @@ class Tokenize(OneInputOperator):
 class KeyedCount(OneInputOperator):
     """Counts occurrences per key, emitted at end of stream (:meth:`on_eos`) — a keyed global aggregation.
 
-    Non-negative integer keys are counted in a numpy array indexed by the key value (``np.bincount`` per
-    batch, added into a running array); any other key type folds through keyed state. Either way a null
-    key is counted as its own group."""
+    A non-negative integer key is counted in a numpy array indexed by the key value (``np.bincount`` per
+    batch, added into a running array). A negative integer key — and any non-integer key — folds through
+    keyed state instead, which counts any key. A *sparse* non-negative integer key is the one unguarded
+    case, a deliberate speed choice: ``np.bincount`` sizes its array to the
+    largest key value, so
+    counting by a high-valued id allocates a proportionally huge array and can exhaust memory. Guarding it
+    needs a max scan on every batch, which every dense count would pay for a rare key — so instead, key such
+    a column through a dense or hashed id, or aggregate it with :class:`KeyedAgg` (``.agg_by``), which
+    demotes a sparse key. Either way a null key is counted as its own group."""
 
     _STATE = "count"  # state-backend name (distinct from the output column, which count_col names)
 
@@ -183,24 +208,45 @@ class KeyedCount(OneInputOperator):
             if pa.types.is_integer(col.type):
                 self._counts = np.zeros(0, dtype=np.int64)
         if self._counts is not None:
-            if col.null_count:
+            nn = col.drop_null() if col.null_count else col
+            keys = np.asarray(nn.to_numpy(zero_copy_only=False))
+            # np.bincount raises ValueError on a negative key (numpy rejects a negative index); catching
+            # that demotes with no pre-scan on the hot path. A sparse key it does not guard — the deliberate
+            # limitation in the class docstring.
+            try:
+                if keys.size:
+                    bc = np.bincount(keys)
+                    if bc.size > self._counts.size:
+                        grown = np.zeros(bc.size, dtype=np.int64)
+                        grown[: self._counts.size] = self._counts
+                        self._counts = grown
+                    self._counts[: bc.size] += bc
                 self._nulls += col.null_count
-                col = col.drop_null()
-            keys = np.asarray(col.to_numpy(zero_copy_only=False))
-            if keys.size:
-                bc = np.bincount(keys)  # non-negative ints only (raises on negative)
-                if bc.size > self._counts.size:
-                    grown = np.zeros(bc.size, dtype=np.int64)
-                    grown[: self._counts.size] = self._counts
-                    self._counts = grown
-                self._counts[: bc.size] += bc
-            return
+                return
+            except ValueError:
+                pass  # negative key
+            self._demote()
         counts = pc.value_counts(col)
         # One bulk fold of the batch's per-key counts — no KeyContext or reducing-state handle per key.
         key_tuples = ((v,) for v in counts.field("values").to_pylist())
         self._ctx.reduce_all(
             self._STATE, zip(key_tuples, counts.field("counts").to_pylist(), strict=True), _add
         )
+
+    def _demote(self) -> None:
+        # Drain the running bincount + null tally into the general keyed-state path, which counts any key,
+        # then process this and every later batch there (no fast-path array to overflow).
+        if self._counts is not None:
+            nz = np.nonzero(self._counts)[0]
+            items: list[tuple[tuple[object, ...], int]] = [
+                ((int(k),), int(self._counts[k])) for k in nz
+            ]
+            if self._nulls:
+                items.append(((None,), self._nulls))
+            if items:
+                self._ctx.reduce_all(self._STATE, items, _add)
+        self._counts = None
+        self._nulls = 0
 
     def on_eos(self, out: Collector) -> None:
         if self._counts is not None:  # integer fast path: emit nonzero keys + counts, vectorized
@@ -244,9 +290,10 @@ class KeyedMean(OneInputOperator):
     arrays (``np.bincount``) with no per-key Python — the vectorized fast path. Semantics match SQL
     ``AVG(col)``: a null value is
     skipped, and a group whose values are *all* null keeps its row with a ``NULL`` mean and ``0`` count (a
-    *NaN* value, unlike a null, propagates to ``NaN``, as DataFusion ``AVG`` also yields). A negative or
-    null key (rare) drains the accumulators into an Arrow group-by that handles any key. Emits one row per
-    key: ``key_col``, ``mean_col``, and ``n``."""
+    *NaN* value, unlike a null, propagates to ``NaN``, as DataFusion ``AVG`` also yields). A null key, or an
+    integer key the value-indexed path can't take (:func:`_int_fast_ok`), drains the accumulators into an
+    Arrow group-by that handles any key. Emits one row per key: ``key_col``, ``mean_col``, and ``n``.
+    """
 
     def __init__(self, key_col: str, value_col: str, mean_col: str = "mean") -> None:
         self.key_col = key_col
@@ -278,10 +325,10 @@ class KeyedMean(OneInputOperator):
         if self._fast:
             if kcol.null_count == 0:
                 keys = np.asarray(kcol.to_numpy(zero_copy_only=False))
-                if keys.size == 0 or keys.min() >= 0:
+                if _int_fast_ok(keys):
                     self._fast_add(keys, batch.column(self.value_col))
                     return
-            self._demote()  # a null or negative key: the group-by path handles any key
+            self._demote()  # a null key, or one _int_fast_ok rejects: the group-by handles any key
         self._dict_add(kcol, batch.column(self.value_col))
 
     @staticmethod
@@ -428,20 +475,19 @@ class KeyedAgg(OneInputOperator):
     ``mean``, ``min``, ``max``; one row per key group is emitted at end of stream. For a single
     non-negative-integer key it bincounts / scatters the raw batch rows directly into running numpy
     accumulators indexed by the key value — no per-key Python and no per-batch group-by, matching the
-    :class:`KeyedCount` / :class:`KeyedMean` fast path. Any other key (multi-column, string, or a negative
-    key — even one that only appears in a later batch, at which point the numpy accumulators are drained
-    into the group-by path) reduces each batch by an Arrow group-by and folds the per-key partials through a
-    dict. The two paths agree exactly, including on nulls: ``count`` / ``mean`` count non-null values of the
-    input column (SQL ``COUNT(col)`` / ``AVG(col)``), and a group whose values are *all* null keeps its row
-    but reports ``NULL`` for ``sum`` / ``mean`` / ``min`` / ``max`` and ``0`` for ``count``. An integer
-    input column keeps an integer ``sum`` / ``min`` / ``max`` (no float widening); ``mean`` is always
-    float64.
+    :class:`KeyedCount` / :class:`KeyedMean` fast path. Any other key — multi-column, string, or a single
+    integer key the value-indexed path can't take (:func:`_int_fast_ok`), including one that first appears
+    in a later batch, at which point the numpy accumulators are drained into the dict — reduces each batch by
+    an Arrow group-by and folds the per-key partials through a dict. The two paths agree exactly, including
+    on nulls: ``count`` / ``mean`` count non-null values of the input column (SQL ``COUNT(col)`` /
+    ``AVG(col)``), and a group whose values are *all* null keeps its row but reports ``NULL`` for ``sum`` /
+    ``mean`` / ``min`` / ``max`` and ``0`` for ``count``. An integer input column keeps an integer ``sum`` /
+    ``min`` / ``max`` (no float widening); ``mean`` is always float64.
 
-    Memory: the fast path's accumulators are dense arrays indexed by the key *value*, so their size is
-    ``max(key) + 1`` (times the number of distinct aggregation bases). A large or sparse integer key — an id
-    near 1e9 — therefore allocates a huge array; the same value-indexed tradeoff as :class:`KeyedCount` /
-    :class:`KeyedMean`. Use a compact key range on the fast path, or a non-integer key to force the dict
-    path."""
+    Memory: the fast path's accumulators are dense arrays indexed by the key *value* (one per aggregation
+    base), so a large or sparse integer key would size them to ``max(key) + 1``. :func:`_int_fast_ok` keeps
+    such a key off the fast path — it demotes to the dict — so the arrays stay bounded. (:class:`KeyedCount`
+    makes the opposite tradeoff and does not guard its sparse case; see its docstring.)"""
 
     def __init__(self, key_cols: tuple[str, ...], aggs: dict[str, tuple[str, str]]) -> None:
         self.key_cols = key_cols
@@ -509,7 +555,7 @@ class KeyedAgg(OneInputOperator):
             kcol = batch.column(self.key_cols[0])
             if kcol.null_count == 0:
                 keys = np.asarray(kcol.to_numpy(zero_copy_only=False))
-                if keys.size == 0 or keys.min() >= 0:
+                if _int_fast_ok(keys):
                     self._process_fast(batch, keys)
                     return
             self._demote()  # a null or negative key: fall back to the general group-by path
@@ -835,15 +881,16 @@ class HashJoin(TwoInputOperator):
         if len(key_columns) == 1:
             col = batch.column(key_columns[0])
             if self._int_fast is None and len(col):  # decide on the first non-empty single key
-                arr = col.drop_null() if col.null_count else col
-                self._int_fast = pa.types.is_integer(col.type) and (
-                    len(arr) == 0 or pc.min(arr).as_py() >= 0
-                )
+                self._int_fast = pa.types.is_integer(col.type)
             if self._int_fast and pa.types.is_integer(col.type):
                 # Integer values intern vectorially; any non-integer batch (e.g. a bool side of an
                 # int↔bool join) falls through to the dict path below, so int values and non-int values
                 # keep disjoint id spaces and equal-typed keys still match.
-                return self._encode_int(col)
+                ids = self._encode_int(col)
+                if ids is not None:
+                    return ids
+                # None: this batch's keys can't use the dense value→id array. _encode_int has migrated the
+                # ids assigned so far into the general dict, so each value keeps its id; use the dict path.
             enc = pc.dictionary_encode(col, null_encoding="encode")
             local_to_global = np.array(
                 [self._intern_single(type(v), v) for v in enc.dictionary.to_pylist()],
@@ -880,31 +927,51 @@ class HashJoin(TwoInputOperator):
             self._multi_ids[key] = gid
         return gid
 
-    def _encode_int(self, col: pa.Array) -> np.ndarray:
-        """Per-row ids for a single non-negative-integer key column, fully vectorized. Null rows share the
-        one null id (``_intern_single(NoneType, None)``, so a null matches a null on either path); the rest
-        go through :meth:`_intern_ints`."""
+    def _encode_int(self, col: pa.Array) -> np.ndarray | None:
+        """Per-row ids for a single-integer key column, fully vectorized — or ``None`` when this batch's
+        keys are unsafe for the dense value→id array (:func:`_int_fast_ok`), having first migrated the ids
+        assigned so far into the general dict (:meth:`_demote_int`) so the caller can fall through to the
+        dict path. Null rows share the one null id (``_intern_single(NoneType, None)``, so a null matches a
+        null on either path); the rest go through :meth:`_intern_ints`."""
         n = len(col)
         if n == 0:
             return np.empty(0, dtype=np.int64)
         if col.null_count:
+            present = np.asarray(col.drop_null().to_numpy(zero_copy_only=False))
+            if not _int_fast_ok(present):
+                self._demote_int()
+                return None
             valid = np.asarray(col.is_valid())
             out = np.empty(n, dtype=np.int64)
             out[~valid] = self._intern_single(type(None), None)  # same null id as the dict path
-            out[valid] = self._intern_ints(
-                np.asarray(col.drop_null().to_numpy(zero_copy_only=False))
-            )
+            out[valid] = self._intern_ints(present)
             return out
-        return self._intern_ints(np.asarray(col.to_numpy(zero_copy_only=False)))
+        keys = np.asarray(col.to_numpy(zero_copy_only=False))
+        if not _int_fast_ok(keys):
+            self._demote_int()
+            return None
+        return self._intern_ints(keys)
+
+    def _demote_int(self) -> None:
+        """Copy the vectorized integer id map (:attr:`_int_id`) into the general (type, value) dict, then
+        drop it, so a later unsafe integer batch interns through the dict path while every value already
+        seen keeps the id it was assigned. A value's id must never change: both join sides — and every
+        future batch — resolve equal keys through one shared id space, so a shifted id would silently stop
+        equal keys from matching."""
+        if self._int_id.size:
+            by_value = self._single_ids.setdefault(int, {})
+            for v in np.nonzero(self._int_id >= 0)[0].tolist():
+                by_value[v] = int(self._int_id[v])
+        self._int_id = np.empty(0, dtype=np.int64)
+        self._int_fast = False
 
     def _intern_ints(self, keys: np.ndarray) -> np.ndarray:
-        """Gather a non-negative integer key array to dense global ids through the ``_int_id`` value→id
-        lookup, growing it to fit and assigning the next free ids to unseen values in one bulk pass.
-        """
+        """Gather a fast-path-safe integer key array — the non-negative, dense keys :meth:`_encode_int` has
+        already checked (:func:`_int_fast_ok`), so no bounds guard is needed here — to dense global ids
+        through the ``_int_id`` value→id lookup, growing it to fit and assigning the next free ids to unseen
+        values in one bulk pass."""
         if keys.size == 0:
             return keys.astype(np.int64, copy=False)
-        if keys.min() < 0:  # a later negative can't index _int_id (batch 1 was non-negative)
-            raise ValueError("HashJoin integer fast path requires non-negative keys")
         top = int(keys.max()) + 1
         if top > self._int_id.size:  # grow the lookup to cover this batch's largest key value
             grown = np.full(top, -1, dtype=np.int64)
