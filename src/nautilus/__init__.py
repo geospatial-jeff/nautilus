@@ -10,7 +10,7 @@ The fluent :class:`~nautilus.dsl.Stream` DSL is the readable way to build and ru
     print(result.to_pylist())
 
 ``.run(workers=…)`` deploys the *same* graph across that many worker processes; ``.join`` combines two
-streams into an inner equi-join::
+streams into an equi-join — inner by default, or ``how="left"/"right"/"outer"`` to keep unmatched rows::
 
     joined = source(orders).join(source(customers), on="customer_id").run()
 

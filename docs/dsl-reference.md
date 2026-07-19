@@ -32,18 +32,26 @@ combinator shuffles its input on the key so each key's rows meet on one instance
 | `.count_by(key_col, count_col="count")` | Count occurrences per key, emitted at end of stream; shuffled on `key_col` (`KeyedCount`). |
 | `.agg_by(key_cols, **aggs)` | Grouped `sum`/`count`/`mean`/`min`/`max` per key, emitted at end of stream; shuffled on `key_cols` (`KeyedAgg`). Each keyword names an output column as `(input_col, func)`, e.g. `.agg_by("lat", mean=("temp", "mean"), hi=("temp", "max"))`. Its `count` is `COUNT(col)` — non-null values of that column; `.count_by` is the separate `COUNT(*)`, rows per key. |
 | `.apply(operator, key_columns=None)` | The escape hatch: append any `OneInputOperator` instance. Keyed by `key_columns` if given, else the operator's own `key_columns()`. At parallelism > 1 the instance is deep-copied per subtask. |
-| `.join(other, on=…)` | Inner equi-join with another stream — see below. |
+| `.join(other, on=…, how="inner")` | Equi-join with another stream — inner or outer — see below. |
 
 ## Joining
 
-`.join(other, on="k")` (or `left_on=…, right_on=…` for differently-named keys) produces the inner
-equi-join (`HashJoin`): a row for every left and right row whose join keys are equal. Both inputs are
-shuffled on their join keys, so equal keys meet on one instance. The output is this stream's columns
-followed by `other`'s non-key columns; a colliding non-key column name is rejected. A stream cannot be
-joined to itself, and the two sides must name the same number of key columns.
+`.join(other, on="k")` (or `left_on=…, right_on=…` for differently-named keys) produces an equi-join
+(`HashJoin`): a row for every left and right row whose join keys are equal. Both inputs are shuffled on
+their join keys, so equal keys meet on one instance. The output is this stream's columns followed by
+`other`'s non-key columns; a colliding non-key column name is rejected. A stream cannot be joined to
+itself, and the two sides must name the same number of key columns.
+
+`how` selects which non-matching rows are also kept: `"inner"` (default) keeps only matched pairs;
+`"left"` also keeps each left row with no right match (its right columns null); `"right"` keeps each
+unmatched right row (its left columns null, its join key carried from the right); `"outer"` keeps both.
+An inner join runs at any `parallelism`; an outer join runs at `parallelism=1` only (a wider shuffle can
+route an instance no rows on a side, leaving the absent side's null columns untypable), so an outer join
+with `parallelism > 1` is rejected.
 
 ```python
-joined = source(orders).join(source(customers), on="customer_id")
+joined = source(orders).join(source(customers), on="customer_id")            # inner
+unmatched_kept = source(orders).join(source(customers), on="customer_id", how="left")
 ```
 
 ## Terminals
