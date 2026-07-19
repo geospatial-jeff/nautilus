@@ -128,6 +128,67 @@ def test_join_clears_buffers_on_close() -> None:
     assert join._left_buf.empty and join._right_buf.empty
 
 
+# --- integer fast-path safety: an unsafe key demotes to the dict intern, never crashes or OOMs -------
+# The value-indexed intern (a dense value→id array) is only safe for non-negative, in-range, dense keys
+# (_int_fast_ok). Each unsafe key below must demote — migrating the ids already assigned so equal keys
+# keep matching — and join exactly, not raise (a negative can't index the array) or allocate gigabytes.
+
+
+def test_join_negative_keys_demote_and_still_match() -> None:
+    out = _drive(
+        HashJoin("id"),
+        [
+            ("L", batch(id=[-1, 0, 2], lval=["a", "b", "c"])),
+            ("R", batch(id=[-1, 2, 2], rval=[10, 20, 21])),
+        ],
+    )
+    assert _triples(out) == Counter({(-1, "a", 10): 1, (2, "c", 20): 1, (2, "c", 21): 1})
+
+
+def test_join_negative_key_in_a_later_batch_demotes() -> None:
+    # The fast path latches on the first (non-negative) batch; a later negative key must not crash — and
+    # the earlier non-negative matches must survive the demote.
+    out = _drive(
+        HashJoin("id"),
+        [
+            ("L", batch(id=[1, 2], lval=["a", "b"])),
+            ("R", batch(id=[1], rval=[10])),
+            ("L", batch(id=[-5, 2], lval=["c", "d"])),
+            ("R", batch(id=[-5, 2], rval=[50, 20])),
+        ],
+    )
+    assert _triples(out) == Counter(
+        {(1, "a", 10): 1, (-5, "c", 50): 1, (2, "b", 20): 1, (2, "d", 20): 1}
+    )
+
+
+def test_join_demote_preserves_ids_assigned_on_the_fast_path() -> None:
+    # Key 3 is interned on the fast path, then a sparse key forces a demote; 3 must keep its id so the
+    # right side's 3 still matches. A shifted id would silently drop the match — the reason demote copies
+    # the id map into the dict rather than starting fresh.
+    out = _drive(
+        HashJoin("id"),
+        [
+            ("L", batch(id=[3, 4], lval=["a", "b"])),
+            ("L", batch(id=[10**9, 3], lval=["c", "d"])),  # sparse → demote
+            ("R", batch(id=[3, 10**9], rval=[30, 90])),
+        ],
+    )
+    assert _triples(out) == Counter({(3, "a", 30): 1, (3, "d", 30): 1, (10**9, "c", 90): 1})
+
+
+def test_join_large_unsigned_and_sparse_keys_demote() -> None:
+    big = 2**63 + 1  # past int64 range: a dense value→id array can neither size to it nor index it
+    out = _drive(
+        HashJoin("id"),
+        [
+            ("L", batch(id=pa.array([big, 7], pa.uint64()), lval=["a", "b"])),
+            ("R", batch(id=pa.array([big, 7, 7], pa.uint64()), rval=[1, 2, 3])),
+        ],
+    )
+    assert _triples(out) == Counter({(big, "a", 1): 1, (7, "b", 2): 1, (7, "b", 3): 1})
+
+
 # --- through the engine: co-partitioning makes the parallel and distributed results match serial -----
 
 _LEFT = [data(id=[1, 1, 2, 3], lval=["a", "b", "c", "d"]), EOS_FRAME]
@@ -216,4 +277,19 @@ async def test_join_matches_across_integer_widths() -> None:
     rows = (await run_plan(_two_source_join(left, right, "id", "id", 1))).to_pylist()
     assert Counter((r["id"], r["lval"], r["rval"]) for r in rows) == Counter(
         {(1, "a", 10): 1, (2, "b", 20): 1}
+    )
+
+
+async def test_join_negative_keys_co_partition_across_parallelism() -> None:
+    # A negative key demotes the intern's fast path (see the unit tests); through the engine it must still
+    # co-partition, so the parallelism-2 result equals the serial one — the fix also closed a
+    # serial-vs-parallel divergence (a negative key raised at parallelism 1 but routed apart above it).
+    left = [data(id=pa.array([-1, 2, -1], pa.int64()), lval=["a", "b", "c"]), EOS_FRAME]
+    right = [data(id=pa.array([-1, 2], pa.int64()), rval=[10, 20]), EOS_FRAME]
+    serial = multiset(await run_plan(_two_source_join(left, right, "id", "id", 1)))
+    parallel = multiset(await run_plan(_two_source_join(left, right, "id", "id", 2)))
+    assert serial == parallel
+    rows = (await run_plan(_two_source_join(left, right, "id", "id", 1))).to_pylist()
+    assert Counter((r["id"], r["lval"], r["rval"]) for r in rows) == Counter(
+        {(-1, "a", 10): 1, (-1, "c", 10): 1, (2, "b", 20): 1}
     )
