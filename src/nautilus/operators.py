@@ -36,10 +36,6 @@ def _add(a: int, b: int) -> int:
     return a + b
 
 
-#: Shared empty row-index array for a key id with no buffered rows (read-only; never mutated in place).
-_NO_ROWS = np.empty(0, dtype=np.int64)
-
-
 #: Ceiling on a value-indexed fast-path array: ~268M entries, ~2 GB as int64. Sizing an accumulator to
 #: ``max(key) + 1`` past this costs more memory than the fast path saves. Generous — dense category-id keys
 #: sit far below it; only a sparse or hashed integer id reaches it.
@@ -726,197 +722,49 @@ class KeyedAgg(OneInputOperator):
 class _SideBuffer:
     """One join input's accumulated rows, indexed by integer key id for a vectorized probe.
 
-    ``add`` is O(1): it just holds the batch and its key ids. The indexing is deferred to the next probe
-    and done once per row (:meth:`_fold`) — because the two sides are probed very differently. The large
-    stream in a stream-table join is added to constantly but probed rarely, so indexing it eagerly on every
-    add (and re-indexing on every probe, the old behavior) is wasted work; folding lazily touches each row
-    exactly once, when it is first probed against.
-
-    A probe folds anything added since the last probe into per-id buckets — each id's global row positions,
-    pushed on as segments, never re-sorting the whole buffer — then takes one of two paths:
-
-    - **Stable** (nothing new since the previous probe — the bounded table in a stream-table join once it
-      has finished): the buckets are flattened into a CSR (per-id contiguous position runs plus ``indptr``
-      offsets) once and cached, and each probe expands the query's runs with pure numpy. This is the hot
-      path a large stream hits on every batch, so it stays fully vectorized.
-    - **Growing** (folded new rows this probe — both sides of a stream-stream join): gather each query
-      row's matches straight from the buckets. O(matches), a Python loop over the query rows, but never a
-      re-sort of the whole buffer — so a stream-stream join stays roughly linear instead of quadratic.
-
-    Buffered rows are compacted into one batch at doubling so a probe's ``take`` runs over few Arrow chunks;
-    row order (and so every bucket's global positions) is preserved. Ids index :attr:`_counts` /
-    :attr:`_buckets`, sized to the largest id this side has seen; a query id beyond that has no match here.
-    """
+    Rows are appended a whole batch at a time (O(1) — no per-key concatenation), each batch carried
+    alongside an array of its rows' key ids. The grouped index — rows reordered so one key id's rows form
+    one contiguous run, plus per-id ``start`` and ``count`` arrays — is built lazily on the first probe
+    after a change and cached. So a side that stops growing (the bounded table in a stream-table join) is
+    grouped once and reused for every probe, instead of being re-touched per key on every batch."""
 
     def __init__(self) -> None:
         self._batches: list[pa.RecordBatch] = []
-        self._rows: pa.Table | None = (
-            None  # lazy zero-copy chunked view of the batches, for the take
-        )
-        self._nrows = 0
-        self._compacted_n = (
-            0  # rows folded into one batch at the last compaction (doubling trigger)
-        )
-        self._pending: list[np.ndarray] = (
-            []
-        )  # key ids of batches added but not yet folded into buckets
-        self._pending_base = 0  # global row index of the first pending batch's first row
-        self._counts = np.zeros(0, dtype=np.int64)  # per-id total row count
-        self._buckets: list[list[np.ndarray]] = (
-            []
-        )  # id -> global row positions, as un-joined segments
-        self._cat: list[np.ndarray | None] = []  # id -> concatenated bucket, cached
-        self._index: tuple[pa.RecordBatch, np.ndarray] | None = (
-            None  # stable CSR: (rows by id, indptr)
-        )
-        self._index_at = -1  # _nrows when _index was built (stale once the side grows past it)
-        self._probed_at = (
-            -1
-        )  # _nrows at the last probe — the side is "stable" if it has not grown since
+        self._key_ids: list[np.ndarray] = []
+        self._index: tuple[pa.RecordBatch, np.ndarray, np.ndarray] | None = None
 
     @property
     def empty(self) -> bool:
-        return self._nrows == 0
+        return not self._batches
 
     def add(self, batch: pa.RecordBatch, key_ids: np.ndarray) -> None:
         self._batches.append(batch)
-        self._pending.append(key_ids)  # fold it into the index lazily, on the next probe
-        self._rows = None  # invalidate the concatenated-rows cache
-        self._nrows += len(key_ids)
-
-    def _fold(self) -> bool:
-        """Fold every batch added since the last fold into the per-id buckets, in arrival order, at
-        O(new-rows). Returns whether anything was folded — i.e. whether this side just grew."""
-        if not self._pending:
-            return False
-        base = self._pending_base
-        for key_ids in self._pending:
-            if key_ids.size:
-                top = int(key_ids.max()) + 1
-                if (
-                    top > self._counts.size
-                ):  # grow per-id structures by doubling — amortized O(1) per id
-                    cap = max(top, self._counts.size * 2)
-                    grown = np.zeros(cap, dtype=np.int64)
-                    grown[: self._counts.size] = self._counts
-                    self._counts = grown
-                    self._buckets.extend([] for _ in range(cap - len(self._buckets)))
-                    self._cat.extend(None for _ in range(cap - len(self._cat)))
-                order = np.argsort(key_ids, kind="stable")  # group this batch's rows by id, once
-                gpos = base + order  # their global positions, in id order
-                uniq, first, cnt = np.unique(key_ids[order], return_index=True, return_counts=True)
-                for k in range(len(uniq)):
-                    idv = int(uniq[k])
-                    self._buckets[idv].append(gpos[first[k] : first[k] + int(cnt[k])])
-                    self._cat[idv] = None  # a new segment invalidates this id's concatenation cache
-                self._counts[uniq] += cnt
-            base += len(key_ids)
-        self._pending = []
-        self._pending_base = self._nrows
-        self._index = None  # the buckets changed; the stable CSR must be rebuilt
-        return True
-
-    def _take(self, positions: np.ndarray) -> pa.RecordBatch:
-        # Gather the matched rows out of the buffered batches. A zero-copy chunked view (``from_batches``,
-        # O(number of batches)) then one ``take`` reads only the ``positions`` matched — never a full-buffer
-        # concatenation, which per probe would be the quadratic cost the buckets exist to avoid.
-        if len(self._batches) > 1 and self._nrows >= 2 * self._compacted_n:
-            # Compact into one batch at doubling so the take runs over few chunks — but lazily, here where
-            # rows are actually gathered, so a side that is added to but never probed pays nothing. Row
-            # order (every bucket's global positions) is preserved; amortized doubling keeps concat linear.
-            self._batches = [pa.concat_batches(self._batches)]
-            self._compacted_n = self._nrows
-            self._rows = None
-        if self._rows is None:
-            self._rows = pa.Table.from_batches(self._batches)
-        taken = self._rows.take(pa.array(positions))
-        return pa.RecordBatch.from_arrays(
-            [c.combine_chunks() for c in taken.columns], names=taken.schema.names
+        self._key_ids.append(key_ids)
+        self._index = (
+            None  # invalidate; the next probe rebuilds the grouped index over the new rows
         )
 
-    def _bucket(self, idv: int) -> np.ndarray:
-        # An id with no buffered rows (a padded slot, or one only the other side has seen) has no segments.
-        cat = self._cat[idv]
-        if cat is None:
-            segs = self._buckets[idv]
-            cat = segs[0] if len(segs) == 1 else np.concatenate(segs) if segs else _NO_ROWS
-            self._cat[idv] = cat
-        return cat
-
-    def probe(self, query_ids: np.ndarray) -> tuple[pa.RecordBatch, np.ndarray] | None:
-        """The cross product of ``query_ids`` against this buffer, as ``(other_rows, query_take)`` — the
-        matched rows of this side, and the index that repeats each query row by its match count — or
-        ``None`` if nothing matches. The other-side match positions are found vectorized through the cached
-        CSR when this side is stable, or gathered from the buckets when it is still growing (see the class
-        docstring)."""
-        grew = (
-            self._fold()
-        )  # fold in anything added since the last probe; grew ⇒ this side is not stable
-        nq = len(query_ids)
-        within = query_ids < self._counts.size  # an id this side has never seen has no match here
-        qcount = np.zeros(nq, dtype=np.int64)
-        qcount[within] = self._counts[query_ids[within]]
-        total = int(qcount.sum())
-        self._probed_at = self._nrows
-        if total == 0:
-            return None
-        query_take = np.repeat(np.arange(nq), qcount)
-        if grew:
-            other_rows = self._take(self._bucket_take(query_ids, qcount, total))
-        else:
-            other_rows = self._stable_take(query_ids, qcount, total, within)
-        return other_rows, query_take
-
-    def _stable_take(
-        self, query_ids: np.ndarray, qcount: np.ndarray, total: int, within: np.ndarray
-    ) -> pa.RecordBatch:
-        # Reorder the rows into per-id runs once and cache them (with the per-id ``indptr`` offsets); each
-        # probe is then a single ``take`` of contiguous runs — the same fully-vectorized shape the old
-        # grouped index had, so a large stream probing a bounded table pays no per-batch reindexing.
-        if self._index is None or self._index_at != self._nrows:
-            indptr = np.zeros(self._counts.size + 1, dtype=np.int64)
-            np.cumsum(self._counts, out=indptr[1:])
-            positions = (
-                np.concatenate([self._bucket(i) for i in range(self._counts.size)])
-                if self._nrows
-                else np.empty(0, dtype=np.int64)
-            )
-            self._index = (self._take(positions), indptr)
-            self._index_at = self._nrows
-        reordered, indptr = self._index
-        nq = len(query_ids)
-        qstart = np.zeros(nq, dtype=np.int64)
-        qstart[within] = indptr[query_ids[within]]
-        out_starts = np.zeros(nq, dtype=np.int64)
-        np.cumsum(qcount[:-1], out=out_starts[1:])
-        csr_pos = np.repeat(qstart - out_starts, qcount) + np.arange(total)
-        return reordered.take(pa.array(csr_pos))
-
-    def _bucket_take(self, query_ids: np.ndarray, qcount: np.ndarray, total: int) -> np.ndarray:
-        # Growing side: gather each matching query row's buffered positions straight from its id's bucket.
-        # O(matches) — no CSR flatten, so a per-batch probe never re-touches the whole buffer.
-        other_take = np.empty(total, dtype=np.int64)
-        pos = 0
-        for i in range(len(query_ids)):
-            c = int(qcount[i])
-            if c:
-                other_take[pos : pos + c] = self._bucket(int(query_ids[i]))
-                pos += c
-        return other_take
+    def grouped(self, num_ids: int) -> tuple[pa.RecordBatch, np.ndarray, np.ndarray]:
+        """Rows reordered into contiguous per-key-id runs, with ``start`` / ``count`` arrays indexed by
+        key id (an id with no buffered rows has count 0). Built once and cached until the next ``add``.
+        """
+        if self._index is None:
+            rows = self._batches[0] if len(self._batches) == 1 else pa.concat_batches(self._batches)
+            ids = self._key_ids[0] if len(self._key_ids) == 1 else np.concatenate(self._key_ids)
+            order = np.argsort(ids, kind="stable")  # gather each id's rows into one run
+            start = np.zeros(num_ids, dtype=np.int64)
+            count = np.zeros(num_ids, dtype=np.int64)
+            if len(ids):
+                uniq, first, cnt = np.unique(ids[order], return_index=True, return_counts=True)
+                start[uniq] = first
+                count[uniq] = cnt
+            self._index = (rows.take(pa.array(order)), start, count)
+        return self._index
 
     def clear(self) -> None:
         self._batches.clear()
-        self._rows = None
-        self._nrows = 0
-        self._compacted_n = 0
-        self._pending.clear()
-        self._pending_base = 0
-        self._counts = np.zeros(0, dtype=np.int64)
-        self._buckets.clear()
-        self._cat.clear()
+        self._key_ids.clear()
         self._index = None
-        self._index_at = -1
-        self._probed_at = -1
 
 
 class HashJoin(TwoInputOperator):
@@ -1126,10 +974,7 @@ class HashJoin(TwoInputOperator):
             return keys.astype(np.int64, copy=False)
         top = int(keys.max()) + 1
         if top > self._int_id.size:  # grow the lookup to cover this batch's largest key value
-            cap = max(
-                top, self._int_id.size * 2
-            )  # doubling, so dense ascending keys stay amortized O(1)
-            grown = np.full(cap, -1, dtype=np.int64)
+            grown = np.full(top, -1, dtype=np.int64)
             grown[: self._int_id.size] = self._int_id
             self._int_id = grown
         ids = self._int_id[keys]
@@ -1152,14 +997,30 @@ class HashJoin(TwoInputOperator):
         *,
         query_is_left: bool,
     ) -> None:
-        """Emit every join of ``query``'s rows against the buffered other side, in bulk. The buffer returns
-        the cross product as index arrays — each query row repeated by its match count, and the matching
-        other-side rows — so the whole batch's output is two ``take`` calls, no per-pair Python."""
-        result = other.probe(ids)
-        if result is None:
+        """Emit every join of ``query``'s rows against the buffered other side, in bulk. For each query
+        row, its matches are the other side's contiguous run for that key id; the per-row match counts
+        drive one ragged ``take`` per side, so the whole batch's cross product is built without a per-key
+        Python loop."""
+        if other.empty:
             return
-        other_rows, query_take = result
+        grouped, start, count = other.grouped(self._num_ids)
+        nq = len(ids)
+        within = ids < count.shape[0]  # a key id unseen on the other side has no run there
+        qstart = np.zeros(nq, dtype=np.int64)
+        qcount = np.zeros(nq, dtype=np.int64)
+        qstart[within] = start[ids[within]]
+        qcount[within] = count[ids[within]]
+        total = int(qcount.sum())
+        if total == 0:
+            return
+        query_take = np.repeat(np.arange(nq), qcount)  # each query row repeated by its match count
+        # The other-side rows for query row i are grouped[qstart[i] : qstart[i] + qcount[i]]; expand those
+        # ranges into one index array via the running-offset trick (no per-row Python).
+        out_starts = np.zeros(nq, dtype=np.int64)
+        np.cumsum(qcount[:-1], out=out_starts[1:])
+        other_take = np.repeat(qstart - out_starts, qcount) + np.arange(total)
         query_rows = query.take(pa.array(query_take))
+        other_rows = grouped.take(pa.array(other_take))
         left_rows, right_rows = (
             (query_rows, other_rows) if query_is_left else (other_rows, query_rows)
         )

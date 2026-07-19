@@ -261,25 +261,21 @@ class SyntheticTextSource(SourceOperator):
 class SyntheticJoinStreamSource(SourceOperator):
     """The large *probe* side of the join benchmark: a ``key`` that recurs over ``[0, key_cardinality)``
     across every batch — the way a real streaming join re-touches each key many times, not once — plus a
-    constant ``value_col`` payload (``lval`` by default). ``num_batches`` × ``batch_rows`` rows, then EOS.
-    Set ``key_cardinality`` to the total row count and it emits ascending *unique* keys — two such sources
-    join 1:1, the growing-both-sides shape a stream-stream join has. Deterministic and unpaced."""
+    constant ``lval`` payload. ``num_batches`` × ``batch_rows`` rows, then EOS. Deterministic and
+    unpaced."""
 
-    def __init__(
-        self, *, num_batches: int, batch_rows: int, key_cardinality: int, value_col: str = "lval"
-    ) -> None:
+    def __init__(self, *, num_batches: int, batch_rows: int, key_cardinality: int) -> None:
         self._num_batches = num_batches
         self._batch_rows = batch_rows
         self._key_cardinality = key_cardinality
-        self._value_col = value_col
 
     async def frames(self) -> AsyncIterator[Frame]:
         n = self._batch_rows
-        val = pa.array(np.ones(n, dtype=np.int64))
+        lval = pa.array(np.ones(n, dtype=np.int64))
         idx = 0
         for _ in range(self._num_batches):
             keys = pa.array(np.arange(idx, idx + n) % self._key_cardinality)
-            yield Batch(pa.record_batch({"key": keys, self._value_col: val}))
+            yield Batch(pa.record_batch({"key": keys, "lval": lval}))
             idx += n
         yield EOS_FRAME
 
