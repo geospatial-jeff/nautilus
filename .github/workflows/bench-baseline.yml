@@ -1,0 +1,45 @@
+name: bench-baseline
+
+# Re-record benchmarks/baseline.json on the CI runner and open a PR with it. Run this by hand
+# (Actions -> bench-baseline -> Run workflow) whenever the baseline needs re-recording: after a
+# deliberate perf change lands, or once bench-check starts reporting `machine-differs` because the
+# runner image drifted. Throughput is comparable only within one runner image, so the baseline must
+# be recorded on the same image the bench-check gate runs on — hence the identical pinned runner.
+# The result is a PR, not a direct push: a re-baseline moves the regression reference, so a human
+# reviews the numbers before it becomes the anchor.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the re-baseline branch
+  pull-requests: write # open the PR
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04 # MUST match bench-check.yml's runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -e ".[dev,fast,geo]"
+      - name: Re-record the baseline at each entry's recorded scale
+        run: uv run nautilus bench-check --update
+      - name: Open a PR if the baseline moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet benchmarks/baseline.json; then
+            echo "baseline unchanged — nothing to PR"
+            exit 0
+          fi
+          branch="chore/rebaseline-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add benchmarks/baseline.json
+          git commit -m "chore(bench): re-baseline on the CI runner (run ${GITHUB_RUN_ID})"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(bench): re-baseline on the CI runner" \
+            --body "Regenerated \`benchmarks/baseline.json\` on the \`ubuntu-24.04\` runner via the bench-baseline workflow (run ${GITHUB_RUN_ID}). Review the throughput deltas, then merge to move the regression reference. Structural digests are unchanged by a re-baseline; if any digest differs, do not merge — that is an output change, not a speed change."
