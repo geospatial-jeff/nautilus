@@ -195,6 +195,7 @@ def run_pipeline(
     workers: int,
     capacity: int,
     tier: Tier,
+    key_groups: int | None = None,
     daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     """Run an already-loaded ``(source, transforms)`` at the given topology — single-process, in-process
@@ -206,13 +207,25 @@ def run_pipeline(
         # Single process — run_local_chain handles both serial and in-process parallel (any parallelism).
         return asyncio.run(
             run_local_chain(
-                source, transforms, parallelism=parallelism, capacity=capacity, telemetry=config
+                source,
+                transforms,
+                parallelism=parallelism,
+                key_groups=key_groups,
+                capacity=capacity,
+                telemetry=config,
             )
         )
     from nautilus.cluster import deploy
 
     graph = graph_from_pipeline(source, transforms, parallelism)
-    return deploy(graph, num_workers=workers, daemons=daemons, capacity=capacity, telemetry=config)
+    return deploy(
+        graph,
+        num_workers=workers,
+        key_groups=key_groups,
+        daemons=daemons,
+        capacity=capacity,
+        telemetry=config,
+    )
 
 
 def run_graph_pipeline(
@@ -221,6 +234,7 @@ def run_graph_pipeline(
     workers: int,
     capacity: int,
     tier: Tier,
+    key_groups: int | None = None,
     daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     """Run a multi-source graph pipeline (e.g. a join) at the given topology. The graph already carries
@@ -232,10 +246,19 @@ def run_graph_pipeline(
     assert isinstance(graph, LogicalGraph)
     config = TelemetryConfig(tier=tier)
     if workers == 1 and daemons is None:
-        return asyncio.run(run_plan(graph, capacity=capacity, telemetry=config))
+        return asyncio.run(
+            run_plan(graph, key_groups=key_groups, capacity=capacity, telemetry=config)
+        )
     from nautilus.cluster import deploy
 
-    return deploy(graph, num_workers=workers, daemons=daemons, capacity=capacity, telemetry=config)
+    return deploy(
+        graph,
+        num_workers=workers,
+        key_groups=key_groups,
+        daemons=daemons,
+        capacity=capacity,
+        telemetry=config,
+    )
 
 
 def run_once(
@@ -245,16 +268,22 @@ def run_once(
     workers: int,
     capacity: int,
     tier: Tier,
+    key_groups: int | None = None,
     daemons: list[tuple[str, int]] | None = None,
 ) -> RunResult:
     """Build the named pipeline and run it once at the given topology (a fresh source per call). A graph
     pipeline (more than one source — a join) is built at ``parallelism`` and run via run_plan/deploy; a
     linear ``(source, transforms)`` pipeline goes through ``run_pipeline``. ``daemons`` runs across worker
-    daemons instead of spawning locally."""
+    daemons instead of spawning locally; ``key_groups`` sets the keyed-shuffle rescale ceiling."""
     if is_graph_pipeline(pipeline):
         graph = load_graph_pipeline(pipeline, parallelism)
         return run_graph_pipeline(
-            graph, workers=workers, capacity=capacity, tier=tier, daemons=daemons
+            graph,
+            workers=workers,
+            capacity=capacity,
+            tier=tier,
+            key_groups=key_groups,
+            daemons=daemons,
         )
     source, transforms = load_pipeline(pipeline)
     return run_pipeline(
@@ -264,6 +293,7 @@ def run_once(
         workers=workers,
         capacity=capacity,
         tier=tier,
+        key_groups=key_groups,
         daemons=daemons,
     )
 

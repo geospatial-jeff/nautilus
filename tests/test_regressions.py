@@ -273,6 +273,21 @@ def test_key_groups_upper_bound_rejected():
         compile_graph(graph, key_groups=10**6)
 
 
+def test_key_groups_threads_through_the_run_harness(monkeypatch):
+    # The CLI's --key-groups reaches compile through run_once → run_pipeline → run_local_chain. Compile
+    # rejects a key_groups below the parallelism, so run_once raising on key_groups=2 at parallelism 4
+    # proves the value is actually threaded, not silently defaulted to the parallelism.
+    from nautilus.bench import run_once
+    from nautilus.telemetry import Tier
+
+    monkeypatch.setenv("NAUTILUS_BENCH_ROWS", "1000")
+    monkeypatch.setenv("NAUTILUS_BENCH_BATCH", "1000")
+    with pytest.raises(ValueError, match="key-group count .* below the operator parallelism"):
+        run_once(
+            "bench-keyed", parallelism=4, workers=1, capacity=16, tier=Tier.COUNTERS, key_groups=2
+        )
+
+
 # --- R65 / R70: runtime fail-loud paths --------------------------------------------------------
 
 

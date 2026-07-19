@@ -40,12 +40,8 @@ class TelemetryConfig:
 
     tier: Tier = Tier.COUNTERS
     clock: Clock = field(default_factory=SystemClock)
-    #: Reserved, not yet wired: would populate OperatorNode.source_file/source_line on lifecycle events.
-    capture_source_lines: bool = False
     event_log_capacity: int = 1024
     run_id: str | None = None
-    #: Reserved, not yet wired: intended threshold for a future backpressure-stall event.
-    stall_threshold_micros: int = 5000
     validate: bool = True
     #: Sample process CPU/memory + event-loop lag periodically (only when tier > OFF). Excluded from
     #: the config digest because it affects only non-deterministic, non-structural metrics.

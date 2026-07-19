@@ -82,8 +82,8 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   (`KeyGroupPartitioner`). A key never moves between groups, so rescaling the instance count is a table
   swap, not a re-hash of state.
 - **Max parallelism (the key-group count)** — The fixed number of key groups a keyed edge hashes into,
-  chosen once for the job (the `key_groups` argument to `compile_graph` / `run_plan`, defaulting to the
-  stage parallelism; a `--key-groups` CLI flag is **(planned)**). Because each group maps to one instance,
+  chosen once for the job (the `key_groups` argument to `compile_graph` / `run_plan`, or the `--key-groups`
+  CLI flag, defaulting to the stage parallelism). Because each group maps to one instance,
   it is the most instances the edge can be rescaled to without re-hashing, so it must be at least the
   stage parallelism.
 - **Stage parallelism** — The number of instances of the operator an edge feeds (its parallelism). The
