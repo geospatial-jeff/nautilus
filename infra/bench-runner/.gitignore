@@ -1,0 +1,13 @@
+# This whole directory is kept local and out of the nautilus repo. These extra ignores are belt-and-
+# suspenders: state contains the (sensitive) registration token in plaintext, so it must never be shared.
+.terraform/
+# .terraform.lock.hcl IS committed (pins provider versions for a reproducible `terraform init`).
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# Real var values are account-specific — keep them local; commit terraform.tfvars.example instead.
+terraform.tfvars
+*.tfvars.local
+override.tf
+override.tf.json

@@ -1,0 +1,5 @@
+# Copy to terraform.tfvars (gitignored) and fill in your account-specific profile. Nothing here
+# identifies the AWS account, so this example is safe to commit.
+aws_profile = "AdministratorAccess-<YOUR_ACCOUNT_ID>" # the profile backed by your SSO session
+region      = "us-east-1"
+github_repo = "geospatial-jeff/nautilus"
