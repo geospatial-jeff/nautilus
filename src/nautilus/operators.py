@@ -13,7 +13,7 @@ its own class.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -171,6 +171,21 @@ class Tokenize(OneInputOperator):
         if words:
             arr = pa.array(words, pa.string())
             out.emit(pa.RecordBatch.from_arrays([arr], names=[self.out_col]))
+
+
+class FlatMapRows(OneInputOperator):
+    """Expands each row into zero or more rows: ``fn(row_dict) -> iterable of row dicts``, flattened. It
+    materializes the batch to Python dicts and rebuilds from the results — per-row Python, hence the slow
+    path the DSL exposes as ``flat_map``. A batch that yields no rows emits nothing, so the output schema
+    is set by the first batch that does."""
+
+    def __init__(self, fn: Callable[[dict[str, Any]], Iterable[dict[str, Any]]]) -> None:
+        self._fn = fn
+
+    def process(self, batch: pa.RecordBatch, out: Collector) -> None:
+        rows = [produced for row in batch.to_pylist() for produced in self._fn(row)]
+        if rows:
+            out.emit(pa.RecordBatch.from_pylist(rows))
 
 
 class KeyedCount(OneInputOperator):
