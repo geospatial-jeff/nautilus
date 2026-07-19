@@ -47,9 +47,11 @@ any scale; only the absolute wall changes.
 
 Two different jobs, two tools: `nautilus run … --save report.json` for *one* run you read to **find** the
 bottleneck (step 2), and `nautilus bench <pipeline>` to **measure** throughput rigorously once you have a
-change (step 4). The committed baseline lives in `benchmarks/baseline.json`; `nautilus bench-check`
-re-runs it and fails on any regression — run it before declaring a change done, and it is the regression
-gate in CI.
+change (step 4). The seed baseline (the pipeline set, scales, and machine-independent digest reference)
+lives in `benchmarks/baseline.json`, with per-CPU throughput baselines under `benchmarks/baselines/`;
+`nautilus bench-check` re-runs the benchmarks and, against the baseline for the CPU it lands on, fails on
+any regression or output change — run it before declaring a change done, and it is the regression gate in
+CI.
 
 ## 2. Read the report
 
