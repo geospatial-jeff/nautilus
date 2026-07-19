@@ -28,19 +28,28 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import ssl
 import threading
 from contextlib import suppress
 from typing import Any
 
 from nautilus.cluster.control_link import Abort, ControlLinkError, Launch, encode, read_message
 from nautilus.cluster.worker_main import run_worker_slice
+from nautilus.security import (
+    AuthError,
+    authenticate_server,
+    cluster_secret,
+    require_secret_for_bind,
+    tls_from_env,
+)
 
 _ABORT_GRACE = (
     10.0  # seconds an aborted job may take to unwind before the daemon hard-exits its process
 )
 
-# A coordinator that vanishes mid-protocol shows up as one of these on the control socket.
-_GONE = (asyncio.IncompleteReadError, ConnectionError, ControlLinkError, OSError)
+# A coordinator that vanishes mid-protocol — or an unauthenticated peer that fails the handshake — shows
+# up as one of these on the control socket; either way, close it and stay up for the next job.
+_GONE = (asyncio.IncompleteReadError, ConnectionError, ControlLinkError, AuthError, OSError)
 
 
 async def _run_job(
@@ -119,7 +128,14 @@ async def _run_job(
                 await task
 
 
-async def _serve(listen_host: str, listen_port: int, bind_host: str, advertise_host: str) -> None:
+async def _serve(
+    listen_host: str,
+    listen_port: int,
+    bind_host: str,
+    advertise_host: str,
+    secret: bytes | None,
+    server_tls: ssl.SSLContext | None,
+) -> None:
     job_lock = asyncio.Lock()
 
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -130,17 +146,23 @@ async def _serve(listen_host: str, listen_port: int, bind_host: str, advertise_h
             return
         async with job_lock:
             try:
+                # Prove the peer holds the shared secret BEFORE reading (and cloudpickle-loading) a Launch
+                # — this is what closes the arbitrary-code-execution-on-receipt surface to a stranger.
+                await authenticate_server(reader, writer, secret)
                 launch = await read_message(reader)
                 if isinstance(launch, Launch):
                     await _run_job(launch, reader, writer, bind_host, advertise_host)
             except _GONE:
-                pass  # coordinator vanished before/at launch — nothing to report; stay up
+                pass  # coordinator vanished / failed the handshake before launch — stay up for the next
             finally:
                 writer.close()
                 with suppress(Exception):
                     await writer.wait_closed()
 
-    server = await asyncio.start_server(handle, listen_host, listen_port)
+    # Bound the TLS handshake so a peer that connects and never negotiates cannot hold a slot (asyncio's
+    # default is 60s); only meaningful with ssl, so pass it only when TLS is on.
+    extra: dict[str, Any] = {"ssl_handshake_timeout": 10.0} if server_tls is not None else {}
+    server = await asyncio.start_server(handle, listen_host, listen_port, ssl=server_tls, **extra)
     async with server:
         await server.serve_forever()
 
@@ -149,8 +171,20 @@ def run_daemon(listen_host: str, listen_port: int, bind_host: str, advertise_hos
     """Run the daemon until killed, serving one job per coordinator connection and returning to idle
     between jobs. ``listen_host``:``listen_port`` is the control port the coordinator dials; ``bind_host``
     is the interface its data listener binds (``0.0.0.0`` in a container); ``advertise_host`` is the
-    routable host peers dial for its data edges (its service/DNS name)."""
-    asyncio.run(_serve(listen_host, listen_port, bind_host, advertise_host))
+    routable host peers dial for its data edges (its service/DNS name).
+
+    Security (Stage 5): the shared secret (``NAUTILUS_CLUSTER_SECRET``) authenticates every coordinator and
+    every data-edge peer, and optional TLS (``NAUTILUS_CLUSTER_TLS_*``) encrypts them. Binding a
+    non-loopback interface — the container default — without a secret is refused, so an exposed daemon is
+    never unauthenticated."""
+    secret = cluster_secret()
+    require_secret_for_bind(
+        listen_host, secret
+    )  # fail-closed: no exposed control port without a secret
+    require_secret_for_bind(bind_host, secret)  # and no exposed data listener either
+    tls = tls_from_env()
+    server_tls = tls[0] if tls else None
+    asyncio.run(_serve(listen_host, listen_port, bind_host, advertise_host, secret, server_tls))
 
 
 def healthcheck(host: str, port: int, timeout: float = 2.0) -> bool:

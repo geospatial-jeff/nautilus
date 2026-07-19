@@ -302,11 +302,14 @@ def worker(
     """Run a long-lived worker daemon a coordinator dials — the multi-node worker. It binds a control
     port, waits, and runs one job per coordinator connection, then returns to idle.
 
-    Security: the daemon runs whatever plan a coordinator sends — i.e. it executes that code — with no
-    authentication or encryption, so run it only on a trusted, private network and never publish its
-    ports. Hardening this is Stage 5."""
+    Security: the daemon runs whatever plan a coordinator sends — i.e. it executes that code — so it
+    authenticates every coordinator and data-edge peer with a shared secret (``NAUTILUS_CLUSTER_SECRET``,
+    the same value on every node) and refuses to bind a non-loopback interface — the default here — without
+    one. Set ``NAUTILUS_CLUSTER_TLS_CERT``/``_KEY``/``_CA`` to additionally encrypt the wire (mutual TLS)
+    for an untrusted network."""
     from nautilus.cluster.daemon import healthcheck as probe
     from nautilus.cluster.daemon import run_daemon
+    from nautilus.security.secret import SecretError
 
     if healthcheck is not None:
         host, port = _split_host_port(healthcheck)
@@ -319,7 +322,11 @@ def worker(
         )
         raise typer.Exit(code=2)
     host, port = _split_host_port(listen)
-    run_daemon(host, port, bind, advertise_host)
+    try:
+        run_daemon(host, port, bind, advertise_host)
+    except SecretError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
 
 
 @app.command()

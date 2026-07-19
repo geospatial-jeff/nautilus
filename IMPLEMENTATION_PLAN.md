@@ -114,24 +114,37 @@ import-linter:
   operator ran on both container hosts. The repo's first CI workflows land here (the base correctness
   gates, plus a separate Docker job).
 
-### Stage 5 — Security · Planned
+### Stage 5 — Security · **Done** (auth, TLS, fail-closed; codec-hardening and per-identity authz deferred)
 
-Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one — scoped here,
-not yet designed in depth:
+Stage 4 runs across a trusted compose network; Stage 5 makes it safe on an untrusted one. The keystone
+decision: because the plan legitimately carries lambda operator factories that only cloudpickle can
+serialize, the fix is **not** to replace the codec but to **authenticate the peer before deserializing its
+bytes** — so an unauthenticated party never gets a plan (or a frame) loaded. `nautilus.security` holds the
+one shared primitive both planes use.
 
-- **Schema the control wire.** The plan and every control message cross the TCP control link as
-  cloudpickle — arbitrary-code-execution on receipt. Move the structured fields to a schema'd codec and
-  the snapshots to a typed path; the framer is payload-agnostic, so the codec can be swapped without
-  touching it.
-- **Authenticate both planes.** A shared secret or mTLS gates the control `Launch`/`Abort` path and the
-  data-edge handshake, so an unidentified peer can neither run a plan nor inject frames into an edge.
-- **Authorize the control port.** Restrict who may submit or abort a job, even once authenticated.
-- **Encrypt both planes (TLS).** Plan bytes, Arrow batches, and a failed worker's traceback cross in
-  clear today.
-- **Contain the `0.0.0.0` bind and the dashboard.** Harden the all-interfaces bind and the
-  `dashboard`/`serve --host 0.0.0.0` telemetry HTTP exposure.
-- **DoS hardening.** Rate-limit and cap connections on the control and data listeners; the frame-length
-  guards bound only a single allocation, and the liveness timeouts are not a security boundary.
+- **Authenticate both planes.** *Done.* A mutual HMAC challenge-response, keyed by one operator-provided
+  secret (`NAUTILUS_CLUSTER_SECRET`, same value on every node), runs once per connection *before* any
+  payload — on the control `Launch`/`Abort` path (`daemon`/coordinator) and the data-edge handshake
+  (`EdgeListener`/`SocketConnector`). An unidentified peer can neither run a plan nor inject frames. The
+  secret is *injected* into `nautilus.transport` (never imported), preserving the data-path ⊥ control-plane
+  layer boundary.
+- **Contain the `0.0.0.0` bind and the dashboard.** *Done.* Binding a non-loopback interface without a
+  secret is refused (`require_secret_for_bind`), so the exposed-and-unauthenticated config is unreachable
+  by default rather than merely discouraged. The dashboard/`serve` HTTP API is bearer-token gated (the
+  token defaults to the cluster secret) and likewise refuses a non-loopback bind without one.
+- **Encrypt both planes (TLS).** *Done, opt-in.* `NAUTILUS_CLUSTER_TLS_CERT`/`_KEY`/`_CA` turn on mutual
+  TLS on the control and data connections (confidentiality + integrity for an on-path attacker; the HMAC
+  alone already covers an off-path one).
+- **DoS hardening.** *Partial.* The cheap fixed-size handshake gates a connection before any large frame
+  is allocated, and the TLS handshake is time-bounded (asyncio's default is 60s). Per-peer connection
+  rate-limits / count caps on the listeners remain open.
+- **Schema the control wire (replace cloudpickle).** *Deferred, by design.* Auth-before-deserialize closes
+  the RCE for the unauthenticated-peer threat with zero API change; a schema'd codec (or import-path-only
+  operators) would shrink the blast radius of an *authenticated-but-malicious* peer, but it is a large
+  API change and still needs the auth above. Tracked as defense-in-depth.
+- **Authorize the control port.** *Minimal.* The shared secret is the trust domain — holding it authorizes
+  submit/abort. Per-identity authorization (distinct submit vs abort rights) is deferred; it needs an
+  identity model beyond one shared secret.
 
 ### Stage 6 — Async I/O in operators and sinks · **Done**
 
