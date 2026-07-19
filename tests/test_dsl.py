@@ -295,3 +295,60 @@ def test_dsl_rejects_a_self_union() -> None:
     s = _u_left()
     with pytest.raises(ValueError, match="unioned with itself"):
         s.union(s)
+
+
+# --- row expansion (.explode / .flat_map) ------------------------------------------------------
+
+
+def _explode_src() -> Stream:
+    # id 2 has an empty list and id 4 a null list — both yield no rows
+    return source(
+        InMemorySource([data(id=[1, 2, 3, 4], tags=[["a", "b"], [], ["c"], None]), EOS_FRAME])
+    )
+
+
+def test_dsl_explode_makes_one_row_per_element_repeating_other_columns() -> None:
+    rows = _explode_src().explode("tags").collect()
+    # id 1 -> a, b (id repeated); id 3 -> c; id 2 (empty) and id 4 (null) drop out
+    assert Counter((r["id"], r["tags"]) for r in rows) == Counter(
+        {(1, "a"): 1, (1, "b"): 1, (3, "c"): 1}
+    )
+    assert list(rows[0].keys()) == [
+        "id",
+        "tags",
+    ]  # exploded column stays in place, now element-typed
+
+
+def test_dsl_explode_is_deterministic_across_runs() -> None:
+    # guards the flattened-view buffer concern noted in Tokenize: repeated runs must be identical.
+    s = _explode_src().explode("tags")
+    distinct = {tuple(sorted((r["id"], r["tags"]) for r in s.collect())) for _ in range(5)}
+    assert len(distinct) == 1
+
+
+def test_dsl_explode_matches_serial_when_parallel() -> None:
+    s = _explode_src().explode("tags")
+    assert multiset(s.run(parallelism=3)) == multiset(s.run())
+
+
+def test_dsl_explode_rejects_empty_column_name() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        _explode_src().explode("  ")
+
+
+def test_dsl_flat_map_expands_each_row_into_zero_or_more() -> None:
+    src = source(InMemorySource([data(id=[1, 2, 3], reps=[2, 0, 1]), EOS_FRAME]))
+    rows = src.flat_map(lambda r: [{"id": r["id"], "n": i} for i in range(r["reps"])]).collect()
+    # id 1 -> two rows, id 2 -> none, id 3 -> one
+    assert Counter((r["id"], r["n"]) for r in rows) == Counter({(1, 0): 1, (1, 1): 1, (3, 0): 1})
+
+
+def test_dsl_flat_map_emits_nothing_when_a_batch_produces_no_rows() -> None:
+    src = source(InMemorySource([data(id=[1, 2], reps=[0, 0]), EOS_FRAME]))
+    assert src.flat_map(lambda r: [{"id": r["id"]} for _ in range(r["reps"])]).collect() == []
+
+
+def test_dsl_flat_map_matches_serial_when_parallel() -> None:
+    src = source(InMemorySource([data(id=[1, 2, 3], reps=[2, 0, 3]), EOS_FRAME]))
+    s = src.flat_map(lambda r: [{"id": r["id"], "n": i} for i in range(r["reps"])])
+    assert multiset(s.run(parallelism=2)) == multiset(s.run())

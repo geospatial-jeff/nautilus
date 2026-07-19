@@ -2,10 +2,11 @@
 
 A :class:`Stream` is an immutable handle on a dataflow under construction: every combinator returns a
 *new* Stream that adds one operator, so a Stream value is reusable and side-effect-free. :func:`source`
-starts one; per-batch verbs (``.map`` / ``.filter`` / ``.tokenize``), column reshaping (``.select`` /
-``.drop`` / ``.rename`` / ``.with_column``), keyed aggregation (``.count_by`` / ``.agg_by``), and
-``.apply`` extend it; ``.join`` and ``.union`` combine two; and ``.run`` / ``.collect`` execute it. The
-same graph runs in one process or across workers — ``.run(workers=…)`` is the only thing that changes.
+starts one; per-batch verbs (``.map`` / ``.filter``), row expansion (``.tokenize`` / ``.explode`` /
+``.flat_map``), column reshaping (``.select`` / ``.drop`` / ``.rename`` / ``.with_column``), keyed
+aggregation (``.count_by`` / ``.agg_by``), and ``.apply`` extend it; ``.join`` and ``.union`` combine two;
+and ``.run`` / ``.collect`` execute it. The same graph runs in one process or across workers —
+``.run(workers=…)`` is the only thing that changes.
 
 This is a value layer that sits *above* :mod:`nautilus.api`: it knows the concrete operators (so it can
 build them for you) but it only ever produces a :class:`~nautilus.api.LogicalGraph`. The runners live at
@@ -21,6 +22,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from nautilus.api import LogicalEdge, LogicalGraph, LogicalVertex
 from nautilus.core.operator import (
@@ -32,6 +34,7 @@ from nautilus.core.operator import (
 from nautilus.operators import (
     AsyncMapBatch,
     FilterRows,
+    FlatMapRows,
     HashJoin,
     KeyedAgg,
     KeyedCount,
@@ -42,7 +45,7 @@ from nautilus.operators import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from nautilus.driver.result import RunResult
 
@@ -133,6 +136,42 @@ class Stream:
         return self._extend(
             lambda: Tokenize(in_col, out_col, lowercase), key_columns=None, parallelism=parallelism
         )
+
+    def explode(self, column: str, *, parallelism: int = 1) -> Stream:
+        """One row per element of the list column ``column`` (SQL/pandas *explode* / unnest): the element
+        replaces the list as that column's value and every other column is repeated. A row whose list is
+        empty or null yields no rows. Vectorized (Arrow list-flatten + take) — the fast generalization of
+        ``tokenize`` — so unlike ``flat_map`` it does no per-row Python. ``column`` must be a list column,
+        checked at run time against the data."""
+        if not column or not column.strip():
+            raise ValueError("explode(): column must be a non-empty column name")
+
+        def _explode(b: pa.RecordBatch) -> pa.RecordBatch:
+            col = b.column(column)
+            if not (pa.types.is_list(col.type) or pa.types.is_large_list(col.type)):
+                raise TypeError(f"explode(): column {column!r} is {col.type}, not a list column")
+            # list_parent_indices gives, per flattened element, the row it came from — exactly the take
+            # index that repeats the other columns to match the flattened values.
+            parent = pc.list_parent_indices(col)
+            values = pc.list_flatten(col)
+            arrays = [
+                values if n == column else b.column(i).take(parent)
+                for i, n in enumerate(b.schema.names)
+            ]
+            return pa.RecordBatch.from_arrays(arrays, names=list(b.schema.names))
+
+        return self._extend(lambda: MapBatch(_explode), key_columns=None, parallelism=parallelism)
+
+    def flat_map(
+        self, fn: Callable[[dict[str, Any]], Iterable[dict[str, Any]]], *, parallelism: int = 1
+    ) -> Stream:
+        """Expand each row into zero or more rows: ``fn(row) -> iterable of rows``, each a ``{column:
+        value}`` dict, flattened into the output (:class:`~nautilus.operators.FlatMapRows`). This is
+        per-row Python and far slower than the vectorized combinators — reach for ``.explode`` on a list
+        column and ``.map`` for a batch transform first; use this only for arbitrary 1→N logic that does
+        not vectorize. The output schema is inferred from the rows ``fn`` yields, so they must share
+        fields and types."""
+        return self._extend(lambda: FlatMapRows(fn), key_columns=None, parallelism=parallelism)
 
     def count_by(self, key_col: str, count_col: str = "count", *, parallelism: int = 1) -> Stream:
         """Count occurrences per key, emitted at end of stream (:class:`~nautilus.operators.KeyedCount`).
