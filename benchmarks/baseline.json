@@ -20,7 +20,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "dcadefe06461176a694f222c424654a403c7fced1e87fde86b55d0bccc06aa55",
+      "structural_digest": "88c9c5b16d9807a2fba8d4ba9472e2fdbc45c3d2206cb5d7692f9980a4092ba9",
       "throughput_rows_per_sec": {
         "iqr": 2920245.794163257,
         "max": 129361263.29358685,
@@ -60,7 +60,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "dcadefe06461176a694f222c424654a403c7fced1e87fde86b55d0bccc06aa55",
+      "structural_digest": "88c9c5b16d9807a2fba8d4ba9472e2fdbc45c3d2206cb5d7692f9980a4092ba9",
       "throughput_rows_per_sec": {
         "iqr": 1624343.5245096534,
         "max": 112964484.7188608,
@@ -100,7 +100,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "065c7c2a4a0b7e870336bfb35f216ebc69786f7802143597a08166fe8cb12f29",
+      "structural_digest": "b84d50a36da34f25321105f160b00b9a6b194a3b66d898a573923449e5a191ae",
       "throughput_rows_per_sec": {
         "iqr": 947401.5341454297,
         "max": 31977057.277144905,
@@ -136,7 +136,7 @@
         "tier": 1,
         "workers": 2
       },
-      "structural_digest": "0bc7cff84d2b28b3a791835aeac36a0e7c8f2e0c447edcfb474879701a16cf9d",
+      "structural_digest": "6c5ed7cecb16bafb1c2dc1b2aa0f1a079fd06e7ca87c1bd6f89596f76a297b23",
       "throughput_rows_per_sec": {
         "iqr": 77944.1720756269,
         "max": 1226477.2023596128,
@@ -174,7 +174,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "6c72d9c72c3a48a468c728dab5529d15ea29c8237a7b8414bfd860071ddf79b0",
+      "structural_digest": "fa2bf53a32bd18e100c3f41ed3a6d628b1baa8cde63f04ca686ea098022056fd",
       "throughput_rows_per_sec": {
         "iqr": 143471.55878239404,
         "max": 8246021.560574949,
@@ -210,7 +210,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "daef5e1ed26aa6c5a5f2a94a57702945c9dabbe08ea62534c28f5d6f075796ad",
+      "structural_digest": "09ce899e22d20510efdabfe659e93b86781880e5f288a11c910d0832a73948da",
       "throughput_rows_per_sec": {
         "iqr": 391690.0531340726,
         "max": 21149298.36668967,
@@ -246,7 +246,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "370c18c50c7b04734fa56c8ca76dcbcbe5a0ac7d50addc13893c4b7814c5699b",
+      "structural_digest": "63889dcbe00b5b391af711fff00f0787638ca0df2fec3a973e0222036bd05f29",
       "throughput_rows_per_sec": {
         "iqr": 1175560.4331785515,
         "max": 21945063.78577175,
@@ -282,7 +282,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "80054cd6c951538c4751728b4adc3a70737ea33ac6cbde4b7529eefbbb66a9f8",
+      "structural_digest": "8613c32916b64704d5b06c32298387365c03d722c7a7df068fa316214e93b0f9",
       "throughput_rows_per_sec": {
         "iqr": 132941.25000512972,
         "max": 23188199.94802381,
@@ -318,7 +318,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "d316a5266116127a2dadbd27fab9c5c7c56feb2a10ee5e2be028b3169a956725",
+      "structural_digest": "6a8893976f76a579d6ffd24fbed87d28d5ea34c9514b3bce52bca49ff57c9994",
       "throughput_rows_per_sec": {
         "iqr": 1998230.3796231002,
         "max": 98866413.53123921,
@@ -354,7 +354,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "81bce604423503dca0d038d373d93b58e9317fdeeb58cb4fdf1647042c0b1a89",
+      "structural_digest": "746a499e56bae81ac4190a35edd9ef00557a3d96a4e9042ada4b3540013f43ee",
       "throughput_rows_per_sec": {
         "iqr": 2123108.3460368216,
         "max": 55027904.519475535,
@@ -390,7 +390,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "a958c69f20915b83cda73320b74705bd0dde372bad02e8bdfd64cde81a27f490",
+      "structural_digest": "4aa20c600f45681612dee9f1d3fb7d3efc7797c45d7b49965688b844e66e86e3",
       "throughput_rows_per_sec": {
         "iqr": 1846881.6353908032,
         "max": 49978341.347176716,
@@ -426,7 +426,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "91ebe41f808210a5cb3550552dbddf5035c45214ccfdd53f75d145daf8b3a56f",
+      "structural_digest": "bdc42d2b409d7aa7f3202421d77047fed8c08dc5d0582677b5d13f3b37c9376f",
       "throughput_rows_per_sec": {
         "iqr": 2837006.2995120585,
         "max": 60022102.7479092,
@@ -462,7 +462,7 @@
         "tier": 1,
         "workers": 2
       },
-      "structural_digest": "e47a7c587f8c344c14f52739ab6367f09c0859be89968e77ff3031c14ae7e110",
+      "structural_digest": "e553426b696e754869f6550ce9ab76ac1d1a0bbd81839fee19a4555bacd6b017",
       "throughput_rows_per_sec": {
         "iqr": 19202.30976267974,
         "max": 870665.7134810771,
@@ -498,7 +498,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "e0fae4e3de4318d7252861a4765e5e7514af59834526bf24477598a56d338f46",
+      "structural_digest": "a808382e0b620ad472344af4a149109c2d44ff6493eed5d66510f6776b236a51",
       "throughput_rows_per_sec": {
         "iqr": 932401.5151516944,
         "max": 59476316.01819394,
@@ -534,7 +534,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "67cd2f834847d3c5bf6a0527a4152375c156f0d9ad1160570d2851288f107c9e",
+      "structural_digest": "2f1ca49a9eb564e5e124e1966b87388d1ec2c7ebccdc4a581624f1b9ec2be759",
       "throughput_rows_per_sec": {
         "iqr": 9851374.690531746,
         "max": 95176915.79943235,
@@ -570,7 +570,7 @@
         "tier": 1,
         "workers": 2
       },
-      "structural_digest": "fe76f59462aa15008a06348bd3e34ec144d27fd854a96a738641e1127e05c5c7",
+      "structural_digest": "fdc397b1ae9757abcc74aa81f6f5911afb48b1973bc65ed3e94a3307c12cba44",
       "throughput_rows_per_sec": {
         "iqr": 18450.215828579618,
         "max": 464190.8774002137,
@@ -606,7 +606,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "4597615e387add25587562e37efb83300b19a0df53c813a6a80e25747ba9f1b7",
+      "structural_digest": "79fdb14d69dc1a79b599da697c15c5d7723fa7f6eb7b53423b78103acc193a8d",
       "throughput_rows_per_sec": {
         "iqr": 125132.44450608082,
         "max": 6395736.056810021,
@@ -642,7 +642,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "f0943a2c31353e4ec26c161de1fc930777fee380990f95ccdc8af9015e3088dc",
+      "structural_digest": "29076be29427ffffe25b18de6a8fded4bd6fe6ba7c14a17cb1e1566802a3732a",
       "throughput_rows_per_sec": {
         "iqr": 8236199.230653942,
         "max": 194952889.75230694,
@@ -678,7 +678,7 @@
         "tier": 1,
         "workers": 1
       },
-      "structural_digest": "67cd2f834847d3c5bf6a0527a4152375c156f0d9ad1160570d2851288f107c9e",
+      "structural_digest": "2f1ca49a9eb564e5e124e1966b87388d1ec2c7ebccdc4a581624f1b9ec2be759",
       "throughput_rows_per_sec": {
         "iqr": 689139.4101282991,
         "max": 25805309.734513275,

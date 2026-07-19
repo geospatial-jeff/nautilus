@@ -515,9 +515,10 @@ def _point_total(points: tuple[CounterPoint, ...], name: str) -> int:
 
 
 def structural_digest(report: RunReport) -> str:
-    """SHA-256 over only reproducible facts (topology + structural counts). Excludes all timing,
-    queue depths, idle/active counts, event order, run_id and timestamps — so the same logical run
-    yields the same digest regardless of scheduling or wall clock."""
+    """SHA-256 over only the facts the computation conserves: topology plus the per-instance counters
+    in STRUCTURAL_METRICS (row and EOS counts). Excludes all timing, queue depths, idle/active counts,
+    event order, run_id and timestamps — so the same logical run yields the same digest regardless of
+    scheduling, placement, or machine."""
     canonical: dict[str, object] = {
         "schema_version": report.schema_version,
         "operators": [

@@ -117,8 +117,8 @@ too.
 ## 4. Change the code, then prove you only changed the speed
 
 Make the one targeted change. Then **guard correctness with the structural digest** — a SHA-256 over only
-the provably-reproducible facts (topology + row/batch/EOS counts), excluding all timing. With a
-deterministic source (the benchmarks are), a pure speed change must leave it identical:
+the facts the computation conserves (topology + row and EOS counts), excluding all timing and batch
+counts. With a deterministic source (the benchmarks are), a pure speed change must leave it identical:
 
 ```python
 before = rep_before.structural_digest()
