@@ -11,6 +11,12 @@ It is opt-in and cert-based. When ``NAUTILUS_CLUSTER_TLS_CERT`` / ``_KEY`` / ``_
 present a certificate and require the peer's to chain to the shared CA (mutual TLS) — so TLS also
 authenticates, redundantly with the HMAC. When they are unset, :func:`tls_from_env` returns ``None`` and
 the connections run in cleartext, relying on the HMAC handshake alone.
+
+Limitation: there is no revocation path (no CRL/OCSP). A node certificate is trusted for its full
+validity while it chains to the CA, so revoking access means rotating the CA (and re-issuing certs) or
+the shared secret. Fine for the short-lived, operator-controlled cluster this targets; a longer-lived
+deployment that needs to revoke a single compromised node without re-provisioning the fleet would want a
+revocation mechanism added here.
 """
 
 from __future__ import annotations

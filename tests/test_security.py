@@ -6,6 +6,7 @@ the happy path."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import socket
 import ssl
 
@@ -311,3 +312,63 @@ def test_dashboard_refuses_nonloopback_bind_without_token(monkeypatch):
     monkeypatch.delenv("NAUTILUS_CLUSTER_SECRET", raising=False)
     with pytest.raises(SecretError, match="without a token"):
         LiveServer(StaticSnapshotSource("{}"), b"", host="0.0.0.0", port=0)
+
+
+# --- end-to-end through the REAL daemon control path (5a) ----------------------------------------
+
+
+async def test_daemon_rejects_wrong_secret_before_launch_and_stays_up():
+    # The headline invariant: the real daemon authenticates the coordinator BEFORE reading (and
+    # cloudpickle-loading) a Launch, and a failed handshake leaves it up for the next job. Drive the real
+    # _serve accept loop with the real _dial_control (the coordinator's dial).
+    from nautilus.cluster.cohort import _dial_control
+    from nautilus.cluster.daemon import _serve
+
+    loop = asyncio.get_running_loop()
+    port_fut: asyncio.Future = loop.create_future()
+    serve = asyncio.create_task(
+        _serve("127.0.0.1", 0, "127.0.0.1", "127.0.0.1", SECRET, None, port_fut.set_result)
+    )
+    try:
+        port = await asyncio.wait_for(port_fut, 5)
+        # Wrong secret: the dial's authenticate_client_sync fails — no Launch is ever sent.
+        with pytest.raises(AuthError):
+            await loop.run_in_executor(
+                None, _dial_control, "127.0.0.1", port, 5.0, b"the-wrong-secret-long-enough-000"
+            )
+        # The daemon survived the rejected connection: the correct secret now authenticates and connects.
+        sock = await loop.run_in_executor(None, _dial_control, "127.0.0.1", port, 5.0, SECRET)
+        sock.close()
+    finally:
+        serve.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serve
+
+
+# --- end-to-end through the REAL data edge (5b) --------------------------------------------------
+
+
+async def test_edge_listener_rejects_wrong_secret_connector():
+    # A SocketConnector with the wrong secret cannot claim an edge on a secret-guarded EdgeListener: the
+    # listener's authenticate_server rejects it (rejected count rises) and never resolves the slot.
+    from nautilus.runtime.connector import ChannelId
+    from nautilus.transport.connector import SocketConnector
+    from nautilus.transport.listener import EdgeListener
+
+    cid = ChannelId("op0", 0, "op1", 0)
+    listener = EdgeListener("127.0.0.1", 0, [cid], secret=SECRET)
+    await listener.start()
+    host, port = listener.address
+    connector = SocketConnector(
+        listener, lambda _c: (host, port), secret=b"a-different-secret-long-enough-00"
+    )
+    try:
+        with pytest.raises(AuthError):
+            await connector.outbound(
+                cid
+            )  # the connector's authenticate_client catches the bad server
+        await asyncio.sleep(0.05)  # let the listener's accept task finish rejecting
+        assert listener.rejected >= 1  # the listener refused it
+    finally:
+        await connector.close()
+        await listener.close()

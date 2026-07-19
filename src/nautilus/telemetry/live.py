@@ -146,6 +146,7 @@ class _Server(ThreadingHTTPServer):
 def _handler_class(
     source: Snapshotter, html: bytes, token: str | None
 ) -> type[BaseHTTPRequestHandler]:
+    import hashlib
     import hmac
 
     class Handler(BaseHTTPRequestHandler):
@@ -167,7 +168,13 @@ def _handler_class(
                 return True
             header = self.headers.get("Authorization", "")
             prefix = "Bearer "
-            return header.startswith(prefix) and hmac.compare_digest(header[len(prefix) :], token)
+            if not header.startswith(prefix):
+                return False
+            # Compare fixed-width digests so neither the token's length nor the match boundary is timeable.
+            return hmac.compare_digest(
+                hashlib.sha256(header[len(prefix) :].encode()).digest(),
+                hashlib.sha256(token.encode()).digest(),
+            )
 
         def do_GET(self) -> None:  # noqa: N802 (stdlib handler API)
             path = self.path.split("?", 1)[0]

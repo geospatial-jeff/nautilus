@@ -39,6 +39,7 @@ from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS
 from nautilus.core.time import SystemClock
 from nautilus.driver.result import RunResult
 from nautilus.pipelines import EXAMPLES, GRAPH_EXAMPLES, load_pipeline
+from nautilus.security.secret import SecretError
 from nautilus.telemetry import METRIC_SPECS, TelemetryConfig, Tier
 from nautilus.telemetry.report.reference import render_reference, write_reference
 from nautilus.telemetry.report.report import RunReport
@@ -309,7 +310,6 @@ def worker(
     for an untrusted network."""
     from nautilus.cluster.daemon import healthcheck as probe
     from nautilus.cluster.daemon import run_daemon
-    from nautilus.security.secret import SecretError
 
     if healthcheck is not None:
         host, port = _split_host_port(healthcheck)
@@ -757,6 +757,9 @@ def dashboard(
             )
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
+    except SecretError as e:  # fail-closed: non-loopback dashboard bind without a token
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     except OSError as e:
         console.print(
             f"[red]could not bind {host}:{port}[/red]: {e}  (try --port 0 or another --port)"
@@ -785,6 +788,9 @@ def serve(
         asyncio.run(_serve_report(report.read_text(), host=host, port=port, on_ready=on_ready))
     except KeyboardInterrupt:
         console.print("\n[dim]stopped[/dim]")
+    except SecretError as e:  # fail-closed: non-loopback dashboard bind without a token
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=2) from None
     except OSError as e:
         console.print(
             f"[red]could not bind {host}:{port}[/red]: {e}  (try --port 0 or another --port)"

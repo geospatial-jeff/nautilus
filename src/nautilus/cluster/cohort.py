@@ -131,16 +131,23 @@ def _dial_control(
             last = exc
             time.sleep(min(_CONTROL_DIAL_BACKOFF, max(0.0, deadline - time.monotonic())))
             continue
-        if client_tls is not None:  # TLS handshake on the blocking socket before anything nautilus
-            sock = client_tls.wrap_socket(sock, server_hostname=host)
-        authenticate_client_sync(
-            sock, secret
-        )  # mutual shared-secret proof; raises AuthError on failure
-        sock.settimeout(
-            None
-        )  # blocking sends; reads are gated by the selector, so they never block
-        _enable_keepalive(sock)
-        return sock
+        try:
+            if (
+                client_tls is not None
+            ):  # TLS handshake on the blocking socket before anything nautilus
+                sock = client_tls.wrap_socket(sock, server_hostname=host)
+            # Mutual shared-secret proof; raises AuthError on failure. Wrapped so a failed TLS or auth
+            # handshake closes the socket instead of leaking the fd on the way out.
+            authenticate_client_sync(sock, secret)
+            sock.settimeout(
+                None
+            )  # blocking sends; reads are selector-driven (recv only when readable)
+            _enable_keepalive(sock)
+            return sock
+        except BaseException:
+            with suppress(OSError):
+                sock.close()
+            raise
 
 
 class _DaemonConn:

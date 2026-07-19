@@ -30,6 +30,7 @@ import os
 import socket
 import ssl
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
@@ -135,25 +136,35 @@ async def _serve(
     advertise_host: str,
     secret: bytes | None,
     server_tls: ssl.SSLContext | None,
+    on_bound: Callable[[int], None] | None = None,
 ) -> None:
     job_lock = asyncio.Lock()
 
+    async def _close(writer: asyncio.StreamWriter) -> None:
+        writer.close()
+        with suppress(Exception):
+            await writer.wait_closed()
+
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            # Prove the peer holds the shared secret BEFORE reading (and cloudpickle-loading) a Launch —
+            # this is what closes the arbitrary-code-execution-on-receipt surface to a stranger. Done
+            # *before* taking the single job slot, so a peer that connects and stalls mid-handshake cannot
+            # hold the slot for the auth timeout (a pre-auth head-of-line denial of service).
+            await authenticate_server(reader, writer, secret)
+        except _GONE:
+            await _close(writer)  # failed/stalled handshake: never touched the job slot
+            return
         if job_lock.locked():
-            writer.close()  # one job at a time: refuse a second coordinator rather than queue it
-            with suppress(Exception):
-                await writer.wait_closed()
+            await _close(writer)  # one job at a time: refuse a second (authenticated) coordinator
             return
         async with job_lock:
             try:
-                # Prove the peer holds the shared secret BEFORE reading (and cloudpickle-loading) a Launch
-                # — this is what closes the arbitrary-code-execution-on-receipt surface to a stranger.
-                await authenticate_server(reader, writer, secret)
                 launch = await read_message(reader)
                 if isinstance(launch, Launch):
                     await _run_job(launch, reader, writer, bind_host, advertise_host)
             except _GONE:
-                pass  # coordinator vanished / failed the handshake before launch — stay up for the next
+                pass  # coordinator vanished before launch — stay up for the next
             finally:
                 writer.close()
                 with suppress(Exception):
@@ -163,6 +174,8 @@ async def _serve(
     # default is 60s); only meaningful with ssl, so pass it only when TLS is on.
     extra: dict[str, Any] = {"ssl_handshake_timeout": 10.0} if server_tls is not None else {}
     server = await asyncio.start_server(handle, listen_host, listen_port, ssl=server_tls, **extra)
+    if on_bound is not None:  # report the chosen port (for listen_port=0) — used by tests
+        on_bound(server.sockets[0].getsockname()[1])
     async with server:
         await server.serve_forever()
 
