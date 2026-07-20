@@ -1,0 +1,17 @@
+# Cross-node: each daemon must land on a node that has no other daemon, so the N daemons spread across N
+# nodes and the keyed shuffle crosses the real pod-to-pod network. Requires >= replicas schedulable nodes.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nautilus-worker
+spec:
+  template:
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: nautilus
+                  app.kubernetes.io/component: worker
+              topologyKey: kubernetes.io/hostname

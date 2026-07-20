@@ -1,0 +1,14 @@
+# Intra-node: pin every daemon to one node (labeled below), so all N co-locate and the shuffle stays
+# on-host (loopback), never touching the NIC. Label a node first:
+#   kubectl label node <node> nautilus.dev/bench-node=intra-node
+# That node must fit replicas x the daemon's cpu/memory requests; use the same instance type as the
+# cross-node nodes so the only variable between the two runs is the shuffle's network path.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nautilus-worker
+spec:
+  template:
+    spec:
+      nodeSelector:
+        nautilus.dev/bench-node: intra-node

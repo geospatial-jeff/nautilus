@@ -1,0 +1,7 @@
+# Intra-node placement: all daemons on one labeled node, so the shuffle stays on-host (loopback).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: affinity.yaml

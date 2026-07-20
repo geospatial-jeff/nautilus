@@ -1,0 +1,7 @@
+# Cross-node placement: the daemons spread one-per-node, so the shuffle pays the real network cost.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: affinity.yaml

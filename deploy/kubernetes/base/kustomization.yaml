@@ -1,0 +1,20 @@
+# Base: the persistent daemon cluster (namespace + headless service + StatefulSet). The coordinator that
+# actually runs a benchmark is a separate Job (../coordinator-job.yaml), applied after the daemons are
+# ready — the bench harness (../bench.py) does that. Deploy an overlay, never the base directly, so the
+# daemons get an intra- or cross-node placement.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: nautilus-bench
+
+resources:
+  - namespace.yaml
+  - workers-service.yaml
+  - workers-statefulset.yaml
+
+# Point every pod at your image. Build + push this repo's Dockerfile, then either edit here or run
+#   kustomize edit set image nautilus=<acct>.dkr.ecr.<region>.amazonaws.com/nautilus:<tag>
+images:
+  - name: nautilus
+    newName: nautilus
+    newTag: latest

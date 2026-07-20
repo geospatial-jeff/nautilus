@@ -1,0 +1,62 @@
+# The worker daemons — one long-lived `nautilus worker` per pod, the same role docker-compose.yml runs.
+# A StatefulSet (not a Deployment) so each pod gets a stable ordinal name and DNS record the coordinator
+# can list in --daemons ahead of time. Whether these pods land on the same node or different nodes is set
+# by the overlay (intra-node / cross-node) — placement.py knows nothing about physical nodes, so the k8s
+# scheduler is the only thing that decides intra vs cross.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nautilus-worker
+  labels:
+    app.kubernetes.io/name: nautilus
+    app.kubernetes.io/component: worker
+spec:
+  serviceName: nautilus-workers
+  replicas: 4 # N daemons; keep in sync with the coordinator's --parallelism and --daemons list
+  podManagementPolicy: Parallel # bring all daemons up at once — there is no ordered-startup dependency
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nautilus
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nautilus
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: nautilus:latest # override to your registry via the kustomization `images:` transformer
+          # --listen: control port the coordinator dials. --advertise: the routable host peers dial for the
+          # shuffle's data edges — the pod IP, which routes pod-to-pod across nodes (the rendezvous refuses a
+          # wildcard/loopback advertise). --bind 0.0.0.0: the data listener accepts on all interfaces.
+          args: ["worker", "--listen", "0.0.0.0:9000", "--advertise", "$(POD_IP)", "--bind", "0.0.0.0"]
+          ports:
+            - name: control
+              containerPort: 9000
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Every node authenticates with this shared secret; create it once (see README), same value here
+            # and on the coordinator. A daemon refuses to bind a non-loopback interface without it.
+            - name: NAUTILUS_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nautilus-cluster-secret
+                  key: secret
+          readinessProbe:
+            exec:
+              command: ["nautilus", "worker", "--healthcheck", "127.0.0.1:9000"]
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            # Guaranteed QoS (requests == limits) so CPU throttling or eviction never skews a measurement.
+            # Size to your node's instance type; the intra-node node must fit replicas x this.
+            requests:
+              cpu: "3"
+              memory: 4Gi
+            limits:
+              cpu: "3"
+              memory: 4Gi
