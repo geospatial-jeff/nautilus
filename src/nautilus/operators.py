@@ -55,6 +55,27 @@ def _int_fast_ok(keys: np.ndarray) -> bool:
     return bool(keys.min() >= 0) and int(keys.max()) < _FAST_PATH_MAX
 
 
+#: In a value-indexed fast path, fold a batch with a scatter-add (``np.add.at``, O(batch keys)) rather than
+#: a full-width ``bincount`` (O(key space)) once the key space is at least this many times the batch's key
+#: count. A high-cardinality aggregation (climatology: ~380k groups, ~16k keys/batch) then stops paying for
+#: the whole 380k accumulator on every batch; a low-cardinality one (few keys, dense) still uses bincount,
+#: which wins there. Measured crossover is near 1x, so 2x is the safe side of it.
+_SCATTER_SPARSE_FACTOR = 2
+
+
+def _fold_into(acc: np.ndarray, keys: np.ndarray, weights: np.ndarray | None, top: int) -> None:
+    """Fold a batch into a dense value-indexed accumulator: ``acc[k] += Σ weights`` per key
+    (``weights=None`` counts rows), summing duplicate keys. On a sparse batch (key space ≫ the batch's
+    keys) a scatter-add touches only those keys; otherwise a full-width ``bincount`` is faster — see
+    :data:`_SCATTER_SPARSE_FACTOR`. Shared by :class:`KeyedMean` and :class:`KeyedAgg`."""
+    if top > _SCATTER_SPARSE_FACTOR * keys.size:
+        np.add.at(acc, keys, 1 if weights is None else weights)
+    elif weights is None:
+        acc[:top] += np.bincount(keys, minlength=top)
+    else:
+        acc[:top] += np.bincount(keys, weights=weights, minlength=top)
+
+
 class InMemorySource(SourceOperator):
     """Yields a fixed, pre-built sequence of frames; used by deterministic tests. A bounded
     source must end its frame list with ``EOS_FRAME``; :func:`from_batches` appends it for you."""
@@ -299,10 +320,11 @@ class KeyedCount(OneInputOperator):
 class KeyedMean(OneInputOperator):
     """``AVG(value) GROUP BY key`` — the mean of a value column per key, with the contributing count ``n``,
     emitted at end of stream. The specialized single-key mean; it agrees with
-    ``.agg_by(key, mean_col=(value, "mean"), n=(value, "count"))`` but keeps a tuned bincount loop.
+    ``.agg_by(key, mean_col=(value, "mean"), n=(value, "count"))`` but keeps a tuned value-indexed loop.
 
     For non-negative integer keys it folds each batch into running per-key ``sum`` and ``count`` numpy
-    arrays (``np.bincount``) with no per-key Python — the vectorized fast path. Semantics match SQL
+    arrays (via :func:`_fold_into`, scatter or bincount by batch shape) with no per-key Python — the
+    vectorized fast path. Semantics match SQL
     ``AVG(col)``: a null value is
     skipped, and a group whose values are *all* null keeps its row with a ``NULL`` mean and ``0`` count (a
     *NaN* value, unlike a null, propagates to ``NaN``, as DataFusion ``AVG`` also yields). A null key, or an
@@ -356,7 +378,7 @@ class KeyedMean(OneInputOperator):
         return arr
 
     def _fast_add(self, keys: np.ndarray, vcol: pa.Array) -> None:
-        # Non-negative integer keys: the two bincounts a plain mean needs. Presence (all rows per key) is
+        # Non-negative integer keys: the sum and count folds a plain mean needs. Presence (all rows per key) is
         # tracked only once a null value has appeared — a null can hide a group from the non-null count — so
         # a null-free stream stays on exactly the old fast path with no extra work.
         top = int(keys.max()) + 1
@@ -368,21 +390,20 @@ class KeyedMean(OneInputOperator):
             ):  # seed from the count so far (no nulls yet, so count == presence)
                 self._present = self._cnt.copy()
             self._present = self._grow(self._present, top, np.int64)
-            self._present[:top] += np.bincount(keys, minlength=top)
+            _fold_into(self._present, keys, None, top)
             valid = vcol.is_valid()
             vkeys = keys[np.asarray(valid)]
             if vkeys.size:
                 vals = np.asarray(vcol.filter(valid).to_numpy(zero_copy_only=False), np.float64)
-                self._sum[:top] += np.bincount(vkeys, weights=vals, minlength=top)
-                self._cnt[:top] += np.bincount(vkeys, minlength=top)
+                _fold_into(self._sum, vkeys, vals, top)
+                _fold_into(self._cnt, vkeys, None, top)
         else:
             vals = np.asarray(vcol.to_numpy(zero_copy_only=False), np.float64)
-            c = np.bincount(keys, minlength=top)
-            self._cnt[:top] += c
-            self._sum[:top] += np.bincount(keys, weights=vals, minlength=top)
+            _fold_into(self._cnt, keys, None, top)
+            _fold_into(self._sum, keys, vals, top)
             if self._present is not None:  # nulls seen in an earlier batch — keep presence current
                 self._present = self._grow(self._present, top, np.int64)
-                self._present[:top] += c
+                _fold_into(self._present, keys, None, top)
 
     def _demote(self) -> None:
         # Drain the numpy accumulators into the group-by (dict) state, then handle this and every later
@@ -481,14 +502,6 @@ def _key_out_type(t: pa.DataType) -> pa.DataType:
     """Output type for a key column: int64 for any integer key (so a narrow first-batch key type — int8 —
     cannot overflow when a later batch carries a larger value), else the key's own type."""
     return pa.int64() if pa.types.is_integer(t) else t
-
-
-#: In the integer fast path, fold a batch with a scatter-add (``np.add.at``, O(batch keys)) rather than a
-#: full-width ``bincount`` (O(key space)) once the key space is at least this many times the batch's key
-#: count. A high-cardinality aggregation (climatology: ~380k groups, ~16k keys/batch) then stops paying for
-#: the whole 380k accumulator on every batch; a low-cardinality one (few keys, dense) still uses bincount,
-#: which wins there. Measured crossover is near 1x, so 2x is the safe side of it.
-_SCATTER_SPARSE_FACTOR = 2
 
 
 class KeyedAgg(OneInputOperator):
@@ -617,7 +630,7 @@ class KeyedAgg(OneInputOperator):
                 bkeys = keys if not vcol.null_count else keys[np.asarray(vcol.is_valid())]
                 acc = self._acc[base] = self._grow(self._acc.get(base), top, 0, np.int64)
                 if bkeys.size:
-                    self._accumulate(acc, bkeys, None, top)
+                    _fold_into(acc, bkeys, None, top)
                 continue
             if (
                 inc not in valcache
@@ -641,21 +654,6 @@ class KeyedAgg(OneInputOperator):
             return grown
         return arr
 
-    @staticmethod
-    def _accumulate(
-        acc: np.ndarray, keys: np.ndarray, weights: np.ndarray | None, top: int
-    ) -> None:
-        """Fold a batch into the dense accumulator: ``acc[k] += Σ weights`` per key (``weights=None`` counts
-        rows), summing duplicate keys. On a sparse batch (key space ≫ the batch's keys) a scatter-add
-        touches only those keys; otherwise a full-width ``bincount`` is faster — see
-        :data:`_SCATTER_SPARSE_FACTOR`."""
-        if top > _SCATTER_SPARSE_FACTOR * keys.size:
-            np.add.at(acc, keys, 1 if weights is None else weights)
-        elif weights is None:
-            acc[:top] += np.bincount(keys, minlength=top)
-        else:
-            acc[:top] += np.bincount(keys, weights=weights, minlength=top)
-
     def _scatter_value(
         self, base: tuple[str, str], keys: np.ndarray, col: np.ndarray, top: int
     ) -> None:
@@ -669,7 +667,7 @@ class KeyedAgg(OneInputOperator):
         elif bf == "sum":
             acc = self._acc[base] = self._grow(self._acc.get(base), top, 0.0, np.float64)
             if keys.size:
-                self._accumulate(acc, keys, col.astype(np.float64, copy=False), top)
+                _fold_into(acc, keys, col.astype(np.float64, copy=False), top)
         elif (
             bf == "min"
         ):  # float64 accumulator (±inf seed); empties are nulled via the count, not the seed
