@@ -37,7 +37,7 @@ from nautilus.telemetry.report.report import Edge, OperatorNode, Topology
 from nautilus.testing import batch
 from nautilus.transport.framing import Kind, decode, encode_credit, encode_frame, split
 
-_VECTORS_PATH = Path(__file__).resolve().parent.parent / "conformance" / "vectors.json"
+_VECTORS_PATH = Path(__file__).resolve().parents[2] / "conformance" / "vectors.json"
 
 
 def _vectors() -> dict:
