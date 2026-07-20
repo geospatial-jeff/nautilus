@@ -26,7 +26,7 @@
   .statusbar.completed { background:rgba(88,166,255,.16); color:var(--accent); }
   .statusbar.stale { background:rgba(210,153,34,.16); color:var(--stale); }
   .meta { color:var(--dim); }
-  main { padding:18px; display:grid; gap:18px; max-width:1100px; }
+  main { padding:18px; display:grid; gap:18px; max-width:1500px; }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
   .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim);
               margin:0 0 10px; font-weight:600; }
@@ -42,6 +42,14 @@
   .hw .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
   .hw .num { font-size:20px; font-weight:600; }
   .hw .lbl { color:var(--dim); font-size:11px; }
+  /* compact multi-worker view: host stats once, then one clickable row per worker (drill into full cards) */
+  .hwhost { color:var(--dim); font-size:12px; margin:0 0 12px; display:flex; flex-wrap:wrap; gap:6px 18px; }
+  .hwhost b { color:var(--fg); font-weight:600; font-variant-numeric:tabular-nums; }
+  .hwtable tbody tr { cursor:pointer; }
+  .hwtable tbody tr:hover { background:rgba(88,166,255,.06); }
+  .hwtable td.cpu { position:relative; }
+  .hwtable .go { color:var(--dim); }
+  .hwback { color:var(--accent); cursor:pointer; font-size:12px; margin-bottom:12px; display:inline-block; }
   .flow { overflow-x:auto; }
   .flow svg { width:100%; height:auto; min-width:460px; }
   .flow .edge { fill:none; stroke:var(--accent); stroke-linecap:round; }
@@ -53,6 +61,11 @@
   .flow .fnode .nid { fill:var(--fg); font-weight:600; font-size:12px; }
   .flow .fnode .ncls { fill:var(--dim); font-size:10px; }
   .flow .fnode .nrate { fill:var(--accent); font-size:11px; }
+  .flow .dcol { fill:var(--dim); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .flowbar { display:flex; gap:8px; margin-bottom:10px; }
+  .ftog { color:var(--dim); font-size:11px; cursor:pointer; padding:2px 9px; border:1px solid var(--line);
+          border-radius:10px; }
+  .ftog.on { color:var(--fg); border-color:var(--accent); }
   .flegend { color:var(--dim); font-size:11px; margin-top:10px; line-height:1.6; }
   .errors td { color:#f0a; text-align:left; white-space:normal; }
   svg { display:block; }
@@ -71,8 +84,8 @@
 <main>
   <section class="panel"><h2>hardware</h2><div id="hw" class="workers"></div></section>
   <section class="panel"><h2>operators</h2><table id="ops"><thead></thead><tbody></tbody></table></section>
-  <section class="panel"><h2>flow</h2><div id="flow" class="flow"></div>
-    <div class="flegend">dots trace rows moving through each channel right now · line weight = rows carried so far ·
+  <section class="panel"><h2>flow</h2><div id="flowbar" class="flowbar"></div><div id="flow" class="flow"></div>
+    <div class="flegend" id="flegend">dots trace rows moving through each channel right now · line weight = rows carried so far ·
       stroke turns amber as a channel's queue fills toward capacity ·
       shuffle / rebalance / forward = how each edge routes rows onward</div></section>
   <section class="panel errors" id="errpanel" style="display:none"><h2>errors</h2>
@@ -93,9 +106,14 @@ const LABELS = {
 const CAP = 120;           // rolling history length per series
 const hist = new Map();    // id -> [values]
 let meanings = {};         // metric name -> catalog meaning (for header tooltips)
+let lastDoc = null;        // most recent telemetry doc, so a click handler can re-render immediately
+const hwState = { sel:null };   // which worker's full per-core detail is open (null = compact summary)
+// Open (or close, with null) a worker's hardware detail. Re-renders from the last doc so the click is
+// instant rather than waiting up to a poll interval.
+function hwSelect(node){ hwState.sel = node; if (lastDoc) render(lastDoc); }
 // Live flow graph state. `prev` holds each series' cumulative value at the last poll so a rate is the
 // delta since then; `model` caches the built SVG so a poll only updates styling, never the DOM shape.
-const flow = { sig:null, model:null, prev:new Map(), prevT:null, maxRate:1 };
+const flow = { sig:null, model:null, prev:new Map(), prevT:null, maxRate:1, mode:null };  // mode: null=auto, "collapsed"|"instances"
 
 function push(id, v) {
   const a = hist.get(id) || [];
@@ -131,6 +149,7 @@ function render(doc) {
                status==="completed" ? "run complete" : "waiting for workers…");
     return;
   }
+  lastDoc = doc;   // kept so a click handler (hwSelect) can re-render at once, not on the next poll
   meanings = {}; ((doc.catalog&&doc.catalog.metrics)||[]).forEach(m=>meanings[m.name]=m.meaning);
   document.getElementById("run").textContent =
     `run ${doc.run_id} · wall ${fmt(doc.meta.wall_micros)} µs · ${doc.meta.clock_kind}`;
@@ -151,46 +170,63 @@ function render(doc) {
     applyState("live", "running — live telemetry" + (procs.length>1 ? ` · ${procs.length} workers` : ""));
   }
 
-  // hardware — one card group per worker, each with its own rolling sparklines (keyed by node)
-  const showNode = procs.length>1;
-  document.getElementById("hw").innerHTML = procs.length ? procs.map(p=>{
+  // hardware — a distributed run shows host stats once, then one compact clickable row per worker; a click
+  // drills into that worker's full per-core cards. A single-process run shows that card grid directly. Every
+  // worker's rolling history is pushed each poll regardless of the view, so a drill-down's sparklines are
+  // populated the moment it opens.
+  const hwm = procs.map(p=>{
     const g = gauges(p);
-    const cpu = g["process.cpu_percent"];
-    const rss = g["process.rss_bytes"]!=null ? g["process.rss_bytes"]/1e6 : null;
-    const fds = g["process.num_fds"];
-    const threads = g["process.num_threads"];
-    const hostCpu = g["host.cpu_percent"];
-    const hostMem = g["host.mem_percent"];
-    const netOut = g["host.net_bytes_sent"]!=null ? g["host.net_bytes_sent"]/1024 : null;
-    const netIn = g["host.net_bytes_recv"]!=null ? g["host.net_bytes_recv"]/1024 : null;
-    const gil = g["runtime.gil_percent"];
-    const lag = pct(hgram(p,"runtime.loop_lag_micros"),0.99);
-    if (cpu!=null) push("cpu:"+p.node,cpu);
-    if (rss!=null) push("rss:"+p.node,rss);
-    if (fds!=null) push("fds:"+p.node,fds);
-    if (threads!=null) push("threads:"+p.node,threads);
-    if (hostCpu!=null) push("hcpu:"+p.node,hostCpu);
-    if (hostMem!=null) push("hmem:"+p.node,hostMem);
-    if (netOut!=null) push("nout:"+p.node,netOut);
-    if (netIn!=null) push("nin:"+p.node,netIn);
-    if (gil!=null) push("gil:"+p.node,gil);
-    if (lag!=null) push("lag:"+p.node,lag);
-    const cards = [
-      card(LABELS.cpu, fmt(cpu,0), hist.get("cpu:"+p.node), 100),
-      card(LABELS.rss, fmt(rss,0), hist.get("rss:"+p.node)),
-      card(LABELS.fds, fmt(fds,0), hist.get("fds:"+p.node)),
-      card(LABELS.threads, fmt(threads,0), hist.get("threads:"+p.node)),
-      card(LABELS.lag, fmt(lag,0), hist.get("lag:"+p.node)),
-      card(LABELS.host_cpu, fmt(hostCpu,0), hist.get("hcpu:"+p.node), 100),
-      card(LABELS.host_mem, fmt(hostMem,0), hist.get("hmem:"+p.node), 100),
-      card(LABELS.net_sent, fmt(netOut,0), hist.get("nout:"+p.node)),
-      card(LABELS.net_recv, fmt(netIn,0), hist.get("nin:"+p.node)),
-      card(LABELS.gil, fmt(gil,0), hist.get("gil:"+p.node), 100),
+    const m = { node:p.node, cpu:g["process.cpu_percent"],
+      rss:g["process.rss_bytes"]!=null ? g["process.rss_bytes"]/1e6 : null,
+      fds:g["process.num_fds"], threads:g["process.num_threads"],
+      hostCpu:g["host.cpu_percent"], hostMem:g["host.mem_percent"],
+      netOut:g["host.net_bytes_sent"]!=null ? g["host.net_bytes_sent"]/1024 : null,
+      netIn:g["host.net_bytes_recv"]!=null ? g["host.net_bytes_recv"]/1024 : null,
+      gil:g["runtime.gil_percent"], lag:pct(hgram(p,"runtime.loop_lag_micros"),0.99) };
+    [["cpu",m.cpu],["rss",m.rss],["fds",m.fds],["threads",m.threads],["hcpu",m.hostCpu],
+     ["hmem",m.hostMem],["nout",m.netOut],["nin",m.netIn],["gil",m.gil],["lag",m.lag]]
+      .forEach(kv=>{ if(kv[1]!=null) push(kv[0]+":"+m.node, kv[1]); });
+    return m;
+  });
+  const hwCards = m => [
+      card(LABELS.cpu, fmt(m.cpu,0), hist.get("cpu:"+m.node), 100),
+      card(LABELS.rss, fmt(m.rss,0), hist.get("rss:"+m.node)),
+      card(LABELS.fds, fmt(m.fds,0), hist.get("fds:"+m.node)),
+      card(LABELS.threads, fmt(m.threads,0), hist.get("threads:"+m.node)),
+      card(LABELS.lag, fmt(m.lag,0), hist.get("lag:"+m.node)),
+      card(LABELS.host_cpu, fmt(m.hostCpu,0), hist.get("hcpu:"+m.node), 100),
+      card(LABELS.host_mem, fmt(m.hostMem,0), hist.get("hmem:"+m.node), 100),
+      card(LABELS.net_sent, fmt(m.netOut,0), hist.get("nout:"+m.node)),
+      card(LABELS.net_recv, fmt(m.netIn,0), hist.get("nin:"+m.node)),
+      card(LABELS.gil, fmt(m.gil,0), hist.get("gil:"+m.node), 100),
     ].join("");
-    return showNode
-      ? `<div class="worker"><div class="worker-label">${esc(p.node)}</div><div class="hw">${cards}</div></div>`
-      : `<div class="hw">${cards}</div>`;
-  }).join("") : `<div class="meta">no hardware samples yet</div>`;
+  const hwSel = hwm.find(m=>m.node===hwState.sel);
+  const hwEl = document.getElementById("hw");
+  if (!hwm.length) {
+    hwEl.innerHTML = `<div class="meta">no hardware samples yet</div>`;
+  } else if (hwm.length === 1) {
+    hwEl.innerHTML = `<div class="hw">${hwCards(hwm[0])}</div>`;
+  } else if (hwSel) {
+    hwEl.innerHTML = `<div class="hwback" onclick="hwSelect(null)">← all ${hwm.length} workers</div>`
+      + `<div class="worker-label">${esc(hwSel.node)}</div><div class="hw">${hwCards(hwSel)}</div>`;
+  } else {
+    const h = hwm[0];  // host stats are host-wide (identical across workers) — show them once, not per worker
+    const bar = c => `background:linear-gradient(90deg,rgba(88,166,255,.22) ${Math.min(100,c||0)}%,`
+      + `transparent ${Math.min(100,c||0)}%)`;
+    hwEl.innerHTML =
+      `<div class="hwhost"><span>host</span><span>CPU <b>${fmt(h.hostCpu,0)}%</b></span>`
+      + `<span>mem <b>${fmt(h.hostMem,0)}%</b></span>`
+      + (h.netOut!=null ? `<span>net out <b>${fmt(h.netOut,0)}</b> · in <b>${fmt(h.netIn,0)}</b> KB</span>` : ``)
+      + `</div>`
+      + `<table class="hwtable"><thead><tr><th class="l">worker</th><th>CPU %</th><th>RSS MB</th>`
+      + `<th>loop-lag µs</th><th>threads</th><th>fds</th><th></th></tr></thead><tbody>`
+      + hwm.map(m=>
+          `<tr onclick="hwSelect('${esc(m.node)}')"><td class="l">${esc(m.node)}</td>`
+          + `<td class="cpu" style="${bar(m.cpu)}">${fmt(m.cpu,0)}</td><td>${fmt(m.rss,0)}</td>`
+          + `<td>${fmt(m.lag,0)}</td><td>${fmt(m.threads,0)}</td><td>${fmt(m.fds,0)}</td>`
+          + `<td class="go">›</td></tr>`).join("")
+      + `</tbody></table><div class="meta" style="margin-top:10px">click a worker for full per-core detail</div>`;
+  }
 
   // operators table — a node column appears only when the run spans more than one worker
   const multiNode = new Set(ops.map(o=>o.node)).size > 1;
@@ -270,13 +306,15 @@ function layoutFlow(nodes, edges){
   const byRank=new Map();
   nodes.forEach(n=>{ const r=rank.get(n.operator_id);
     if(!byRank.has(r)) byRank.set(r,[]); byRank.get(r).push(n); });
-  const W=140,H=54,colGap=200,rowGap=28,mx=14,my=16;
+  // mtop reserves a band above the nodes for the edge labels (drawn there so a label longer than the
+  // node gap floats over empty space instead of cutting into a box); mbot is a small bottom margin.
+  const W=140,H=54,colGap=200,rowGap=28,mx=44,mtop=46,mbot=18;
   let maxRank=0,maxCol=1; rank.forEach(r=>{ if(r>maxRank) maxRank=r; });
   byRank.forEach(a=>{ if(a.length>maxCol) maxCol=a.length; });
   const colH=maxCol*H+(maxCol-1)*rowGap, pos=new Map();
-  byRank.forEach((arr,r)=>{ const h=arr.length*H+(arr.length-1)*rowGap, y0=my+(colH-h)/2;
+  byRank.forEach((arr,r)=>{ const h=arr.length*H+(arr.length-1)*rowGap, y0=mtop+(colH-h)/2;
     arr.forEach((n,i)=>pos.set(n.operator_id,{x:mx+r*colGap, y:y0+i*(H+rowGap)})); });
-  return {pos, w:mx*2+maxRank*colGap+W, h:my*2+colH, nodeW:W, nodeH:H};
+  return {pos, w:mx*2+maxRank*colGap+W, h:mtop+colH+mbot, nodeW:W, nodeH:H};
 }
 
 function buildFlowSvg(nodes, edges, lay){
@@ -284,8 +322,7 @@ function buildFlowSvg(nodes, edges, lay){
   const eSvg=edges.map(e=>{ const a=pos.get(e.src), b=pos.get(e.dst);
     const sx=a.x+W, sy=a.y+H/2, dx=b.x, dy=b.y+H/2, mx=(sx+dx)/2;
     return `<path class="edge" marker-end="url(#ah)" d="M${sx},${sy} C${mx},${sy} ${mx},${dy} ${dx},${dy}"/>`
-      + `<g class="parts"></g>`
-      + `<text class="elabel" x="${mx}" y="${((sy+dy)/2-7).toFixed(1)}" text-anchor="middle"></text>`;
+      + `<g class="parts"></g>`;
   }).join("");
   const nSvg=nodes.map(n=>{ const p=pos.get(n.operator_id);
     const cls=n.kind==="source" ? "src" : (n._sink ? "snk" : "");
@@ -295,9 +332,16 @@ function buildFlowSvg(nodes, edges, lay){
       + `<text class="ncls" x="${p.x+11}" y="${p.y+34}">${esc(clip(n.op_class||"",18))}</text>`
       + `<text class="nrate" x="${p.x+11}" y="${p.y+48}">—</text></g>`;
   }).join("");
-  return `<svg viewBox="0 0 ${lay.w} ${lay.h}" preserveAspectRatio="xMinYMin meet" role="img" aria-label="dataflow graph">`
+  // Edge labels sit in the band above the nodes (mtop in layoutFlow), centred over each edge. Kept out of
+  // the row so a label wider than the node gap floats over empty panel background instead of cutting into
+  // a box; anchored to the source node's top, so a cross-row edge's label still clears both its nodes.
+  const lSvg=edges.map(e=>{ const a=pos.get(e.src), b=pos.get(e.dst);
+    const cx=(a.x+W+b.x)/2;
+    return `<text class="elabel" x="${cx}" y="${(a.y-9).toFixed(1)}" text-anchor="middle"></text>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${lay.w} ${lay.h}" width="${lay.w}" height="${lay.h}" preserveAspectRatio="xMinYMin meet" role="img" aria-label="dataflow graph">`
     + `<defs><marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">`
-    + `<path d="M0,0 L6,3 L0,6 Z" fill="var(--dim)"/></marker></defs>${eSvg}${nSvg}</svg>`;
+    + `<path d="M0,0 L6,3 L0,6 Z" fill="var(--dim)"/></marker></defs>${eSvg}${nSvg}${lSvg}</svg>`;
 }
 
 function bindFlowModel(flowEl, nodes, edges){
@@ -313,28 +357,44 @@ function bindFlowModel(flowEl, nodes, edges){
 }
 
 function renderFlow(doc){
-  const flowEl=document.getElementById("flow"), topo=doc.topology;
+  const flowEl=document.getElementById("flow"), topo=doc.topology, flegend=document.getElementById("flegend");
   if(!topo || !topo.nodes || !topo.nodes.length){
-    flowEl.innerHTML='<div class="meta">no topology yet</div>'; flow.sig=null; return; }
-  const nodes=topo.nodes, emap=new Map();     // collapse an operator's parallel channels to one edge
-  (topo.edges||[]).forEach(e=>{ const k=e.src_operator_id+">"+e.dst_operator_id;
-    if(!emap.has(k)) emap.set(k,{src:e.src_operator_id,dst:e.dst_operator_id,partitioner:e.partitioner}); });
-  const edges=[...emap.values()], srcSet=new Set(edges.map(e=>e.src));
-  nodes.forEach(n=>{ n._sink=!srcSet.has(n.operator_id); });
-
-  const sig=nodes.map(n=>n.operator_id).join(",")+"|"+edges.map(e=>e.src+">"+e.dst).join(",");
-  if(sig!==flow.sig){ flow.sig=sig;
-    flowEl.innerHTML=buildFlowSvg(nodes,edges,layoutFlow(nodes,edges)); bindFlowModel(flowEl,nodes,edges); }
-
+    flowEl.innerHTML='<div class="meta">no topology yet</div>'; flow.sig=null;
+    const b=document.getElementById("flowbar"); if(b) b.innerHTML=""; return; }
   const now=(window.performance&&performance.now)?performance.now():Date.now();
   const dt=flow.prevT!=null ? Math.max(1e-3,(now-flow.prevT)/1000) : null; flow.prevT=now;
   const rate=(key,cur)=>{ const prev=flow.prev.get(key); flow.prev.set(key,cur);
     return (dt!=null && prev!=null) ? Math.max(0,(cur-prev)/dt) : 0; };
 
-  // Each node's number is the rows it takes in — its processing load — summed over its parallel
-  // instances and workers. A source has no input, so it shows what it produces instead; the edges
-  // (rows_sent) carry the transfers between nodes, so a selectivity collapse reads as a fat edge into a
-  // node whose thin outgoing edge leaves it.
+  // Physical parallelism: how many instances (one per worker) each operator runs, read from the live
+  // operator rows. A distributed run defaults to the per-instance view; the collapsed one hides the shuffle.
+  const instOf=new Map();
+  doc.operators.forEach(o=>{ if(o.kind==="process") return;
+    if(!instOf.has(o.operator_id)) instOf.set(o.operator_id,[]); instOf.get(o.operator_id).push(o); });
+  const distributed=[...instOf.values()].some(a=>a.length>1);
+  const mode = flow.mode || (distributed ? "instances" : "collapsed");
+  renderFlowToggle(distributed, mode);
+  if(flegend) flegend.innerHTML = mode==="instances"
+    ? "every operator is expanded to its per-worker instances · a keyed shuffle is drawn as an all-to-all "
+      + "mesh · each box shows that instance's live rate, so partition skew shows as one worker outpacing its siblings"
+    : "dots trace rows moving through each channel right now · line weight = rows carried so far · "
+      + "stroke turns amber as a channel's queue fills toward capacity · "
+      + "shuffle / rebalance / forward = how each edge routes rows onward";
+  if(mode==="instances"){ flow.sig=null; flow.model=null; renderDistFlow(topo, instOf, rate); return; }
+
+  // Collapsed view: one node per operator, an operator's parallel channels merged to a single edge.
+  const nodes=topo.nodes, emap=new Map();
+  (topo.edges||[]).forEach(e=>{ const k=e.src_operator_id+">"+e.dst_operator_id;
+    if(!emap.has(k)) emap.set(k,{src:e.src_operator_id,dst:e.dst_operator_id,partitioner:e.partitioner}); });
+  const edges=[...emap.values()], srcSet=new Set(edges.map(e=>e.src));
+  nodes.forEach(n=>{ n._sink=!srcSet.has(n.operator_id); });
+  const sig=nodes.map(n=>n.operator_id).join(",")+"|"+edges.map(e=>e.src+">"+e.dst).join(",");
+  if(sig!==flow.sig){ flow.sig=sig;
+    flowEl.innerHTML=buildFlowSvg(nodes,edges,layoutFlow(nodes,edges)); bindFlowModel(flowEl,nodes,edges); }
+
+  // Each node's number is the rows it takes in — its processing load — summed over its parallel instances
+  // and workers. A source has no input, so it shows what it produces instead; the edges (rows_sent) carry
+  // the transfers, so a selectivity collapse reads as a fat edge into a node whose thin edge leaves it.
   const outNow=new Map();
   doc.operators.forEach(o=>{ if(o.kind==="process") return;
     const hasIn=(o.counters||[]).some(c=>c.name==="operator.rows_in");
@@ -354,10 +414,77 @@ function renderFlow(doc){
     m.path.setAttribute("stroke-width",(1.5+5*relT).toFixed(2));
     m.path.setAttribute("stroke-opacity",(0.22+0.5*relT).toFixed(2));
     const tag=partTag(m.partitioner);
-    m.label.textContent=(tag?tag+" · ":"")+fmtRows(m.total)+(m.rate>0?" · "+fmtRows(m.rate)+"/s":""); });
+    m.label.textContent=(tag?tag+" · ":"")+fmtRows(m.total); });
   flow.model.nodeById.forEach((el,id)=>{ const cur=outNow.has(id)?outNow.get(id):null;
     const rt=rate("o:"+id, cur||0);
     el.textContent = cur==null ? "—" : (rt>0 ? fmtRows(rt)+" rows/s" : fmtRows(cur)+" rows"); });
+}
+
+// The flow panel has two views; the toggle shows only for a distributed run (a single process has nothing
+// to expand). Switching forces a rebuild (the two views share the #flow element but not their DOM shape).
+function renderFlowToggle(distributed, mode){
+  const bar=document.getElementById("flowbar"); if(!bar) return;
+  if(!distributed){ bar.innerHTML=""; return; }
+  const btn=(m,l)=>`<span class="ftog${m===mode?" on":""}" onclick="flowSetMode('${m}')">${l}</span>`;
+  bar.innerHTML = btn("collapsed","collapsed")+btn("instances","instances");
+}
+function flowSetMode(m){ flow.mode=m; flow.sig=null; flow.model=null; if(lastDoc) render(lastDoc); }
+
+// Per-instance (physical) flow: every operator expanded into its worker instances, edges drawn by how the
+// partitioner routes rows — fan-out (1→N), gather (N→1), or an all-to-all mesh for a keyed shuffle. Redrawn
+// whole each poll (no cached model or animated dots), since it is a full rebuild; each box shows that
+// instance's live rate, so a hot partition shows as one worker's box outpacing its siblings.
+function renderDistFlow(topo, instOf, rate){
+  const flowEl=document.getElementById("flow");
+  const emap=new Map();
+  (topo.edges||[]).forEach(e=>{ const k=e.src_operator_id+">"+e.dst_operator_id;
+    if(!emap.has(k)) emap.set(k,{src:e.src_operator_id,dst:e.dst_operator_id,part:e.partitioner}); });
+  const ledges=[...emap.values()];
+  const rank=new Map(); topo.nodes.forEach(n=>rank.set(n.operator_id,0));
+  for(let it=0;it<topo.nodes.length;it++) for(const e of ledges) rank.set(e.dst,Math.max(rank.get(e.dst),rank.get(e.src)+1));
+  const order=topo.nodes.slice().sort((a,b)=>rank.get(a.operator_id)-rank.get(b.operator_id));
+  const insts=id=>{ const a=(instOf.get(id)||[]).slice();
+    a.sort((x,y)=>String((x.node||"")+"/"+x.subtask_index).localeCompare(String((y.node||"")+"/"+y.subtask_index)));
+    return a; };
+  const counts=order.map(n=>Math.max(1,insts(n.operator_id).length));
+  const partOf=new Map(ledges.map(e=>[e.src+">"+e.dst, e.part]));
+  const W=124,H=40,vg=14,mx=44,mtop=54,mbot=20,colGap=230;
+  const maxN=Math.max(1,...counts), colH=maxN*H+(maxN-1)*vg;
+  const colX=i=>mx+i*colGap, w=mx*2+(order.length-1)*colGap+W, h=mtop+colH+mbot;
+  const iy=(n,i)=>{ const sh=n*H+(n-1)*vg, y0=mtop+(colH-sh)/2; return y0+i*(H+vg); };
+  let eSvg="", boxSvg="", labSvg="";
+  order.forEach((n,ci)=>{
+    const ii=insts(n.operator_id), nn=Math.max(1,ii.length), x=colX(ci);
+    labSvg+=`<text class="dcol" x="${x+W/2}" y="${mtop-32}" text-anchor="middle">`
+      + `${esc(n.operator_id)}${nn>1?" · ×"+nn:""}</text>`;
+    const cls=n.kind==="source"?"src":(ci===order.length-1?"snk":"");
+    for(let i=0;i<nn;i++){
+      const o=ii[i]||{}, y=iy(nn,i);
+      const hasIn=(o.counters||[]).some(c=>c.name==="operator.rows_in");
+      const cur=o.counters?counter(o, hasIn?"operator.rows_in":"operator.rows_out"):null;
+      const rt=cur!=null?rate("i:"+n.operator_id+":"+(o.node||"")+":"+o.subtask_index, cur):null;
+      const lbl=nn>1 ? esc(String(o.node!=null?o.node:"#"+i)) : esc(clip(n.op_class||n.operator_id,15));
+      const rtxt=cur==null?"—":(rt>0?fmtRows(rt)+"/s":fmtRows(cur));
+      boxSvg+=`<g class="fnode ${cls}"><rect x="${x}" y="${y}" width="${W}" height="${H}" rx="6"/>`
+        + `<text class="nid" x="${x+10}" y="${y+16}">${lbl}</text>`
+        + `<text class="nrate" x="${x+10}" y="${y+31}">${rtxt}</text></g>`;
+    }
+  });
+  for(let ci=0;ci<order.length-1;ci++){
+    const na=counts[ci], nb=counts[ci+1];
+    const part=partOf.get(order[ci].operator_id+">"+order[ci+1].operator_id)||"";
+    const tag=partTag(part), shuffle=(tag==="shuffle");
+    const x1=colX(ci)+W, x2=colX(ci+1);
+    labSvg+=`<text class="elabel" x="${(x1+x2)/2}" y="${mtop-10}" text-anchor="middle">${tag||esc(part)}</text>`;
+    for(let i=0;i<na;i++) for(let j=0;j<nb;j++){
+      if(!shuffle && !(na===1||nb===1||i===j)) continue;   // fan-out / gather / forward: not all-to-all
+      const y1=iy(na,i)+H/2, y2=iy(nb,j)+H/2, mxp=(x1+x2)/2;
+      const style=shuffle?"stroke-opacity:.16;stroke-width:1.4":"stroke-opacity:.42;stroke-width:2.4";
+      eSvg+=`<path class="edge" style="${style}" d="M${x1},${y1} C${mxp},${y1} ${mxp},${y2} ${x2},${y2}"/>`;
+    }
+  }
+  flowEl.innerHTML=`<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="xMinYMin meet" `
+    + `role="img" aria-label="distributed dataflow">${eSvg}${boxSvg}${labSvg}</svg>`;
 }
 
 function animateFlow(ts){
