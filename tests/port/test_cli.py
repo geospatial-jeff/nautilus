@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 import nautilus.cli as cli
-from nautilus.bench import BenchResult, Comparison, Environment, Stats, save_baseline
+from nautilus.bench import BenchResult, Environment, Stats, save_baseline
 from nautilus.cli import _parse_daemons, _split_host_port, _tier, app
 from nautilus.telemetry import Tier
 
@@ -162,12 +163,11 @@ def test_bench_check_empty_baseline_exits_0(tmp_path):
 def test_bench_check_regression_exits_1_and_names_pipeline(tmp_path, monkeypatch):
     baseline = tmp_path / "baseline.json"
     save_baseline(baseline, {"foo": _result("foo")})
-    monkeypatch.setattr(cli, "measure_like", lambda b, **k: b)
-    monkeypatch.setattr(
-        cli,
-        "compare",
-        lambda b, c, min_threshold=0.07: Comparison("foo", "REGRESSED", -0.5, 0.07, 1.5, 0.7, 0.1),
-    )
+    # Every (re-)measure comes back far slower than the baseline — a genuine regression the retry cannot
+    # clear (confirm_regression keeps the fastest, but here every run is slow). Same digest + machine, so
+    # it is judged on throughput, not called an output or machine change.
+    slow = replace(_result("foo"), throughput_rows_per_sec=Stats((0.1,), 0.1, 0.0, 0.0, 0.1, 0.1))
+    monkeypatch.setattr(cli, "measure_like", lambda b, **k: slow)
     result = runner.invoke(app, ["bench-check", "--baseline", str(baseline)], env=WIDE)
     assert result.exit_code == 1
     assert "failure" in result.output
@@ -177,12 +177,9 @@ def test_bench_check_regression_exits_1_and_names_pipeline(tmp_path, monkeypatch
 def test_bench_check_all_pass_exits_0(tmp_path, monkeypatch):
     baseline = tmp_path / "baseline.json"
     save_baseline(baseline, {"foo": _result("foo")})
-    monkeypatch.setattr(cli, "measure_like", lambda b, **k: b)
     monkeypatch.setattr(
-        cli,
-        "compare",
-        lambda b, c, min_threshold=0.07: Comparison("foo", "unchanged", 0.0, 0.07, 1.5, 1.5, 0.1),
-    )
+        cli, "measure_like", lambda b, **k: b
+    )  # re-measure == baseline -> unchanged
     result = runner.invoke(app, ["bench-check", "--baseline", str(baseline)], env=WIDE)
     assert result.exit_code == 0
     assert "no regressions" in result.output
