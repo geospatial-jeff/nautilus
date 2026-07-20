@@ -1,0 +1,17 @@
+name: smoke-selfhosted
+# TEMPORARY: proves a job actually executes on the self-hosted runner. Deleted before merge.
+on:
+  push:
+    branches: [ci/pinned-bench-gate]
+  workflow_dispatch:
+jobs:
+  smoke:
+    runs-on: [self-hosted, nautilus-bench]
+    steps:
+      - name: Prove where this ran
+        run: |
+          echo "runner name: ${RUNNER_NAME:-?}"
+          echo "hostname:    $(hostname)"
+          uname -a
+          echo "vCPUs:       $(nproc)"
+          grep -m1 'model name' /proc/cpuinfo
