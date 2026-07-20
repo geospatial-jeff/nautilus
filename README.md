@@ -9,6 +9,10 @@
   <em>A decentralized, entirely-streaming parallel compute framework, heavily inspired by <a href="https://flink.apache.org/">Apache Flink</a>.</em>
 </p>
 
+<p align="center">
+  <a href="https://geospatial-jeff.github.io/nautilus/"><strong>Documentation</strong></a>
+</p>
+
 ---
 
 - **Decentralized.** The computation is a dataflow graph of operators that run as actors and route
