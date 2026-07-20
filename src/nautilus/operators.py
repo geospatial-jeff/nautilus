@@ -483,6 +483,14 @@ def _key_out_type(t: pa.DataType) -> pa.DataType:
     return pa.int64() if pa.types.is_integer(t) else t
 
 
+#: In the integer fast path, fold a batch with a scatter-add (``np.add.at``, O(batch keys)) rather than a
+#: full-width ``bincount`` (O(key space)) once the key space is at least this many times the batch's key
+#: count. A high-cardinality aggregation (climatology: ~380k groups, ~16k keys/batch) then stops paying for
+#: the whole 380k accumulator on every batch; a low-cardinality one (few keys, dense) still uses bincount,
+#: which wins there. Measured crossover is near 1x, so 2x is the safe side of it.
+_SCATTER_SPARSE_FACTOR = 2
+
+
 class KeyedAgg(OneInputOperator):
     """Grouped aggregation — the vectorized ``GROUP BY`` behind the DSL's ``.agg_by``.
 
@@ -609,7 +617,7 @@ class KeyedAgg(OneInputOperator):
                 bkeys = keys if not vcol.null_count else keys[np.asarray(vcol.is_valid())]
                 acc = self._acc[base] = self._grow(self._acc.get(base), top, 0, np.int64)
                 if bkeys.size:
-                    acc[:top] += np.bincount(bkeys, minlength=top)
+                    self._accumulate(acc, bkeys, None, top)
                 continue
             if (
                 inc not in valcache
@@ -633,6 +641,21 @@ class KeyedAgg(OneInputOperator):
             return grown
         return arr
 
+    @staticmethod
+    def _accumulate(
+        acc: np.ndarray, keys: np.ndarray, weights: np.ndarray | None, top: int
+    ) -> None:
+        """Fold a batch into the dense accumulator: ``acc[k] += Σ weights`` per key (``weights=None`` counts
+        rows), summing duplicate keys. On a sparse batch (key space ≫ the batch's keys) a scatter-add
+        touches only those keys; otherwise a full-width ``bincount`` is faster — see
+        :data:`_SCATTER_SPARSE_FACTOR`."""
+        if top > _SCATTER_SPARSE_FACTOR * keys.size:
+            np.add.at(acc, keys, 1 if weights is None else weights)
+        elif weights is None:
+            acc[:top] += np.bincount(keys, minlength=top)
+        else:
+            acc[:top] += np.bincount(keys, weights=weights, minlength=top)
+
     def _scatter_value(
         self, base: tuple[str, str], keys: np.ndarray, col: np.ndarray, top: int
     ) -> None:
@@ -646,9 +669,7 @@ class KeyedAgg(OneInputOperator):
         elif bf == "sum":
             acc = self._acc[base] = self._grow(self._acc.get(base), top, 0.0, np.float64)
             if keys.size:
-                acc[:top] += np.bincount(
-                    keys, weights=col.astype(np.float64, copy=False), minlength=top
-                )
+                self._accumulate(acc, keys, col.astype(np.float64, copy=False), top)
         elif (
             bf == "min"
         ):  # float64 accumulator (±inf seed); empties are nulled via the count, not the seed
