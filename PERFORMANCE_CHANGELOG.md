@@ -27,13 +27,6 @@ mid-stream), since a throughput figure is only comparable on the same hardware.
 Costs measured during the join work (2026-06-29) and left unfixed, with the reason — so the next loop
 starts from evidence, not a cold read.
 
-- **`KeyedMean` folds sparse batches full-width, like `KeyedAgg` did before `cef2920`.** `KeyedMean._process_fast`
-  (`operators.py`) still folds each batch with `self._sum[:top] += np.bincount(vkeys, weights=…, minlength=top)`
-  (and the same for count/presence), paying O(key space) per batch. High-cardinality means through the
-  dedicated `KeyedMean` path (rather than `.agg_by` → `KeyedAgg`) would benefit from the same shape-aware
-  `np.add.at` scatter that gave `KeyedAgg` 1.7× on climatology. Left for a follow-up: the geo suite routes
-  its means through `KeyedAgg`, so no committed benchmark exercises `KeyedMean` at high cardinality yet — add
-  one before optimizing, so the win is measured, not assumed.
 
 - **Stream-stream join is super-linear (≈O(n²)).** A key-unique 1:1 stream⋈stream at fixed batch 4096
   fell from ~906k rows/s at 100k rows to ~425k at 400k (wall grew 0.34s → 2.83s for 4× the rows). The
@@ -70,6 +63,25 @@ starts from evidence, not a cold read.
   per item)
   would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
+
+---
+
+## 2026-07-20 — KeyedMean sparse scatter-add: 3.6× on high-cardinality mean
+
+- **Commit:** `dafd90e`.
+- **Change:** `KeyedMean._fast_add` (`operators.py`) folded each batch's sum and count into its dense
+  value-indexed accumulators with full-width `np.bincount` (O(key space) per batch) — the same cost
+  `cef2920` removed from `KeyedAgg`. The shape-aware fold is now a shared module-level `_fold_into`
+  (scatter with `np.add.at` when the key space dwarfs the batch, else bincount), used by both operators.
+  Added `bench-keyed-mean` — the same ~380k-group `AVG(value) GROUP BY gid` as `bench-geo-climatology` but
+  through `KeyedMean` (`.apply`), since no committed benchmark reached KeyedMean's high-cardinality fast
+  path before, so the win could be measured rather than assumed.
+- **Impact (`nautilus bench bench-keyed-mean`, 382k groups / 1.15M rows, single process, median of 9
+  trials; before = the change's parent `operators.py`; WSL2 x86_64 — factor is the signal):** **8.3M →
+  30.0M rows/s = 3.6×** (larger than KeyedAgg's 1.7× because a mean does two full-width folds, sum and
+  count, per batch).
+- **Correctness:** structural digest byte-identical before → after (`1f812a01cace…`); full `pytest` green
+  (498 passed).
 
 ---
 
