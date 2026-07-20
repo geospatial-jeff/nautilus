@@ -27,6 +27,14 @@ mid-stream), since a throughput figure is only comparable on the same hardware.
 Costs measured during the join work (2026-06-29) and left unfixed, with the reason — so the next loop
 starts from evidence, not a cold read.
 
+- **`KeyedMean` folds sparse batches full-width, like `KeyedAgg` did before `cef2920`.** `KeyedMean._process_fast`
+  (`operators.py`) still folds each batch with `self._sum[:top] += np.bincount(vkeys, weights=…, minlength=top)`
+  (and the same for count/presence), paying O(key space) per batch. High-cardinality means through the
+  dedicated `KeyedMean` path (rather than `.agg_by` → `KeyedAgg`) would benefit from the same shape-aware
+  `np.add.at` scatter that gave `KeyedAgg` 1.7× on climatology. Left for a follow-up: the geo suite routes
+  its means through `KeyedAgg`, so no committed benchmark exercises `KeyedMean` at high cardinality yet — add
+  one before optimizing, so the win is measured, not assumed.
+
 - **Stream-stream join is super-linear (≈O(n²)).** A key-unique 1:1 stream⋈stream at fixed batch 4096
   fell from ~906k rows/s at 100k rows to ~425k at 400k (wall grew 0.34s → 2.83s for 4× the rows). The
   symmetric hash join buffers both sides until EOS and re-probes the *growing* state, so the buffered

@@ -44,7 +44,7 @@ _FAST_PATH_MAX = 1 << 28
 
 def _int_fast_ok(keys: np.ndarray) -> bool:
     """Whether an integer key batch may use a value-indexed fast path that sizes an accumulator to the key
-    value — the ``np.bincount`` sum/count arrays in :class:`KeyedMean` and :class:`KeyedAgg`, the dense
+    value — the value-indexed sum/count arrays in :class:`KeyedMean` and :class:`KeyedAgg`, the dense
     value→id map in :class:`HashJoin`. The keys must be non-negative and dense enough that an array sized to
     ``max(key) + 1`` stays under :data:`_FAST_PATH_MAX`. If either fails, the operator demotes to the general
     per-distinct-key path, which handles any key — one gate closing both the negative-key crash and the
