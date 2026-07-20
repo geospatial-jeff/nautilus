@@ -33,7 +33,7 @@ system = ["psutil>=5.9", "gilknocker>=0.4"]
 geo = ["async-geotiff>=0.5", "obstore>=0.11"]
 # The documentation site (docs/, built with `mkdocs build`): Material theme, plus mkdocstrings to pull the
 # API reference from source docstrings. mkdocs-material vendors the pymdown-extensions the config relies on.
-docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "black>=24"]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",

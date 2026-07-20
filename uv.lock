@@ -661,6 +661,7 @@ dev = [
     { name = "ruff" },
 ]
 docs = [
+    { name = "black" },
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
 ]
@@ -680,6 +681,7 @@ system = [
 requires-dist = [
     { name = "async-geotiff", marker = "extra == 'geo'", specifier = ">=0.5" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=24" },
+    { name = "black", marker = "extra == 'docs'", specifier = ">=24" },
     { name = "cloudpickle", specifier = ">=3.0" },
     { name = "gilknocker", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "gilknocker", marker = "extra == 'system'", specifier = ">=0.4" },
