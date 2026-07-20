@@ -636,7 +636,9 @@ def bench_check(
             failures.append(name)
     console.print(table)
     if rechecked:  # transparent about the retry — a re-measured benchmark is not silently passed
-        console.print(f"[dim]re-measured after a slow first run, kept the fastest: {', '.join(rechecked)}[/dim]")
+        console.print(
+            f"[dim]re-measured after a slow first run, kept the fastest: {', '.join(rechecked)}[/dim]"
+        )
 
     if update:  # move the reference — deliberate, so record regardless of the comparison
         save_baseline(baseline, updated)

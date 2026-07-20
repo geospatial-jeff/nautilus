@@ -177,7 +177,9 @@ def test_bench_check_regression_exits_1_and_names_pipeline(tmp_path, monkeypatch
 def test_bench_check_all_pass_exits_0(tmp_path, monkeypatch):
     baseline = tmp_path / "baseline.json"
     save_baseline(baseline, {"foo": _result("foo")})
-    monkeypatch.setattr(cli, "measure_like", lambda b, **k: b)  # re-measure == baseline -> unchanged
+    monkeypatch.setattr(
+        cli, "measure_like", lambda b, **k: b
+    )  # re-measure == baseline -> unchanged
     result = runner.invoke(app, ["bench-check", "--baseline", str(baseline)], env=WIDE)
     assert result.exit_code == 0
     assert "no regressions" in result.output

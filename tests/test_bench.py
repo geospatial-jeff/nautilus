@@ -95,7 +95,9 @@ def test_confirm_regression_never_re_measures_a_pass():
         calls += 1
         return _result(9999)
 
-    _best, cmp, used = bench.confirm_regression(_result(1000), _result(980), remeasure, min_threshold=0.10)
+    _best, cmp, used = bench.confirm_regression(
+        _result(1000), _result(980), remeasure, min_threshold=0.10
+    )
     assert used == 0 and calls == 0 and cmp.status == "unchanged"
     changed_output = bench.compare(
         _result(1000, platform="linux", digest="A"), _result(1000, platform="darwin", digest="B")
