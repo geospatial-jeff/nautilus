@@ -31,6 +31,9 @@ system = ["psutil>=5.9", "gilknocker>=0.4"]
 # Cloud-Optimized GeoTIFF imagery (the Sentinel-2 NDVI example): async, range-request COG reads with
 # no GDAL/rasterio in the stack. async-geotiff (over async-tiff) does the decoding; obstore does the I/O.
 geo = ["async-geotiff>=0.5", "obstore>=0.11"]
+# The documentation site (docs/, built with `mkdocs build`): Material theme, plus mkdocstrings to pull the
+# API reference from source docstrings. mkdocs-material vendors the pymdown-extensions the config relies on.
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",

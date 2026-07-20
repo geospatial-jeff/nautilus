@@ -2,7 +2,7 @@
 
 The `nautilus` command-line interface runs pipelines and reads their telemetry.
 
-> This file mirrors `src/nautilus/cli.py`. Update it when commands, arguments, or options change.
+<!-- Maintainers: this file mirrors src/nautilus/cli.py — update it when commands, arguments, or options change. -->
 
 ## Invocation
 
