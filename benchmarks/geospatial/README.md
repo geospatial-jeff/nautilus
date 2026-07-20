@@ -9,6 +9,11 @@ nautilus is a relational streaming engine, so the same operations express direct
 This benchmark adds nautilus as a third engine across all six cases: the same real data, the same
 operation three ways, checked to agree, and timed.
 
+> **Credit.** The cases, the SQL, and the "geospatial array ops are really relational" thesis are the work
+> of [**xarray-sql** by xqlsystems](https://github.com/xqlsystems/xarray-sql) (`benchmarks/geospatial`).
+> This directory adapts that suite to drop nautilus in as a third engine; it is not affiliated with, or
+> endorsed by, that project.
+
 | xarray-sql case | operation | nautilus form | keyed cardinality |
 |---|---|---|--:|
 | `01_ndvi` | per-pixel `(nir-red)/(nir+red)` | `.map` (column arithmetic) | — |
