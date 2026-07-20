@@ -7,24 +7,30 @@ docs_dir: docs
 
 theme:
   name: material
-  logo: nautilus-lockup-dark.svg
+  custom_dir: overrides
   favicon: nautilus-lockup.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: teal
+      primary: custom
+      accent: custom
       toggle: { icon: material/weather-night, name: Switch to dark mode }
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: teal
+      primary: custom
+      accent: custom
       toggle: { icon: material/weather-sunny, name: Switch to light mode }
   features:
     - navigation.tabs
     - navigation.sections
     - navigation.top
     - navigation.tracking
+    - navigation.path
     - navigation.instant
     - navigation.instant.prefetch
     - navigation.footer
@@ -35,6 +41,9 @@ theme:
     - content.code.annotate
     - content.tabs.link
     - toc.follow
+
+extra_css:
+  - stylesheets/extra.css?v=7
 
 nav:
   - Home: index.md

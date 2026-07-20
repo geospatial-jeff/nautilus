@@ -1,0 +1,125 @@
+/* Nautilus docs — visual polish (experimental; not committed yet). */
+
+/* ---- Brand palette ---------------------------------------------------- */
+/* Monochromatic indigo: the accent stays in the same family as the primary, so
+   links, focus rings, and the button hover (Material swaps the primary button's
+   background to the accent) never clash with a second hue. */
+:root {
+  --md-primary-fg-color:        #4350c7;
+  --md-primary-fg-color--light: #6b78e0;
+  --md-primary-fg-color--dark:  #2f3a9e;
+  --md-accent-fg-color:         #5b6cff;
+  --nautilus-glow:              rgba(67, 80, 199, .22);
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #7684ff;
+  --md-accent-fg-color:  #97a4ff;
+  --md-typeset-a-color:  #9aa6ff;
+  --nautilus-glow:       rgba(118, 132, 255, .18);
+}
+
+/* ---- Layout width ----------------------------------------------------- */
+/* Material caps the whole layout at 61rem and centers it, which reads as a
+   narrow crunched column with wide empty margins on a widescreen — and squeezes
+   dense tables (the 9-column telemetry reference) until every cell wraps. Use
+   more of the viewport so those tables have room. Prose stays readable because
+   the nav + ToC sidebars take the extra width alongside the content. */
+.md-grid { max-width: 85rem; }
+
+/* ---- Header: single-row inline nav (rendered by overrides/partials/header.html).
+   The nav fills the row and pushes search + repo to the right; its links reuse
+   Material's tab-link styling and sit centered in the row. ---------------- */
+.md-header__nav { flex-grow: 1; min-width: 0; margin-left: .4rem; }
+.md-header__nav .md-tabs__list {
+  display: flex;
+  align-items: center;
+  height: 2.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.md-header__nav .md-tabs__item { height: auto; margin: 0; }
+.md-header__nav .md-tabs__link { margin: 0; opacity: .82; font-weight: 500; }
+.md-header__nav .md-tabs__link:hover,
+.md-header__nav .md-tabs__item--active .md-tabs__link { opacity: 1; }
+
+/* Inline nav is desktop-only; on smaller screens the drawer (hamburger) holds
+   the nav, exactly as stock Material. */
+@media screen and (max-width: 76.1875em) {
+  .md-header__nav { display: none; }
+}
+
+/* ---- Code & admonitions ---------------------------------------------- */
+.md-typeset pre > code,
+.md-typeset .highlight { border-radius: .5rem; }
+.md-typeset pre > code { box-shadow: 0 1px 3px rgba(0, 0, 0, .10); }
+.md-typeset :not(pre) > code { border-radius: .3rem; }
+.md-typeset .admonition,
+.md-typeset details { border-radius: .5rem; }
+
+/* ---- Tables ----------------------------------------------------------- */
+/* Wide reference tables (e.g. the 9-column telemetry catalog) exceed the content
+   column. Make each table its own horizontal scroll container so the overflow
+   scrolls instead of being clipped — `overflow: hidden` here would clip it. */
+.md-typeset table:not([class]) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: .4rem;
+}
+.md-typeset table:not([class]) th { font-weight: 700; }
+
+/* ---- Grid cards: lift on hover --------------------------------------- */
+.md-typeset .grid.cards > ul > li {
+  border-radius: .7rem;
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 .4rem 1.4rem rgba(0, 0, 0, .13);
+  transform: translateY(-3px);
+}
+.md-typeset .grid.cards .twemoji.lg svg,
+.md-typeset .grid.cards .twemoji.lg { color: var(--md-primary-fg-color); }
+
+/* ---- Buttons ---------------------------------------------------------- */
+.md-typeset .md-button {
+  border-radius: 2rem;
+  padding: .5em 1.5em;
+  font-weight: 600;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.md-typeset .md-button--primary:hover {
+  box-shadow: 0 .3rem 1rem var(--nautilus-glow);
+  transform: translateY(-1px);
+}
+
+/* ---- Home hero -------------------------------------------------------- */
+.hero {
+  text-align: center;
+  padding: 4rem 1rem 1.5rem;
+  margin: -1rem 0 2rem;
+  background:
+    radial-gradient(1100px 420px at 50% -12%, var(--nautilus-glow), transparent 72%);
+}
+.hero h1 {
+  font-size: 3.1rem;
+  font-weight: 800;
+  letter-spacing: -.025em;
+  line-height: 1.05;
+  margin: 0 0 .4rem;
+  color: var(--md-default-fg-color);
+}
+.hero .hero-tagline {
+  font-size: 1.3rem;
+  font-weight: 400;
+  color: var(--md-default-fg-color--light);
+  max-width: 42rem;
+  margin: 0 auto 1.6rem;
+}
+.hero .md-button + .md-button { margin-left: .5rem; }
+/* No ¶ permalink anchor on the hero title. */
+.hero h1 .headerlink { display: none; }
+
+/* Center the intro code sample under the hero and give it room to breathe. */
+.hero-code { max-width: 46rem; margin: 0 auto 2rem; }

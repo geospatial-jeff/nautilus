@@ -4,12 +4,18 @@ hide:
   - toc
 ---
 
+<div class="hero" markdown>
+
 # Nautilus
 
-**A decentralized, entirely-streaming parallel compute framework.**
+<p class="hero-tagline">A decentralized, entirely-streaming parallel compute framework — write a dataflow once, run it unchanged in one process or across a cluster.</p>
 
-Write a dataflow once; run it unchanged in one process or across a cluster. Data moves as Arrow batches
-with backpressure end to end, and every run emits telemetry about what it did.
+[Get started](getting-started.md){ .md-button .md-button--primary }
+[Design](design.md){ .md-button }
+
+</div>
+
+<div class="hero-code" markdown>
 
 ```python
 from nautilus import source
@@ -19,8 +25,7 @@ source(lines).tokenize("line", "word").count_by("word").run()
 source(lines).tokenize("line", "word").count_by("word").run(workers=4)
 ```
 
-[Get started](getting-started.md){ .md-button .md-button--primary }
-[Design](design.md){ .md-button }
+</div>
 
 ---
 
