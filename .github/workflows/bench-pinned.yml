@@ -9,6 +9,12 @@ name: bench-pinned
 #     threshold can be tight (0.10) instead of the wide band a random-CPU shared runner would need.
 # Move the reference after an intended perf change with the bench-rebaseline workflow.
 #
+# On main (and manual dispatch) it also runs the geospatial comparison benchmark — nautilus vs xarray-sql
+# (DataFusion) and the xarray reference — on this same pinned CPU, so the cross-engine numbers are stable.
+# That step is heavy (it installs the rival engines and reads real ERA5 / WeatherBench2) and is a
+# comparison, not a regression gate, so it is skipped on PRs to keep their feedback fast; its own
+# correctness asserts (nautilus must match the xarray reference) still fail the job on a mismatch.
+#
 # SECURITY: this repo is public and the runner lives in a private AWS account, so untrusted code from a
 # fork must never execute on it. The job is guarded to same-repo events only. This repo takes changes as
 # same-repo branches, so in practice every PR is gated; a fork PR would skip this job.
@@ -46,3 +52,11 @@ jobs:
       # bench-check reports machine-differs and only the digest gates.
       - name: bench-check
         run: uv run nautilus bench-check --threshold 0.10
+      # Comparison benchmark (main / dispatch only — see header). Installs the rival engines, then times
+      # the GROUP BY (02/03/06) and JOIN (04/05) cases against xarray-sql and the xarray reference on this
+      # pinned CPU. Correctness (nautilus vs the xarray reference) is asserted inside the harness.
+      - name: geobench (nautilus vs xarray-sql)
+        if: github.event_name != 'pull_request'
+        run: |
+          uv pip install -e ".[geobench]"
+          GEOBENCH_REPS=5 GEOBENCH_PAR=1 uv run python benchmarks/geospatial/run_bench.py 02 03 04 05 06

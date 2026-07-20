@@ -34,6 +34,20 @@ geo = ["async-geotiff>=0.5", "obstore>=0.11"]
 # The documentation site (docs/, built with `mkdocs build`): Material theme, plus mkdocstrings to pull the
 # API reference from source docstrings. mkdocs-material vendors the pymdown-extensions the config relies on.
 docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24", "black>=24"]
+# The geospatial comparison benchmark (benchmarks/geospatial/): the rival engines it times nautilus
+# against — xarray-sql (over DataFusion) and the xarray array reference — plus the readers for the real
+# ERA5 / WeatherBench2 data (obstore comes from the geo extra). Only the geobench needs these; the library
+# does not depend on them.
+geobench = [
+  "xarray-sql>=0.3.2",
+  "datafusion>=54",
+  "xarray>=2024",
+  "zarr>=3",
+  "pandas>=2",
+  "pyproj>=3.7",
+  "pystac-client>=0.9",
+  "gcsfs>=2024",
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
