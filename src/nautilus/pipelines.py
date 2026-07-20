@@ -42,6 +42,7 @@ from nautilus.demos import DemoStreamSource
 from nautilus.dsl import source as dsl_source
 from nautilus.operators import (
     KeyedCount,
+    KeyedMean,
     MapBatch,
     Tokenize,
     from_batches,
@@ -347,6 +348,27 @@ def bench_geo_climatology(parallelism: int = 1) -> LogicalGraph:
     )
 
 
+def bench_keyed_mean(parallelism: int = 1) -> LogicalGraph:
+    """Benchmark: the same high-cardinality ``AVG(value) GROUP BY gid`` as ``bench-geo-climatology`` (~380k
+    groups over the grid), but through the specialized :class:`~nautilus.operators.KeyedMean` operator
+    (applied with ``.apply``) instead of ``.agg_by`` / KeyedAgg. It exercises KeyedMean's own value-indexed
+    fast path — the one path ``.agg_by`` never reaches — at the sparse shape (every batch's ``gid`` spans
+    the full key space), so it gates the shape-aware fold in KeyedMean the way climatology does for KeyedAgg.
+    A *graph* pipeline. Scale via NAUTILUS_GEO_*."""
+    p = geo_bench_params()
+    src = SyntheticGridSource(
+        n_days=p["n_days"],
+        nlat=p["nlat"],
+        nlon=p["nlon"],
+        rows_per_batch=p["rows_per_batch"],
+    )
+    return (
+        dsl_source(src)
+        .apply(KeyedMean("gid", "value", "mean_k"), key_columns="gid")
+        .to_graph(parallelism=parallelism)
+    )
+
+
 def bench_geo_zonal_vector(parallelism: int = 1) -> LogicalGraph:
     """Benchmark: ``AVG(temperature) ... JOIN regions ON lat/lon BETWEEN`` — a raster×vector range join
     written as a broadcast region-tag map feeding ``.agg_by`` (one group per region box). Stresses the
@@ -453,6 +475,7 @@ GRAPH_EXAMPLES: dict[str, GraphBuilder] = {
     "bench-async-io": bench_async_io,
     "bench-geo-zonal": bench_geo_zonal,
     "bench-geo-climatology": bench_geo_climatology,
+    "bench-keyed-mean": bench_keyed_mean,
     "bench-geo-zonal-vector": bench_geo_zonal_vector,
     "bench-geo-anomaly": bench_geo_anomaly,
     "bench-geo-forecast": bench_geo_forecast,
