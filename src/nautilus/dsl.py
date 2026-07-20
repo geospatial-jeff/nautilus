@@ -504,12 +504,19 @@ class Stream:
         **kwargs: Any,
     ) -> RunResult:
         """Compile and run this stream to completion, returning its :class:`RunResult`. ``workers`` > 1
-        deploys it across that many spawned worker processes (the *same* graph), capped at the plan's
-        maximum operator parallelism (a wider value would only spawn idle workers); ``daemons`` (a
-        ``[(host, port), …]`` roster) deploys it across long-lived worker daemons instead — the multi-node
-        path, with the worker count taken from the roster. ``parallelism`` sets every operator's instance
-        count; ``key_groups`` sets the keyed-shuffle rescale ceiling. A synchronous one-liner — inside a
-        running event loop use :meth:`run_async` (single-process) instead."""
+        deploys the *same* graph across that many spawned worker processes and runs each operator at that
+        many instances; ``daemons`` (a ``[(host, port), …]`` roster) deploys it across long-lived worker
+        daemons instead — the multi-node path, with the worker count taken from the roster. ``parallelism``
+        sets every operator's instance count and defaults to ``workers``; ``key_groups`` sets the
+        keyed-shuffle rescale ceiling. A synchronous one-liner — inside a running event loop use
+        :meth:`run_async` (single-process) instead.
+
+        Because ``workers`` uses process spawning, a script that calls this at module top level must guard
+        it with ``if __name__ == "__main__":``."""
+        if parallelism is None and workers is not None and daemons is None:
+            parallelism = (
+                workers  # run(workers=N) runs N-wide — same as the CLI's --parallelism default
+            )
         graph = self.to_graph(parallelism=parallelism)
         if daemons is not None:
             from nautilus.cluster import deploy
@@ -574,6 +581,10 @@ class SinkHandle:
         only; no batches). ``workers``/``daemons`` deploy the same graph across worker processes / daemons
         exactly as :meth:`Stream.run`; a synchronous one-liner — inside a running event loop use
         :meth:`run_async`."""
+        if parallelism is None and workers is not None and daemons is None:
+            parallelism = (
+                workers  # run(workers=N) runs N-wide — same as the CLI's --parallelism default
+            )
         graph = self.to_graph(parallelism=parallelism)
         if daemons is not None:
             from nautilus.cluster import deploy

@@ -1,0 +1,102 @@
+site_name: Nautilus
+site_description: A decentralized, entirely-streaming parallel compute framework.
+site_url: https://geospatial-jeff.github.io/nautilus/
+repo_url: https://github.com/geospatial-jeff/nautilus
+repo_name: geospatial-jeff/nautilus
+docs_dir: docs
+
+theme:
+  name: material
+  custom_dir: overrides
+  favicon: nautilus-lockup.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.path
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.footer
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css?v=7
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Examples: examples.md
+  - Concepts: design.md
+  - Reference:
+      - DSL: dsl-reference.md
+      - CLI: cli-reference.md
+      - Telemetry: telemetry-reference.md
+      - Glossary: glossary.md
+      - API: api.md
+  - Performance: performance.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_section_style: list
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            unwrap_annotated: true
+            line_length: 80
+            merge_init_into_class: true
+            members_order: source
+            summary: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_root_full_path: false
+            show_if_no_docstring: false
+            show_source: false
+            filters: ["!^_"]
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc: { permalink: true }
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight: { anchor_linenums: true, line_spans: __span, pygments_lang_class: true }
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.snippets: { base_path: [".", "docs"] }
+  - pymdownx.tabbed: { alternate_style: true }

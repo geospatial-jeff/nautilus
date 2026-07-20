@@ -174,6 +174,14 @@ def test_dsl_distributed_run_matches_single_process() -> None:
     assert multiset(distributed) == multiset(serial)
 
 
+def test_dsl_run_workers_defaults_parallelism_to_workers() -> None:
+    # run(workers=N) with no explicit parallelism runs N-wide (not parallelism 1), matching the CLI — so
+    # the result matches serial and no workers sit idle. The docs' "workers is the only change" relies on
+    # this default.
+    s = _wordcount_stream()
+    assert multiset(s.run(workers=2)) == multiset(s.run())
+
+
 # --- column reshaping (.select / .drop / .rename / .with_column) --------------------------------
 
 

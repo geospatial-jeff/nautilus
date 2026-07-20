@@ -13,6 +13,9 @@ from nautilus import source            # also: from nautilus.dsl import source
 result = source(lines).tokenize("line", "word").count_by("word").run()
 ```
 
+This page is the readable overview — what each combinator does and when to reach for it. For exact
+signatures and types, see the [API reference](api.md).
+
 ## Starting a stream
 
 | Function | What it does |
@@ -36,10 +39,11 @@ combinator shuffles its input on the key so each key's rows meet on one instance
 | `.explode(column)` | One row per element of a list `column` (unnest); other columns repeated, empty/null lists dropped. Vectorized. |
 | `.flat_map(fn)` | Expand each row into `fn(row) -> iterable of rows`, flattened. Per-row Python — the slow escape hatch; prefer `.explode`. |
 | `.count_by(key_col, count_col="count")` | Count occurrences per key, emitted at end of stream; shuffled on `key_col` (`KeyedCount`). |
-| `.agg_by(key_cols, **aggs)` | Grouped `sum`/`count`/`mean`/`min`/`max` per key, emitted at end of stream; shuffled on `key_cols` (`KeyedAgg`). Each keyword names an output column as `(input_col, func)`, e.g. `.agg_by("lat", mean=("temp", "mean"), hi=("temp", "max"))`. Its `count` is `COUNT(col)` — non-null values of that column; `.count_by` is the separate `COUNT(*)`, rows per key. |
+| `.agg_by(key_cols, **aggs)` | Grouped `sum`/`count`/`mean`/`min`/`max` per key, emitted at end of stream; shuffled on `key_cols` (`KeyedAgg`). Each keyword names an output column as `(input_col, func)`, e.g. `.agg_by("lat", mean=("temp", "mean"), hi=("temp", "max"))`. Its `count` is `COUNT(col)` — non-null values of that column; `.count_by` is the separate `COUNT(*)`, rows per key. A null key forms its own group. |
 | `.apply(operator, key_columns=None)` | The escape hatch: append any `OneInputOperator` instance. Keyed by `key_columns` if given, else the operator's own `key_columns()`. At parallelism > 1 the instance is deep-copied per subtask. |
 | `.join(other, on=…, how="inner")` | Equi-join with another stream — inner or outer — see below. |
 | `.union(other)` | Concatenate two same-schema streams — every row from both, duplicates kept (SQL `UNION ALL`). |
+| `.map_async(fn, max_in_flight=8, ordered=True)` | Async `batch → batch` (`AsyncMapBatch`): awaits `fn(batch)` per batch, up to `max_in_flight` in flight. Keyless and stateless; `ordered=False` emits in completion order. |
 
 The column ops (`.select` / `.drop` / `.rename` / `.with_column`) resolve names against each batch's
 schema at run time — nautilus learns schemas from the first batch — so a name absent from the actual data
@@ -85,6 +89,9 @@ all_events = source(clicks).union(source(views))
 | `.run_async(…)` | The `await`-able single-process form, for use inside a running event loop. |
 | `.collect()` | Run and return the rows as `{column: value}` dicts (a convenience over `run().to_pylist()`). |
 | `.to_graph(parallelism=None)` | The `LogicalGraph` this stream describes, without running it. |
+
+There is no whole-stream `count`, `sort`, or `limit` combinator — those aren't streaming operations. Get
+the rows with `.collect()`, then count, sort, or slice them in Python.
 
 ## When to use what
 

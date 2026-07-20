@@ -21,14 +21,14 @@ from nautilus.telemetry.report.serialize import CATALOG_VERSION
 def render_reference() -> str:
     """Render the full telemetry reference markdown (deterministic; sorted by name)."""
     lines: list[str] = [
+        "<!-- Generated from nautilus.telemetry.catalog — do not edit by hand; regenerate with "
+        "`python -m nautilus.telemetry.report.reference`. -->",
         "# Nautilus telemetry reference",
         "",
-        "Generated from `nautilus.telemetry.catalog` — **do not edit by hand**; regenerate with "
-        "`python -m nautilus.telemetry.report.reference`. "
-        f"Report schema v{REPORT_SCHEMA_VERSION}, catalog v{CATALOG_VERSION}.",
+        "Every metric Nautilus records, generated from the metric catalog "
+        f"(report schema v{REPORT_SCHEMA_VERSION}, catalog v{CATALOG_VERSION}).",
         "",
-        "Descriptive only: each entry states what a number measures and which other metrics relate to "
-        "it — never a cause, a remedy, or a verdict. nautilus records the data; the analysis is left to the reader.",
+        "Each entry gives what the metric measures, its unit and tier, and the metrics it relates to.",
         "",
         "## Metrics",
         "",

@@ -1,6 +1,6 @@
 # Nautilus glossary
 
-The vocabulary and data model of nautilus, in plain language. These are mostly standard
+The vocabulary and data model of nautilus. These are mostly standard
 stream-processing terms (as used by systems like Apache Flink); where nautilus has a specific class
 for a term, it is named in parentheses, e.g. (`Batch`).
 
@@ -125,7 +125,7 @@ so the names you will meet in `DESIGN.md` and the source are explained.
   `sink`), chooses a partitioner spec for each edge, and synthesizes the collecting sink. It runs once,
   before the data path starts — never per record.
 - **Physical plan** — The runnable, serializable result of compiling: the operators with their
-  parallelism, the edges between them, and a partitioner spec per edge (`PhysicalPlan`). It is plain
+  parallelism, the edges between them, and a partitioner spec per edge (`PhysicalPlan`). It is inert
   data plus the operator factories, so it can be cloudpickled to a worker that never saw the original
   graph — it is the unit of serialization for distributing a job.
 - **Partitioner spec** — A stateless description of how one edge routes, selected by the compiler
@@ -284,8 +284,8 @@ the set of frame types is fixed.
 
 ## Telemetry
 
-Every run emits self-describing telemetry. The terms below are summarized here; the full catalog of
-metrics is in [`telemetry-reference.md`](telemetry-reference.md).
+Every run emits telemetry — metrics and events about what it did. The terms below are summarized here;
+the full catalog of metrics is in [`telemetry-reference.md`](telemetry-reference.md).
 
 - **Recorder** — The single object instrumentation writes metrics and events to (`Recorder`).
   One writer per actor, and it is a no-op (zero cost) when telemetry is off.

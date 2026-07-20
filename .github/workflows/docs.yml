@@ -1,0 +1,48 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Build the MkDocs site on every push and PR so a broken docs build fails fast; publish to GitHub Pages
+# only from main. This needs Pages enabled once, with its source set to GitHub Actions
+# (repo Settings → Pages → Build and deployment → Source: GitHub Actions) — until then the deploy job has
+# nowhere to publish and will error, while the build job still guards every PR.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One publish at a time, and never cancel an in-flight one — a half-deployed site is worse than a slightly
+# stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      # Editable install so mkdocstrings can import nautilus to build the API page from its docstrings.
+      - run: uv pip install -e ".[docs]"
+      - run: uv run mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # Only main publishes; a PR (including from a fork) stops after build and never reaches Pages.
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
