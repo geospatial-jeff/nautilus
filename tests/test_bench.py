@@ -90,6 +90,15 @@ def test_compare_gates_throughput_on_the_same_cpu():
     assert c.status == "REGRESSED" and bench.is_failure(c.status)
 
 
+def test_threshold_for_widens_only_a_known_noisy_benchmark():
+    # A benchmark listed in PER_BENCHMARK_FLOOR gets a wider floor; every other keeps the caller's; the
+    # floor only ever widens, never narrows.
+    noisy = next(iter(bench.PER_BENCHMARK_FLOOR))
+    assert bench.threshold_for(noisy, 0.10) == bench.PER_BENCHMARK_FLOOR[noisy]
+    assert bench.threshold_for("bench-keyed", 0.10) == 0.10
+    assert bench.threshold_for(noisy, 0.99) == 0.99  # a higher caller floor is not narrowed
+
+
 def test_measure_reduces_trials_to_a_stable_deterministic_result():
     env = Environment(
         "0.0.1", "3.12", "test", "cpu", None

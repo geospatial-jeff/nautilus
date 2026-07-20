@@ -45,6 +45,14 @@ DEFAULT_WARMUP = 1
 DEFAULT_THRESHOLD = 0.07
 DEFAULT_BASELINE = Path("benchmarks/baseline.json")
 
+#: A wider regression floor for individual benchmarks that swing more than the global floor allows on the
+#: pinned runner, for reasons not yet root-caused. bench-geo-climatology (a memory-bound high-cardinality
+#: aggregation) measures bimodally — ~29.7M or ~26.7M rows/s (~10% apart) across runs of the *same* commit —
+#: so a 0.10 gate false-fails it about half the time. This widens only its floor so the gate stops failing
+#: on an unchanged commit, at the cost of a coarser regression check for it; drop the entry once the cause
+#: is found and fixed. Applied per-benchmark, never to the whole gate.
+PER_BENCHMARK_FLOOR: dict[str, float] = {"bench-geo-climatology": 0.15}
+
 
 # --- statistics --------------------------------------------------------------------------------
 
@@ -445,6 +453,12 @@ def compare(
 def is_failure(status: str) -> bool:
     """A status that should fail a regression check (and a CI exit code)."""
     return status in ("OUTPUT-CHANGED", "REGRESSED")
+
+
+def threshold_for(pipeline: str, base: float) -> float:
+    """The regression floor to gate ``pipeline`` on: the caller's ``base`` floor, widened for a benchmark
+    with a known wider swing on the runner (see :data:`PER_BENCHMARK_FLOOR`), but never narrowed."""
+    return max(base, PER_BENCHMARK_FLOOR.get(pipeline, 0.0))
 
 
 # --- baseline file -----------------------------------------------------------------------------

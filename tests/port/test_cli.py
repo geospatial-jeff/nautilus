@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 
 import pytest
 import typer
 from typer.testing import CliRunner
 
 import nautilus.cli as cli
-from nautilus.bench import BenchResult, Comparison, Environment, Stats, save_baseline
+from nautilus.bench import (
+    PER_BENCHMARK_FLOOR,
+    BenchResult,
+    Comparison,
+    Environment,
+    Stats,
+    save_baseline,
+)
 from nautilus.cli import _parse_daemons, _split_host_port, _tier, app
 from nautilus.telemetry import Tier
 
@@ -186,6 +194,26 @@ def test_bench_check_all_pass_exits_0(tmp_path, monkeypatch):
     result = runner.invoke(app, ["bench-check", "--baseline", str(baseline)], env=WIDE)
     assert result.exit_code == 0
     assert "no regressions" in result.output
+
+
+def test_bench_check_widens_the_floor_for_a_known_noisy_benchmark(tmp_path, monkeypatch):
+    # A benchmark in PER_BENCHMARK_FLOOR carries a wider regression floor, so a dip that would fail a normal
+    # benchmark at the default floor is tolerated. Drives the real compare (no mock) with low-noise results,
+    # so the per-benchmark floor — not the noise band — is what lets it through.
+    name, floor = next(iter(PER_BENCHMARK_FLOOR.items()))
+
+    def flat(median: float) -> BenchResult:  # zero-spread result: 2*noise never dominates the floor
+        stats = Stats((median, median), median, 0.0, 0.0, median, median)
+        return replace(_result(name), throughput_rows_per_sec=stats)
+
+    baseline = tmp_path / "baseline.json"
+    save_baseline(baseline, {name: flat(1.0)})
+    dip = (
+        floor - 0.03
+    )  # within the widened floor, but well past the default floor (would fail a normal one)
+    monkeypatch.setattr(cli, "measure_like", lambda b, **k: flat(1.0 - dip))
+    result = runner.invoke(app, ["bench-check", "--baseline", str(baseline)], env=WIDE)
+    assert result.exit_code == 0 and "no regressions" in result.output
 
 
 # --- (d) _split_host_port and _parse_daemons -----------------------------------------------------

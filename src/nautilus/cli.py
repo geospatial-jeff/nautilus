@@ -34,6 +34,7 @@ from nautilus.bench import (
     measure_like,
     run_once,
     save_baseline,
+    threshold_for,
 )
 from nautilus.benchmarks import DEFAULT_BATCH, DEFAULT_KEYS, DEFAULT_ROWS
 from nautilus.core.time import SystemClock
@@ -608,7 +609,7 @@ def bench_check(
     for name, b in base.items():
         with console.status(f"re-running {name} · {b.trials} trials…"):
             cur = measure_like(b, recorded_at=now)
-        cmp = compare(b, cur, min_threshold=threshold)
+        cmp = compare(b, cur, min_threshold=threshold_for(name, threshold))
         updated[name] = cur
         table.add_row(
             name,
