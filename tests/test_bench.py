@@ -65,40 +65,6 @@ def test_compare_output_change_always_fails_even_on_a_speedup():
 def test_compare_does_not_judge_perf_across_machines_but_still_checks_output():
     same_output = bench.compare(_result(1000, platform="linux"), _result(500, platform="darwin"))
     assert same_output.status == "machine-differs" and not bench.is_failure(same_output.status)
-
-
-def test_confirm_regression_clears_a_transient_slow_run():
-    # First run dips 15% (a slow machine state); a retry hits baseline speed, so the fastest kept reads as
-    # unchanged — the noisy-neighbour dip does not become a false failure.
-    best, cmp, used = bench.confirm_regression(
-        _result(1000), _result(850), lambda: _result(1000), min_threshold=0.10
-    )
-    assert used == 1 and cmp.status == "unchanged"
-    assert best.throughput_rows_per_sec.median == 1000
-
-
-def test_confirm_regression_still_fails_a_real_regression():
-    # Every re-measure stays slow (the code really is slower), so it exhausts the retries and still fails —
-    # keeping the fastest cannot lift throughput past what the code allows.
-    best, cmp, used = bench.confirm_regression(
-        _result(1000), _result(850), lambda: _result(860), min_threshold=0.10, retries=3
-    )
-    assert used == 3 and cmp.status == "REGRESSED" and bench.is_failure(cmp.status)
-    assert best.throughput_rows_per_sec.median == 860  # the fastest of the slow runs
-
-
-def test_confirm_regression_never_re_measures_a_pass():
-    calls = 0
-
-    def remeasure():
-        nonlocal calls
-        calls += 1
-        return _result(9999)
-
-    _best, cmp, used = bench.confirm_regression(
-        _result(1000), _result(980), remeasure, min_threshold=0.10
-    )
-    assert used == 0 and calls == 0 and cmp.status == "unchanged"
     changed_output = bench.compare(
         _result(1000, platform="linux", digest="A"), _result(1000, platform="darwin", digest="B")
     )

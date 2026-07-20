@@ -7,7 +7,6 @@ task, a run's telemetry, what each metric means, and which files to read.
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import os
 from datetime import UTC, datetime
@@ -29,7 +28,6 @@ from nautilus.bench import (
     BenchResult,
     Comparison,
     compare,
-    confirm_regression,
     is_failure,
     load_baseline,
     measure,
@@ -586,10 +584,6 @@ def bench_check(
     machine-independent structural digest is still checked, but throughput is not gated, so an off-box run
     never fails on a speed delta it cannot trust. ``--update`` re-records the baseline from this run — do
     it on the pinned runner, to move the reference after an intended perf change.
-
-    A benchmark that regresses is re-measured and the fastest run kept before the drop is believed, so a
-    transient slow machine state on the shared runner is not mistaken for a code regression (see
-    :func:`~nautilus.bench.confirm_regression`); a real regression caps the best too and still fails.
     """
     if not baseline.exists():
         console.print(
@@ -611,18 +605,10 @@ def bench_check(
 
     failures: list[str] = []
     updated: dict[str, BenchResult] = {}
-    rechecked: list[str] = []
     for name, b in base.items():
         with console.status(f"re-running {name} · {b.trials} trials…"):
             cur = measure_like(b, recorded_at=now)
-        # A REGRESSED verdict on the shared runner can be a transient slow machine state, not code — re-run
-        # and keep the fastest (bench.confirm_regression). Only ever retries a benchmark that first failed.
-        cur, cmp, retried = confirm_regression(
-            b, cur, functools.partial(measure_like, b, recorded_at=now), min_threshold=threshold
-        )
-        if retried:
-            verdict = "still slow" if cmp.status == "REGRESSED" else "cleared"
-            rechecked.append(f"{name} ({verdict} after {retried})")
+        cmp = compare(b, cur, min_threshold=threshold)
         updated[name] = cur
         table.add_row(
             name,
@@ -635,10 +621,6 @@ def bench_check(
         if is_failure(cmp.status):
             failures.append(name)
     console.print(table)
-    if rechecked:  # transparent about the retry — a re-measured benchmark is not silently passed
-        console.print(
-            f"[dim]re-measured after a slow first run, kept the fastest: {', '.join(rechecked)}[/dim]"
-        )
 
     if update:  # move the reference — deliberate, so record regardless of the comparison
         save_baseline(baseline, updated)
