@@ -28,25 +28,6 @@ Costs measured during the join work (2026-06-29) and left unfixed, with the reas
 starts from evidence, not a cold read.
 
 
-- **Stream-stream join is super-linear (≈O(n²)).** A key-unique 1:1 stream⋈stream at fixed batch 4096
-  fell from ~906k rows/s at 100k rows to ~425k at 400k (wall grew 0.34s → 2.83s for 4× the rows). The
-  symmetric hash join buffers both sides until EOS and re-probes the *growing* state, so the buffered
-  side's grouped index (an `argsort` + `unique` over the whole buffer) rebuilds on every probe — O(n) per
-  probe, O(n²) over the run. The stream-table benchmarks (`bench-join`) don't show it: the bounded table is
-  indexed once and reused. The real fix is a delta index: a large, rarely-rebuilt main index plus a small
-  recently-added delta probed directly and merged amortized. That is feature-sized, not a tweak. A
-  constant-factor attempt (store the sort `order` + a zero-copy `Table` instead of reordering every
-  buffered column per probe) was tried and reverted: ~12% on stream-stream but a ~5% regression on the
-  common stream-table case (a `combine_chunks` per emit) and no change to the asymptote. The full delta
-  index *was* then built and merged (PR #22) — lazy per-row folding into per-id buckets, a cached
-  vectorized path for a stable side, and it did take the synthetic `bench-join-stream` from O(n²) to O(n)
-  (5.7× at 1M rows). But it was **reverted**: the per-batch bucket bookkeeping (a Python loop over the
-  batch's distinct keys, which the old `argsort`-once path did not have) regressed the *real* join
-  workloads that never reach the O(n²) regime — the geospatial join cases `geo-anomaly` (+10–19%) and
-  `geo-forecast` (+37%), both moderate-scale / high-cardinality. No real workload joins two large unbounded
-  streams, so the win was synthetic and the cost was not. A future attempt must not slow the common,
-  high-cardinality, bounded-ish join — measure `geo-anomaly`/`geo-forecast`, not just `bench-join`.
-
 - **No explicit rebalance to opt out of a forward edge.** Equal-width keyless edges now forward `i → i`
   by default (2026-07-03 entry below), which is right when the upstream is evenly loaded. But a keyless
   stage that *creates* skew — a filter that keeps most rows on a few instances — propagates that imbalance
@@ -63,6 +44,31 @@ starts from evidence, not a cold read.
   per item)
   would cut it to ~one round-trip; expected to take 6-scene/6-worker toward ~5.4s. Independent of the
   fusion and output-preserving (same rows, same order not required downstream — the reduce is keyed).
+
+---
+
+## 2026-07-20 — HashJoin geometric runs: 1.6× on stream-stream joins, O(n²) → O(n log n)
+
+- **Commit:** `a3643a1`.
+- **Change:** `_SideBuffer` (`operators.py`) — the symmetric hash join's per-side buffer — cached one
+  grouped index (`argsort` + `unique` over the whole buffer) and invalidated it on every `add`, so a
+  stream-stream join (both sides growing interleaved) re-sorted the entire growing buffer on every probe:
+  O(n) per probe, O(n²) over the run. It now holds each side as O(log n) grouped **runs** — rows pending
+  since the last probe are grouped in one pass, then runs merge geometrically (LSM-style, while the older
+  of the two newest is within a 2× size ratio) — and `_probe_and_emit` probes every run. Grouping is
+  **lazy** (deferred to the probe), so a settled side — the table in a stream-table join — accrues no
+  pending rows and stays a single run built once, keeping that path (and its one-to-one fast branch)
+  unchanged. That is where the reverted delta-index attempt (PR #22) went wrong: its per-batch bucket
+  bookkeeping slowed the common bounded join; this keeps the vectorized argsort-once-per-run grouping and
+  adds no per-batch Python.
+- **Impact (median of 7 trials, single process; before = the change's parent `operators.py`):**
+  `bench-geo-forecast` (stream-stream JOIN) **23.7M → 38.5M rows/s = 1.62×**. A synthetic key-unique 1:1
+  stream⋈stream at 400k rows/side: **1240 ms → 228 ms = 5.4×**, the gap widening with scale (50k/100k/200k/
+  400k went 20/72/285/1240 ms → 13/37/76/228 ms — quadratic → near-linear). No change to `bench-join`
+  (stream-table, 0.96×) or `bench-geo-anomaly` (one side static from the upstream aggregation, 0.99×) —
+  the two real cases PR #22 had regressed, and exactly the ones the open item said to measure.
+- **Correctness:** structural digest byte-identical before → after on `bench-join`, `bench-geo-forecast`,
+  and `bench-geo-anomaly`; full `pytest` green (720 passed).
 
 ---
 
