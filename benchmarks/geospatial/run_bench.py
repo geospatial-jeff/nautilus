@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Three-way geospatial benchmark: xarray reference vs xarray-sql SQL vs nautilus dataflow.
 
-Each case takes one spatial operation from the sibling xarray-sql suite (``/tmp/xarray-sql/
-benchmarks/geospatial``), reads the *same real data window* into memory once, and runs it three ways —
-the plain-xarray array reference, xarray-sql's DataFusion SQL, and the nautilus Arrow dataflow — then
-checks all three agree and times each. The xarray reference and SQL reproduce what the xarray-sql
-case's own ``measured(...)`` block computes, so nautilus is dropped into an existing comparison.
+The cases, the SQL, and the "geospatial array ops are really relational" thesis are from the **xarray-sql
+geospatial suite** by xqlsystems (https://github.com/xqlsystems/xarray-sql, benchmarks/geospatial) — this
+file adapts each of its cases to add nautilus as a third engine.
+
+Each case takes one spatial operation from that suite, reads the *same real data window* into memory once,
+and runs it three ways — the plain-xarray array reference, xarray-sql's DataFusion SQL, and the nautilus
+Arrow dataflow — then checks all three agree and times each. The xarray reference and SQL reproduce what
+the upstream case's own ``measured(...)`` block computes, so nautilus is dropped into an existing
+comparison.
 
 **Scope — read `_harness.py` first.** This isolates in-memory COMPUTE: the read is factored out for all
 three engines (each `.load()`s its window once, outside the timed region) to compare *kernels*, so these
@@ -744,6 +748,7 @@ def _fmt(t: Timing, n: int) -> str:
 def report(results: list[dict]) -> None:
     print("\n" + "=" * 104)
     print("GEOSPATIAL BENCHMARK — xarray reference vs xarray-sql (DataFusion) vs nautilus  [in-memory compute]")
+    print("cases adapted from the xarray-sql geospatial suite — https://github.com/xqlsystems/xarray-sql")
     print(f"reps={REPS}  batch={BATCH}  parallelisms={PARALLELISMS}  (all engines single-threaded; p4 = scale-out probe)")
     print("=" * 104)
     for r in results:

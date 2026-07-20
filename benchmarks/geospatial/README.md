@@ -9,6 +9,10 @@ nautilus is a relational streaming engine, so the same operations express direct
 This benchmark adds nautilus as a third engine across all six cases: the same real data, the same
 operation three ways, checked to agree, and timed.
 
+> **Credit.** The cases, the SQL, and the "geospatial array ops are really relational" thesis are the work
+> of [**xarray-sql** by xqlsystems](https://github.com/xqlsystems/xarray-sql) (`benchmarks/geospatial`).
+> This directory adapts that suite to drop nautilus in as a third engine.
+
 | xarray-sql case | operation | nautilus form | keyed cardinality |
 |---|---|---|--:|
 | `01_ndvi` | per-pixel `(nir-red)/(nir+red)` | `.map` (column arithmetic) | — |
@@ -53,12 +57,12 @@ tolerance. Representative run on one machine (±~10% machine-to-machine).
 
 | Case | groups | xarray ref | xarray-sql | nautilus p1 | vs sql | vs ref |
 |---|--:|--:|--:|--:|--:|--:|
-| 01 NDVI (elementwise) | — | 0.006 s / 24 MB | 0.064 s / 20 MB | **0.005 s / 25 MB** | **12.3×** | **1.18×** |
-| 06 zonal vector (range JOIN) | 5 | 0.490 s / 1246 MB | 0.215 s / ~0 MB | **0.107 s / ~0 MB** | **2.01×** | **4.58×** |
-| 03 zonal mean (GROUP BY lat) | 721 | 0.059 s / 149 MB | 0.117 s / 2 MB | 0.132 s / **~0 MB** | 0.88× | 0.45× |
-| 02 climatology (GROUP BY lat,lon,hour) | 535 k | 0.007 s / ~0 MB | 0.078 s / 55 MB | 0.084 s / 9 MB | **0.92×** | 0.08× |
-| 05 forecast skill (JOIN + RMSE) | 162 k keys | 0.038 s / ~0 MB | 0.435 s / 3 MB | 0.714 s / ~0 MB | 0.61× | 0.05× |
-| 04 anomaly (self-JOIN) | 535 k | 0.010 s / ~0 MB | 0.167 s / 63 MB | 0.331 s / 101 MB | 0.50× | 0.03× |
+| 01 NDVI (elementwise) | — | 0.006 s / 24 MB | 0.052 s / 20 MB | **0.004 s / 25 MB** | **12.1×** | **1.37×** |
+| 06 zonal vector (range JOIN) | 5 | 0.495 s / 1246 MB | 0.178 s / 3 MB | **0.090 s / ~0 MB** | **1.99×** | **5.51×** |
+| 03 zonal mean (GROUP BY lat) | 721 | 0.054 s / 149 MB | 0.089 s / 2 MB | 0.124 s / **~0 MB** | 0.72× | 0.44× |
+| 02 climatology (GROUP BY lat,lon,hour) | 535 k | 0.006 s / ~0 MB | 0.069 s / 45 MB | **0.031 s / 13 MB** | **2.20×** | 0.21× |
+| 05 forecast skill (JOIN + RMSE) | 162 k keys | 0.032 s / ~0 MB | 0.379 s / 2 MB | 0.508 s / 2 MB | 0.75× | 0.06× |
+| 04 anomaly (self-JOIN) | 535 k | 0.008 s / ~0 MB | 0.141 s / 43 MB | 0.185 s / 55 MB | 0.76× | 0.04× |
 
 **End-to-end** (each engine reads its store off the cloud itself, cold; median of 3 fresh-process reps;
 02/04 over a one-day window to keep the cold read tractable):
@@ -78,16 +82,17 @@ are now vectorized.**
 
 - **No keys, or few → nautilus is fastest.** Elementwise NDVI streams zero-copy Arrow arithmetic, beating
   the array reference and running ~12× faster than a DataFusion query whose fixed per-query cost dwarfs a
-  trivial op. The 5-region range join *beats* DataFusion 2× and the array reference 4.6× — the array form
+  trivial op. The 5-region range join *beats* DataFusion 2× and the array reference 5.5× — the array form
   pays 1.2 GB to rasterize per-region boolean masks, where nautilus tags each pixel in one numpy pass at
   flat memory.
-- **High cardinality → now competitive, where it used to collapse.** The 535 k-group climatology lands at
-  **parity with DataFusion** (0.92×) and the two high-cardinality joins within ~2× (anomaly 0.50×,
-  forecast 0.61×). This is the payoff of vectorizing the keyed hot paths: `KeyedMean` and `HashJoin` now
-  fold each batch into numpy arrays for non-negative integer keys instead of per-key Python state. Earlier
-  — with the per-key-Python MVP state backend — the same climatology ran ~34× slower than DataFusion and
-  the joins ~20×; see `PERFORMANCE_CHANGELOG.md`. The array *reference* is still far ahead on these because a diurnal
-  climatology is a native `reshape`+`mean` for it — no grouping at all.
+- **High cardinality → now faster, where it used to collapse.** The 535 k-group climatology now runs
+  **2.2× faster than DataFusion** (0.031 s vs 0.069 s), and the two high-cardinality joins are within ~1.3×
+  (anomaly 0.76×, forecast 0.75×). This is the payoff of vectorizing the keyed hot paths: `KeyedMean` and
+  `HashJoin` fold each batch into numpy arrays for non-negative integer keys instead of per-key Python
+  state, and a shape-aware scatter-add fold took climatology past parity into a win (see
+  `PERFORMANCE_CHANGELOG.md`). Earlier — with the per-key-Python MVP state backend — the same climatology
+  ran ~34× slower than DataFusion and the joins ~20×. The array *reference* is still far ahead on these
+  because a diurnal climatology is a native `reshape`+`mean` for it — no grouping at all.
 - **Constant memory throughout.** nautilus holds ~0–100 MB across every case (it streams batches and keeps
   only per-key state); the array reference spikes to 1.2 GB on the range join and 149 MB on zonal mean. On
   data that does not fit in RAM, that is the difference between running and not.
