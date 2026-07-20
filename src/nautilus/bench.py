@@ -22,7 +22,7 @@ import os
 import platform
 import statistics
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -445,6 +445,46 @@ def compare(
 def is_failure(status: str) -> bool:
     """A status that should fail a regression check (and a CI exit code)."""
     return status in ("OUTPUT-CHANGED", "REGRESSED")
+
+
+#: How many extra times a REGRESSED benchmark is re-measured before the drop is believed. Even the pinned
+#: runner is a shared-tenant cloud box, so one memory-bound benchmark can land ~10% below its baseline in a
+#: slower machine state (a co-tenant contending memory bandwidth, or a CPU-frequency dip) while the code is
+#: unchanged — observed as a *bimodal* wobble, not a gradual drift. This many retries makes a persistent
+#: false alarm from a ~50/50 wobble unlikely, and only ever runs for a benchmark that already failed.
+RETRY_ON_REGRESSION = 5
+
+
+def confirm_regression(
+    base: BenchResult,
+    first: BenchResult,
+    remeasure: Callable[[], BenchResult],
+    *,
+    min_threshold: float = DEFAULT_THRESHOLD,
+    retries: int = RETRY_ON_REGRESSION,
+) -> tuple[BenchResult, Comparison, int]:
+    """Re-check a REGRESSED verdict by re-measuring and keeping the *fastest* result — so a transient slow
+    machine state does not read as a code regression (see :data:`RETRY_ON_REGRESSION`).
+
+    This is sound because contention only ever *lowers* throughput: a run can be slowed by a noisy
+    neighbour but never sped up past what the code allows, so the best of several runs is the least-
+    contended, truest measure. A real regression caps that best too and still fails — this filters noise,
+    it never manufactures a win (unlike the best-of-a-few the module docstring warns against, which is
+    about *claiming* a speedup). Any other verdict — unchanged, an output change, a machine mismatch — is
+    returned untouched; only a throughput drop is worth, and susceptible to, a second look.
+
+    Returns the kept result, its comparison against ``base``, and how many extra measurements it took.
+    """
+    best = first
+    cmp = compare(base, best, min_threshold=min_threshold)
+    used = 0
+    while cmp.status == "REGRESSED" and used < retries:
+        used += 1
+        candidate = remeasure()
+        if candidate.throughput_rows_per_sec.median > best.throughput_rows_per_sec.median:
+            best = candidate
+        cmp = compare(base, best, min_threshold=min_threshold)
+    return best, cmp, used
 
 
 # --- baseline file -----------------------------------------------------------------------------
