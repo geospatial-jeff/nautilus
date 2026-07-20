@@ -1,0 +1,49 @@
+name: bench-rebaseline
+
+# Re-record benchmarks/baseline.json on the pinned self-hosted runner and open a PR with it. Run by hand
+# (Actions -> bench-rebaseline -> Run workflow) to move the throughput reference after a deliberate perf
+# change lands — and once, right after the runner comes up, to record the baseline on this hardware so
+# bench-pinned actually gates throughput (until then it only checks the digest, as machine-differs).
+# Moving the regression reference is a reviewed step, so the result is a PR, not a direct push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the re-baseline branch
+  pull-requests: write # open the PR
+
+jobs:
+  rebaseline:
+    runs-on: [self-hosted, nautilus-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -e ".[dev,fast,geo]"
+      - name: Re-record the throughput baseline on this runner
+        run: uv run nautilus bench-check --update
+      - name: Confirm the fresh baseline passes its own gate
+        # A single sweep can land a lucky-high or unlucky-low median that would immediately fail the gate —
+        # the failure mode that makes a hand-recorded baseline useless. Re-check the just-written baseline
+        # on this same box, back-to-back: a self-consistent baseline clears the threshold, a too-noisy
+        # sweep fails here and never reaches the PR step.
+        run: uv run nautilus bench-check --threshold 0.10
+      - name: Open a PR if the baseline moved
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain benchmarks/baseline.json)" ]; then
+            echo "baseline unchanged — nothing to PR"
+            exit 0
+          fi
+          branch="chore/rebaseline-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add benchmarks/baseline.json
+          git commit -m "chore(bench): re-record the pinned throughput baseline (run ${GITHUB_RUN_ID})"
+          git push -u origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(bench): re-record the throughput baseline" \
+            --body "Re-recorded benchmarks/baseline.json on the pinned runner via bench-rebaseline (run ${GITHUB_RUN_ID}). Review the deltas, then merge to move the reference. Digests must be unchanged — if any differ, that is an output change, not a speed change; do not merge."

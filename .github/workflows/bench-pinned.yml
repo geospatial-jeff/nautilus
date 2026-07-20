@@ -1,0 +1,48 @@
+name: bench-pinned
+
+# The throughput + output-correctness regression gate, on the pinned self-hosted c7i.large runner
+# (label `nautilus-bench`). Two checks with different reach:
+#   - The structural digest is machine-independent and always active: it fails the moment a change alters
+#     what a benchmark computes (a correctness regression).
+#   - Throughput is comparable only on the machine the baseline was recorded on — this runner. Because it
+#     is always the same physical CPU, one committed baseline (benchmarks/baseline.json) suffices and the
+#     threshold can be tight (0.10) instead of the wide band a random-CPU shared runner would need.
+# Move the reference after an intended perf change with the bench-rebaseline workflow.
+#
+# SECURITY: this repo is public and the runner lives in a private AWS account, so untrusted code from a
+# fork must never execute on it. The job is guarded to same-repo events only. This repo takes changes as
+# same-repo branches, so in practice every PR is gated; a fork PR would skip this job.
+on:
+  pull_request:
+    paths: ["src/**", "benchmarks/**", "pyproject.toml"]
+  push:
+    branches: [main]
+    paths: ["src/**", "benchmarks/**", "pyproject.toml"]
+  workflow_dispatch:
+
+concurrency:
+  # One physical box: serialize per ref, and let a newer commit supersede an in-flight run. Runs for
+  # different refs still queue on the single runner, which also keeps measurements off a busy machine.
+  group: bench-pinned-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bench-pinned:
+    # Same-repo only — never run a fork's code on the self-hosted runner.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nautilus-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -e ".[dev,fast,geo]" # geo: the bench-geo-* pipelines in the baseline
+      # Tight threshold: the pinned CPU removes the cross-host variance a shared runner would need a wide
+      # band to absorb. On this box the baseline's environment matches, so throughput gates; anywhere else
+      # bench-check reports machine-differs and only the digest gates.
+      - name: bench-check
+        run: uv run nautilus bench-check --threshold 0.10
