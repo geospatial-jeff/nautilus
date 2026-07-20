@@ -65,6 +65,28 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-20 — KeyedAgg sparse scatter-add: 1.7× on high-cardinality aggregation
+
+- **Commit:** `cef2920`.
+- **Change:** `KeyedAgg`'s integer fast path (`operators.py`) folded each batch's float-sum and count into
+  the dense accumulator with `acc[:top] += np.bincount(keys, minlength=top)`, paying O(key space) per
+  batch — it re-allocates and re-scans the full `top`-wide accumulator even when a batch touches far fewer
+  keys. On a high-cardinality aggregation (climatology: ~380k groups, ~16k keys per batch over 72 batches)
+  that is 72 passes over a 380k-wide array. A new shape-aware `_accumulate` scatters with `np.add.at` —
+  O(batch keys) — when the key space dwarfs the batch (`top > 2 × batch keys`), and keeps bincount
+  otherwise, which still wins on dense low-cardinality batches. Applied to the float-sum and count folds
+  (integer-sum already scattered; min/max already used `.at`). cProfile put the old bincount fold
+  (`_scatter_value`) as the run's heaviest function (~33% of CPU); it drops out of the top afterward.
+- **Impact (`nautilus bench`, median of 7 trials, before = the change's parent `operators.py`; single
+  process; WSL2 x86_64 — the box is non-stationary, so treat the factor as the signal):**
+  `bench-geo-climatology` (382k groups / 1.15M rows) **24.8M → 42.5M rows/s = 1.72×**; `bench-geo-anomaly`
+  (per-gid climatology + self-join) **24.3M → 28.6M = 1.18×**. The low-cardinality `bench-geo-zonal` (one
+  group per latitude band) is **unchanged at 1.01×** — it stays on bincount, as intended.
+- **Correctness:** structural digest byte-identical before → after on all three pipelines (`63889dcbe00b…`
+  climatology, `09ce899e22d2…` anomaly, `746a499e56ba…` zonal); full `pytest` green (498 passed).
+
+---
+
 ## 2026-07-19 — HashJoin one-to-one probe fast path: ~1.3× on foreign-key / stream-table joins
 
 - **Commit:** `da2d470`.
