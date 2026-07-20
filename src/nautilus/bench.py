@@ -20,7 +20,6 @@ import asyncio
 import json
 import os
 import platform
-import re
 import statistics
 import subprocess
 from collections.abc import Iterator, Sequence
@@ -91,10 +90,9 @@ class Environment:
 
 
 def _cpu_model() -> str:
-    """The CPU model, used to decide whether two runs are throughput-comparable. ``platform.processor()``
-    is empty on Linux, so read ``/proc/cpuinfo``'s ``model name`` — GitHub-hosted runners share one OS
-    image but land on different physical CPUs, so this is what actually varies between runs. Fall back to
-    the architecture, then ``"unknown"``."""
+    """The CPU model, recorded so :func:`_same_machine` can tell whether a run is on the same hardware as
+    the baseline (the pinned benchmark runner). ``platform.processor()`` is empty on Linux, so read
+    ``/proc/cpuinfo``'s ``model name``; fall back to the architecture, then ``"unknown"``."""
     try:
         with open("/proc/cpuinfo") as f:
             for line in f:
@@ -103,15 +101,6 @@ def _cpu_model() -> str:
     except OSError:
         pass
     return platform.processor() or platform.machine() or "unknown"
-
-
-def cpu_slug(model: str) -> str:
-    """A filesystem-safe slug for a CPU model — the name of its per-CPU throughput baseline file
-    (``benchmarks/baselines/<slug>.json``). Drops vendor noise (``(R)``/``(TM)``/``CPU``) and the clock
-    suffix (``@ 2.80GHz``) so the same silicon at a different advertised frequency slugs the same.
-    """
-    s = re.sub(r"\(r\)|\(tm\)|\bcpu\b|@.*", " ", model.lower())
-    return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "unknown"
 
 
 def current_environment() -> Environment:
@@ -421,11 +410,11 @@ class Comparison:
 
 
 def _same_machine(a: Environment, b: Environment) -> bool:
-    """Whether two runs are on comparable hardware, so a throughput delta is meaningful. Both the OS image
-    (``platform``) and the CPU model (``processor``) must match: GitHub-hosted runners share one image but
-    land on different physical CPUs, and a memory-bound pipeline's throughput swings with the CPU — so an
-    identical platform string alone is not enough, and a mismatch reads as ``machine-differs`` (throughput
-    skipped, digest still checked) rather than a false regression."""
+    """Whether two runs are on comparable hardware, so a throughput delta is meaningful. The baseline is
+    recorded on the pinned benchmark runner; a run on any other machine (a dev laptop, a shared CI runner)
+    differs in OS image (``platform``) or CPU model (``processor``), and a memory-bound pipeline's
+    throughput swings with the CPU — so a mismatch reads as ``machine-differs`` (throughput skipped,
+    digest still checked) rather than a false regression."""
     return a.platform == b.platform and a.processor == b.processor
 
 
@@ -473,9 +462,9 @@ def save_baseline(path: Path, results: dict[str, BenchResult]) -> None:
     payload = {
         "version": BASELINE_VERSION,
         "note": (
-            "Throughput is machine-specific (see each entry's environment); re-baseline per machine. "
-            "structural_digest is portable and anchors output correctness across machines. "
-            "Maintained by `nautilus bench --update` / `nautilus bench-check`."
+            "Throughput is recorded on the pinned benchmark runner and gated only on matching hardware "
+            "(see each entry's environment); structural_digest is portable and anchors output "
+            "correctness on any machine. Maintained by `nautilus bench-check --update`."
         ),
         "results": {name: r.to_dict() for name, r in sorted(results.items())},
     }

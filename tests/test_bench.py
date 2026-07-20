@@ -90,16 +90,6 @@ def test_compare_gates_throughput_on_the_same_cpu():
     assert c.status == "REGRESSED" and bench.is_failure(c.status)
 
 
-def test_cpu_slug_names_the_per_cpu_baseline_file():
-    # Drops vendor noise and the clock suffix so one CPU maps to one stable, filesystem-safe file name.
-    assert (
-        bench.cpu_slug("Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz")
-        == "intel-xeon-platinum-8370c"
-    )
-    assert bench.cpu_slug("AMD EPYC 7763 64-Core Processor") == "amd-epyc-7763-64-core-processor"
-    assert bench.cpu_slug("") == "unknown"
-
-
 def test_measure_reduces_trials_to_a_stable_deterministic_result():
     env = Environment(
         "0.0.1", "3.12", "test", "cpu", None

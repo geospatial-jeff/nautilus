@@ -27,9 +27,7 @@ from nautilus.bench import (
     DEFAULT_WARMUP,
     BenchResult,
     Comparison,
-    _cpu_model,
     compare,
-    cpu_slug,
     is_failure,
     load_baseline,
     measure,
@@ -567,7 +565,7 @@ def bench(
 def bench_check(
     baseline: Path = typer.Option(
         DEFAULT_BASELINE,
-        help="Seed baseline: the pipeline set, scales, and portable digest reference.",
+        help="Throughput + digest baseline to gate against (and, with --update, re-record).",
     ),
     threshold: float = typer.Option(
         DEFAULT_THRESHOLD, help="Floor (fraction) a change must clear to count."
@@ -575,50 +573,31 @@ def bench_check(
     update: bool = typer.Option(
         False,
         "--update",
-        help="Force re-record this CPU's throughput baseline (move the reference).",
-    ),
-    bootstrap: bool = typer.Option(
-        False,
-        "--bootstrap",
-        help="If this CPU has no throughput baseline yet, record one; otherwise gate as usual.",
+        help="Re-record the baseline from this run (move the reference after an intended change).",
     ),
 ) -> None:
-    """Re-run every pipeline and gate it against the throughput baseline for *this CPU*, failing (exit 1)
-    on a regression or an output change.
+    """Re-run every pipeline and gate it against ``baseline``, failing (exit 1) on a regression or an
+    output change.
 
-    Throughput is only comparable on identical hardware, and GitHub-hosted runners land on a different
-    physical CPU each run, so baselines are kept per CPU model in ``<baseline-dir>/baselines/<cpu>.json``
-    and grown as new CPUs appear. This run reads its CPU, and:
-
-    - if that CPU has a baseline, compares against it — a real within-hardware regression gate;
-    - if not, validates the output digest against the seed (correctness is machine-independent) and, with
-      ``--bootstrap``, records this CPU's numbers as its new baseline — otherwise it reports the unseen CPU
-      and passes without a throughput claim, so a PR is never blocked by landing on new hardware.
-
-    ``--update`` force-re-records this CPU's baseline (to move the reference after an intended change).
+    The baseline is recorded once, on the pinned benchmark runner. Throughput is only comparable on that
+    hardware, so a run anywhere else (a dev laptop, a shared CI runner) reports ``machine-differs``: the
+    machine-independent structural digest is still checked, but throughput is not gated, so an off-box run
+    never fails on a speed delta it cannot trust. ``--update`` re-records the baseline from this run — do
+    it on the pinned runner, to move the reference after an intended perf change.
     """
     if not baseline.exists():
         console.print(
-            f"[red]no seed baseline at[/red] {baseline}  "
-            "(create one with `nautilus bench <pipeline> --update`)"
+            f"[red]no baseline at[/red] {baseline}  "
+            "(create one with `nautilus bench-check --update` on the benchmark runner)"
         )
         raise typer.Exit(code=2)
-    seed = load_baseline(baseline)
-    if not seed:
-        console.print(f"[yellow]seed baseline is empty[/yellow] {baseline}")
+    base = load_baseline(baseline)
+    if not base:
+        console.print(f"[yellow]baseline is empty[/yellow] {baseline}")
         return
 
-    cpu = _cpu_model()
-    per_cpu_path = baseline.parent / "baselines" / f"{cpu_slug(cpu)}.json"
-    have_cpu_baseline = per_cpu_path.exists()
-    # Gate against this CPU's own baseline when we have one; otherwise fall back to the seed — its digests
-    # are the portable correctness anchor, but its throughput is another machine's, so it will read
-    # machine-differs (no false regression) and this run is a bootstrap candidate.
-    base = load_baseline(per_cpu_path) if have_cpu_baseline else seed
-
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    ref = per_cpu_path if have_cpu_baseline else baseline
-    table = Table(title=f"bench-check ({cpu}) vs {ref}", header_style="bold")
+    table = Table(title=f"bench-check vs {baseline}", header_style="bold")
     table.add_column("pipeline")
     for col in ("baseline rows/s", "now rows/s", "Δ", "noise"):
         table.add_column(col, justify="right")
@@ -643,25 +622,13 @@ def bench_check(
             failures.append(name)
     console.print(table)
 
-    if update:  # move this CPU's reference — deliberate, so record regardless of the comparison
-        save_baseline(per_cpu_path, updated)
-        console.print(f"[green]re-recorded[/green] {cpu} baseline → {per_cpu_path}")
+    if update:  # move the reference — deliberate, so record regardless of the comparison
+        save_baseline(baseline, updated)
+        console.print(f"[green]re-recorded[/green] baseline → {baseline}")
         return
-    if (
-        failures
-    ):  # a real regression (known CPU) or an output change (any CPU) — never record over it
+    if failures:  # a real regression, or an output change on any machine — never record over it
         console.print(f"[red bold]{len(failures)} failure(s):[/red bold] {', '.join(failures)}")
         raise typer.Exit(code=1)
-    if not have_cpu_baseline:
-        if bootstrap:
-            save_baseline(per_cpu_path, updated)
-            console.print(f"[green]bootstrapped[/green] baseline for {cpu} → {per_cpu_path}")
-        else:
-            console.print(
-                f"[yellow]new CPU[/yellow] {cpu}: no throughput baseline — digest checked, throughput "
-                "not gated (bootstrap runs on main)."
-            )
-        return
     console.print("[green]no regressions[/green]")
 
 
