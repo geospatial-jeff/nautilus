@@ -49,6 +49,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Examples: examples.md
+  - Dashboard: dashboard.md
   - Concepts: design.md
   - Reference:
       - DSL: dsl-reference.md
