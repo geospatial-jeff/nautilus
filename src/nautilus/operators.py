@@ -14,6 +14,7 @@ its own class.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import numpy as np
@@ -753,47 +754,105 @@ class KeyedAgg(OneInputOperator):
         return None if not n or total is None else cast(float, total) / cast(int, n)
 
 
+@dataclass(frozen=True, slots=True)
+class _Run:
+    """One grouped run of a side's buffered rows: ``rows`` reordered so each key id's rows are contiguous,
+    with ``start`` / ``count`` indexed by key id (length = this run's max id + 1; an id absent from the run
+    has count 0). ``ids`` is the key id per row in grouped order, kept so two runs can be merged. ``n`` is
+    the row count, for the geometric-merge size test."""
+
+    rows: pa.RecordBatch
+    ids: np.ndarray
+    start: np.ndarray
+    count: np.ndarray
+    n: int
+
+
+def _build_run(rows: pa.RecordBatch, ids: np.ndarray) -> _Run:
+    """Group ``rows`` into one :class:`_Run` by key id. Key ids are dense (0..num_ids), so ``start`` /
+    ``count`` are sized to this run's largest id + 1; the probe's ``id < count.shape[0]`` guard handles a
+    query id larger than any in the run."""
+    order = np.argsort(ids, kind="stable")
+    g_ids = ids[order]
+    top = int(g_ids[-1]) + 1 if g_ids.size else 0
+    start = np.zeros(top, dtype=np.int64)
+    count = np.zeros(top, dtype=np.int64)
+    if g_ids.size:
+        uniq, first, cnt = np.unique(g_ids, return_index=True, return_counts=True)
+        start[uniq] = first
+        count[uniq] = cnt
+    return _Run(rows.take(pa.array(order)), g_ids, start, count, int(ids.size))
+
+
+def _merge_runs(a: _Run, b: _Run) -> _Run:
+    """Fold two runs into one — concatenate and re-group. Merging keeps the number of runs O(log n)."""
+    return _build_run(pa.concat_batches([a.rows, b.rows]), np.concatenate([a.ids, b.ids]))
+
+
 class _SideBuffer:
     """One join input's accumulated rows, indexed by integer key id for a vectorized probe.
 
-    Rows are appended a whole batch at a time (O(1) — no per-key concatenation), each batch carried
-    alongside an array of its rows' key ids. The grouped index — rows reordered so one key id's rows form
-    one contiguous run, plus per-id ``start`` and ``count`` arrays — is built lazily on the first probe
-    after a change and cached. So a side that stops growing (the bounded table in a stream-table join) is
-    grouped once and reused for every probe, instead of being re-touched per key on every batch."""
+    Rows are appended a whole batch at a time. Each batch is grouped into its own :class:`_Run` (rows
+    reordered so a key id's rows form one contiguous span), and runs are merged **geometrically** — whenever
+    the two newest runs are within a 2x size ratio — so a side of ``n`` rows holds O(log n) runs and a row
+    is re-grouped only O(log n) times over the whole run. A probe queries every run.
+
+    This is what keeps a **stream-stream** join near-linear. The earlier design cached one grouped index and
+    invalidated it on every ``add``, so when both sides grow interleaved each probe re-sorted the *whole*
+    growing buffer — O(n) per probe, O(n^2) over the run. Geometric runs never re-touch settled rows.
+
+    A side that stops growing — the bounded table in a **stream-table** join — is collapsed back to a single
+    run on the next probe (:meth:`_maybe_compact`), so the stream side probes one index (and keeps the
+    one-to-one fast path) exactly as before; the amortized-runs cost is paid only while a side is still
+    growing."""
 
     def __init__(self) -> None:
         self._batches: list[pa.RecordBatch] = []
         self._key_ids: list[np.ndarray] = []
-        self._index: tuple[pa.RecordBatch, np.ndarray, np.ndarray] | None = None
+        self._runs: list[_Run] = []
+        self._pending: list[pa.RecordBatch] = []  # added since the last probe, not yet grouped
+        self._pending_ids: list[np.ndarray] = []
+        self._n = 0
+        self._pending_n = 0
 
     @property
     def empty(self) -> bool:
-        return not self._batches
+        return self._n == 0
 
     def add(self, batch: pa.RecordBatch, key_ids: np.ndarray) -> None:
+        # O(1): just stash the batch. Grouping is deferred to the next probe, so a side that accumulates
+        # many batches before it is first probed (the table in a stream-table join) is grouped in one pass,
+        # not batch by batch.
         self._batches.append(batch)
         self._key_ids.append(key_ids)
-        self._index = (
-            None  # invalidate; the next probe rebuilds the grouped index over the new rows
-        )
+        self._n += int(key_ids.size)
+        if batch.num_rows:
+            self._pending.append(batch)
+            self._pending_ids.append(key_ids)
+            self._pending_n += int(key_ids.size)
 
-    def grouped(self, num_ids: int) -> tuple[pa.RecordBatch, np.ndarray, np.ndarray]:
-        """Rows reordered into contiguous per-key-id runs, with ``start`` / ``count`` arrays indexed by
-        key id (an id with no buffered rows has count 0). Built once and cached until the next ``add``.
-        """
-        if self._index is None:
-            rows = self._batches[0] if len(self._batches) == 1 else pa.concat_batches(self._batches)
-            ids = self._key_ids[0] if len(self._key_ids) == 1 else np.concatenate(self._key_ids)
-            order = np.argsort(ids, kind="stable")  # gather each id's rows into one run
-            start = np.zeros(num_ids, dtype=np.int64)
-            count = np.zeros(num_ids, dtype=np.int64)
-            if len(ids):
-                uniq, first, cnt = np.unique(ids[order], return_index=True, return_counts=True)
-                start[uniq] = first
-                count[uniq] = cnt
-            self._index = (rows.take(pa.array(order)), start, count)
-        return self._index
+    def probe_runs(self) -> list[_Run]:
+        """The grouped runs to match a probe against. Rows added since the last probe are grouped into one
+        new run now, then runs are merged **geometrically** (while the older of the two newest is within a
+        2x size ratio of the newer) — so a side holds O(log n) runs and a row is re-grouped only O(log n)
+        times. A settled side (a static table) accrues no pending rows, so it stays a single run built once
+        at its first probe: the stream-table join pays exactly what it did before."""
+        if self._pending_n:
+            rows = self._pending[0] if len(self._pending) == 1 else pa.concat_batches(self._pending)
+            ids = (
+                self._pending_ids[0]
+                if len(self._pending_ids) == 1
+                else np.concatenate(self._pending_ids)
+            )
+            self._runs.append(_build_run(rows, ids))
+            self._pending.clear()
+            self._pending_ids.clear()
+            self._pending_n = 0
+            while len(self._runs) >= 2 and self._runs[-2].n <= 2 * self._runs[-1].n:
+                b = self._runs.pop()
+                a = self._runs.pop()
+                self._runs.append(_merge_runs(a, b))
+        return self._runs
 
     def rows_and_ids(self) -> tuple[pa.RecordBatch, np.ndarray]:
         """All buffered rows and their key ids, in arrival order — for the end-of-stream outer-join pass
@@ -816,7 +875,11 @@ class _SideBuffer:
     def clear(self) -> None:
         self._batches.clear()
         self._key_ids.clear()
-        self._index = None
+        self._runs.clear()
+        self._pending.clear()
+        self._pending_ids.clear()
+        self._n = 0
+        self._pending_n = 0
 
 
 class HashJoin(TwoInputOperator):
@@ -1138,15 +1201,29 @@ class HashJoin(TwoInputOperator):
         *,
         query_is_left: bool,
     ) -> None:
-        """Emit every join of ``query``'s rows against the buffered other side, in bulk. For each query
-        row, its matches are the other side's contiguous run for that key id; the per-row match counts
-        drive one ragged ``take`` per side, so the whole batch's cross product is built without a per-key
-        Python loop."""
+        """Emit every join of ``query``'s rows against the buffered other side, in bulk. The other side is
+        held as O(log n) grouped runs (see :class:`_SideBuffer`); a query row's matches are its key id's
+        contiguous span *within each run*, so every run is probed and its cross product emitted — the
+        per-row match counts drive one ragged ``take`` per side, with no per-key Python loop."""
         if other.empty:
             return
-        grouped, start, count = other.grouped(self._num_ids)
         nq = len(ids)
-        within = ids < count.shape[0]  # a key id unseen on the other side has no run there
+        for run in other.probe_runs():
+            self._emit_run(query, ids, nq, run, out, query_is_left=query_is_left)
+
+    def _emit_run(
+        self,
+        query: pa.RecordBatch,
+        ids: np.ndarray,
+        nq: int,
+        run: _Run,
+        out: Collector,
+        *,
+        query_is_left: bool,
+    ) -> None:
+        """Emit ``query``'s joins against one grouped run of the other side."""
+        grouped, start, count = run.rows, run.start, run.count
+        within = ids < count.shape[0]  # a key id unseen in this run has no span there
         qstart = np.zeros(nq, dtype=np.int64)
         qcount = np.zeros(nq, dtype=np.int64)
         qstart[within] = start[ids[within]]
@@ -1156,7 +1233,7 @@ class HashJoin(TwoInputOperator):
             return
         if total == nq and int(qcount.max()) == 1:
             # The foreign-key / stream-enrichment shape: every query row matches exactly one buffered row
-            # (the other side's key is unique over this batch). Then `query_take` would be `arange(nq)` —
+            # (the other side's key is unique over this run). Then `query_take` would be `arange(nq)` —
             # an identity take that needlessly copies the whole batch — and each row's lone match sits at
             # its run start, so the other-side gather is just `qstart`. Emit the query side in place and
             # do one take instead of two, skipping the repeat/cumsum index-expansion entirely.
