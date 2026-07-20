@@ -28,13 +28,13 @@ jobs:
         # on this same box, back-to-back: a self-consistent baseline clears the threshold, a too-noisy
         # sweep fails here and never reaches the PR step.
         run: uv run nautilus bench-check --threshold 0.10
-      - name: Open a PR if the baseline moved
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Record the baseline and push a branch
+        id: rec
         run: |
           set -euo pipefail
           if [ -z "$(git status --porcelain benchmarks/baseline.json)" ]; then
             echo "baseline unchanged — nothing to PR"
+            echo "moved=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           branch="chore/rebaseline-${GITHUB_RUN_ID}"
@@ -44,6 +44,20 @@ jobs:
           git add benchmarks/baseline.json
           git commit -m "chore(bench): re-record the pinned throughput baseline (run ${GITHUB_RUN_ID})"
           git push -u origin "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "chore(bench): re-record the throughput baseline" \
-            --body "Re-recorded benchmarks/baseline.json on the pinned runner via bench-rebaseline (run ${GITHUB_RUN_ID}). Review the deltas, then merge to move the reference. Digests must be unchanged — if any differ, that is an output change, not a speed change; do not merge."
+          echo "moved=true" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      # Open the PR via github-script, not the gh CLI: the self-hosted runner has no gh binary, but it does
+      # provide the Node the action runs on, so Octokit needs nothing installed.
+      - name: Open the PR
+        if: steps.rec.outputs.moved == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: '${{ steps.rec.outputs.branch }}',
+              base: 'main',
+              title: 'chore(bench): re-record the throughput baseline',
+              body: 'Re-recorded benchmarks/baseline.json on the pinned runner via bench-rebaseline (run ${{ github.run_id }}). Review the deltas, then merge to move the reference. Digests must be unchanged — if any differ, that is an output change, not a speed change; do not merge.',
+            });
