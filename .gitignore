@@ -13,3 +13,6 @@ build/
 
 # MkDocs build output
 site/
+
+# coverage artifact
+.coverage

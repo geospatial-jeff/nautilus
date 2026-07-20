@@ -1,0 +1,135 @@
+{
+  "_comment": "Language-neutral conformance vectors for a future Rust port. Each value was computed by running the current Python implementation. See tests/test_conformance_vectors.py, which loads this file and asserts the code reproduces every vector.",
+  "auth_proof": {
+    "_doc": "handshake._proof(secret, server_nonce, client_nonce, tag) = hmac_sha256(secret, b'nautilus-auth-v1' + server_nonce + client_nonce + tag). Inputs are hex; proof_hex is the 32-byte digest hex.",
+    "client_nonce_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+    "proof_hex": "4d3dca229e10c9834729ea0dfe07288b614985acd37c4c45fc7fee556e342f27",
+    "secret_hex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+    "server_nonce_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "tag_hex": "43"
+  },
+  "partition_stable_bucket": {
+    "_doc": "stable_bucket(key, num_downstream): packb_hex = msgpack.packb(list(key), use_bin_type=True).hex(); digest_u64 = int.from_bytes(blake2b(packb, digest_size=8).digest(), 'big'); bucket_mod_4 = digest_u64 % 4. Key elements are tagged [type, value]; bytes value is hex, bool is distinct from int.",
+    "num_downstream": 4,
+    "vectors": [
+      {
+        "bucket_mod_4": 3,
+        "digest_u64": 6256834361145163207,
+        "key": [
+          [
+            "str",
+            "the"
+          ]
+        ],
+        "packb_hex": "91a3746865"
+      },
+      {
+        "bucket_mod_4": 0,
+        "digest_u64": 11498542679122232220,
+        "key": [
+          [
+            "int",
+            1
+          ]
+        ],
+        "packb_hex": "9101"
+      },
+      {
+        "bucket_mod_4": 2,
+        "digest_u64": 17649809233781915866,
+        "key": [
+          [
+            "null",
+            null
+          ]
+        ],
+        "packb_hex": "91c0"
+      },
+      {
+        "bucket_mod_4": 3,
+        "digest_u64": 2795394738106159391,
+        "key": [
+          [
+            "bytes",
+            "78"
+          ]
+        ],
+        "packb_hex": "91c40178"
+      },
+      {
+        "bucket_mod_4": 0,
+        "digest_u64": 11046821322037490612,
+        "key": [
+          [
+            "str",
+            "a"
+          ],
+          [
+            "str",
+            "bc"
+          ]
+        ],
+        "packb_hex": "92a161a26263"
+      },
+      {
+        "bucket_mod_4": 2,
+        "digest_u64": 6049964822498078046,
+        "key": [
+          [
+            "int",
+            42
+          ],
+          [
+            "str",
+            "z"
+          ]
+        ],
+        "packb_hex": "922aa17a"
+      },
+      {
+        "bucket_mod_4": 3,
+        "digest_u64": 5270330575757516027,
+        "key": [
+          [
+            "bool",
+            true
+          ]
+        ],
+        "packb_hex": "91c3"
+      }
+    ]
+  },
+  "structural_digest": {
+    "_doc": "report.structural_digest of a hand-built two-operator report (src->snk, Forward edge). See test for the exact snapshot the golden was derived from. Depends only on topology + STRUCTURAL_METRICS counters (rows_in/rows_out/eos.received), not timing/run_id.",
+    "digest_hex": "fff1b35ed31415ebd94b0bf7495372de74f48d306a109a4ccb9fb400eefa22d7"
+  },
+  "transport_frame": {
+    "_doc": "Wire framing. kind bytes are the single leading byte of a message. control_payload_hex is the msgpack payload; frame_hex is the full [kind][4-byte big-endian length][payload].",
+    "barrier": {
+      "checkpoint_id": 42,
+      "control_payload_hex": "82a16ba762617272696572a269642a",
+      "control_shape": {
+        "id": 42,
+        "k": "barrier"
+      },
+      "frame_hex": "020000000f82a16ba762617272696572a269642a"
+    },
+    "credit": {
+      "control_payload_hex": "07",
+      "count": 7,
+      "frame_hex": "030000000107"
+    },
+    "eos": {
+      "control_payload_hex": "81a16ba3656f73",
+      "control_shape": {
+        "k": "eos"
+      },
+      "frame_hex": "020000000781a16ba3656f73"
+    },
+    "kind_bytes": {
+      "CONTROL": 2,
+      "CREDIT": 3,
+      "DATA": 1
+    }
+  }
+}
