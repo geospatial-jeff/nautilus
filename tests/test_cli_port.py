@@ -12,6 +12,7 @@ Wide ``COLUMNS`` stops Rich from wrapping the asserted phrases across lines.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 import typer
@@ -29,6 +30,16 @@ WIDE = {"COLUMNS": "200"}
 
 # A tiny, fast scale for the real bench path: two trials, no warmup, a hundred rows.
 FAST = ["--trials", "2", "--warmup", "0", "--rows", "100", "--batch", "50", "--keys", "4"]
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+_BORDER = re.compile(r"[│┃╭╮╰╯─━┏┓┗┛┌┐└┘|]")
+
+
+def _norm(text: str) -> str:
+    """Rich renders a ``BadParameter`` error in a width-dependent bordered panel; strip ANSI + box borders
+    and collapse whitespace so an asserted message matches regardless of terminal width or line wrapping
+    (``COLUMNS`` is not always honored under CliRunner, e.g. on CI)."""
+    return re.sub(r"\s+", " ", _BORDER.sub(" ", _ANSI.sub("", text)))
 
 
 def _result(pipeline: str = "bench-linear", *, deterministic: bool = True) -> BenchResult:
@@ -227,7 +238,7 @@ def test_run_key_groups_below_parallelism_is_rejected():
         app, ["run", "wordcount", "--key-groups", "2", "--parallelism", "3"], env=WIDE
     )
     assert result.exit_code == 2
-    assert "--key-groups (2) must be >= --parallelism (3)" in result.output
+    assert "--key-groups (2) must be >= --parallelism (3)" in _norm(result.output)
 
 
 # --- (f) _tier case-insensitivity / unknown tier / bench telemetry floor -------------------------
@@ -249,7 +260,7 @@ def test_tier_unknown_lists_the_valid_tiers():
 def test_run_unknown_tier_exits_2_and_lists_tiers():
     result = runner.invoke(app, ["run", "wordcount", "--telemetry", "bogus"], env=WIDE)
     assert result.exit_code == 2
-    assert "telemetry must be one of: off, counters, events, full" in result.output
+    assert "telemetry must be one of: off, counters, events, full" in _norm(result.output)
 
 
 def test_bench_telemetry_off_is_rejected():
@@ -259,4 +270,6 @@ def test_bench_telemetry_off_is_rejected():
         env=WIDE,
     )
     assert result.exit_code == 2
-    assert "bench needs telemetry >= counters (the structural digest needs it)" in result.output
+    assert "bench needs telemetry >= counters (the structural digest needs it)" in _norm(
+        result.output
+    )
