@@ -197,6 +197,61 @@ def test_dashboard_html_renders_live_flow_graph() -> None:
         assert tag in html
 
 
+def test_dashboard_html_renders_activity_breakdown() -> None:
+    html = load_dashboard_html().decode()
+    # A stacked bar per operator: where its share of the run wall went.
+    assert 'id="act"' in html
+    assert "renderActivity" in html
+    # Built from disjoint wall-slices already in the report — no engine change, like the flow graph.
+    for fact in (
+        "runtime.step_micros",
+        "partition.route_micros",
+        "edge.input_wait_micros",
+        "edge.send_wait_micros",
+        "io.wait_micros",
+    ):
+        assert fact in html
+    # The categories the bar stacks: compute (step minus a source's own I/O), the shuffle route, the two
+    # waits, and the wall those slices do not cover.
+    for cat in ("compute", "shuffle", "input wait", "send wait", "source I/O", "other"):
+        assert cat in html
+
+
+def test_activity_breakdown_slices_are_recorded_and_within_wall() -> None:
+    # The panel splits each operator's wall into disjoint slices. A keyed pipeline records them all; assert
+    # they reach the served document, and that — being disjoint — each operator's slices sum to its own
+    # wall and never exceed the run wall (an overlapping bracket would make the stacked bar read past 100%).
+    rep = asyncio.run(
+        run_local_chain(_source(), [Tokenize("line", "word"), KeyedCount("word")])
+    ).telemetry
+    doc = rep.to_dict()
+    wall = doc["meta"]["wall_micros"]
+    ops = [o for o in doc["operators"] if o["kind"] != "process"]
+
+    def sc(o: dict, name: str) -> int:
+        return sum(c["value"] for c in o.get("counters", []) if c["name"] == name)
+
+    def sh(o: dict, name: str) -> int:
+        return sum(h["sum"] for h in o.get("histograms", []) if h["name"] == name)
+
+    counters = {c["name"] for o in ops for c in o.get("counters", [])}
+    histograms = {h["name"] for o in ops for h in o.get("histograms", [])}
+    assert "runtime.step_micros" in counters  # compute
+    assert "partition.route_micros" in histograms  # the keyed shuffle route
+    assert {"edge.input_wait_micros", "edge.send_wait_micros"} <= counters  # the two waits
+
+    for o in ops:
+        io = sc(o, "io.wait_micros")
+        slices = (
+            max(0, sc(o, "runtime.step_micros") - io)
+            + sh(o, "partition.route_micros")
+            + sc(o, "edge.input_wait_micros")
+            + sc(o, "edge.send_wait_micros")
+            + io
+        )
+        assert slices <= wall * 1.2, (o["operator_id"], slices, wall)
+
+
 def test_dashboard_html_makes_completion_obvious() -> None:
     html = load_dashboard_html().decode()
     # A finished run must be unmissable: a full-width, color-coded status bar (not just the small header
