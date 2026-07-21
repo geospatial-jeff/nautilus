@@ -38,6 +38,13 @@ import pyarrow.compute as pc
 #: 1 could split across instances at a higher parallelism.
 _ALLOWED_KEY_SCALARS = (str, bytes, int, type(None))
 
+#: Cap on the per-partitioner key→instance cache (:meth:`_KeyedPartitioner._distinct_bucketer`). It
+#: bounds the ``pc.index_in`` lookup set that resolves a batch's keys, so a near-unique-key stream cannot
+#: turn routing into an O(cardinality × batches) set rebuild. Past the cap a genuinely-new key still routes
+#: correctly — it is bucketed inline and scattered in — it just is not memoized, degrading gracefully to
+#: the pre-cache per-key cost instead of blowing up.
+_MAX_KEY_CACHE = 1 << 16
+
 
 def stable_bucket(key: tuple[object, ...], num_downstream: int) -> int:
     """Map a key tuple to its owning downstream instance with a process-, seed-, and platform-stable
@@ -59,6 +66,7 @@ def _bucket_per_row(
     batch: pa.RecordBatch,
     key_columns: tuple[str, ...],
     bucket_of: Callable[[tuple[object, ...]], int],
+    distinct_bucketer: Callable[[pa.Array], pa.Array] | None = None,
 ) -> pa.Array:
     """The owning instance for every row, as an ``int32`` column, computed once per *distinct* key
     rather than once per row.
@@ -70,13 +78,20 @@ def _bucket_per_row(
     exactly the scalars the keyed operators key on. ``null_encoding="encode"`` gives a null cell its own
     dictionary slot (the default masks it, which ``take``/``filter`` would then drop) — a null key is a
     real key the operators count, so it must route and co-locate like any other.
+
+    For the single-key-column case a ``distinct_bucketer`` (:meth:`_KeyedPartitioner._distinct_bucketer`)
+    maps the batch's distinct values to buckets through a process-lifetime cache, so ``bucket_of`` runs
+    once per distinct key *ever seen*, not once per distinct key *per batch* — the routing hot-path win.
+    Without one (the direct-function call path used in tests) it falls back to the per-batch Python loop.
     """
     if len(key_columns) == 1:
         # The common case (one key column): a single dictionary_encode yields the distinct values and a
         # per-row index into them; bucket each distinct value once, then take to expand back to per-row.
         enc = pc.dictionary_encode(batch.column(key_columns[0]), null_encoding="encode")
-        bucket_by_distinct = pa.array(
-            [bucket_of((v,)) for v in enc.dictionary.to_pylist()], pa.int32()
+        bucket_by_distinct = (
+            distinct_bucketer(enc.dictionary)
+            if distinct_bucketer is not None
+            else pa.array([bucket_of((v,)) for v in enc.dictionary.to_pylist()], pa.int32())
         )
         return pc.take(bucket_by_distinct, enc.indices)
 
@@ -110,6 +125,7 @@ def _route_keyed(
     num_downstream: int,
     key_columns: tuple[str, ...],
     bucket_of: Callable[[tuple[object, ...]], int],
+    distinct_bucketer: Callable[[pa.Array], pa.Array] | None = None,
 ) -> list[tuple[int, pa.RecordBatch]]:
     """The shared core of the keyed partitioners: compute each row's owning instance, then group the batch
     by instance in a single ``take`` and hand out each instance's rows as a zero-copy slice.
@@ -122,7 +138,9 @@ def _route_keyed(
     """
     if batch.num_rows == 0:
         return []
-    bucket_per_row = _bucket_per_row(batch, key_columns, bucket_of).to_numpy(zero_copy_only=False)
+    bucket_per_row = _bucket_per_row(batch, key_columns, bucket_of, distinct_bucketer).to_numpy(
+        zero_copy_only=False
+    )
     per_instance = [np.flatnonzero(bucket_per_row == i) for i in range(num_downstream)]
     ordered = batch.take(pa.array(np.concatenate(per_instance)))
     out: list[tuple[int, pa.RecordBatch]] = []
@@ -169,13 +187,26 @@ class _KeyedPartitioner(Partitioner):
     """Shared machinery for the keyed shuffles: a per-instance cache from key tuple to owning downstream
     index. ``_bucket(key)`` is the subclass's pure mapping; the cache means it (and the per-key
     validation) runs once per distinct key for the life of the partitioner, not once per row. The cache
-    is bounded by the key cardinality — the same order as the keyed state it routes to."""
+    is bounded by the key cardinality — the same order as the keyed state it routes to.
+
+    Single-column routing adds a *vectorized* layer on top of that Python cache: ``_distinct_bucketer``
+    keeps ``(seen key, its bucket)`` as two parallel Arrow arrays so a batch's recurring keys resolve
+    through ``pc.index_in`` with no Python at all — turning the per-batch loop over distinct keys into a
+    steady-state Arrow lookup. It falls back to ``_bucket`` only for a key not yet cached."""
 
     _key_columns: tuple[str, ...]
 
     def __init__(self) -> None:
         self._cache: dict[tuple[object, ...], int] = {}
         self._bucket_of_fn: Callable[[tuple[object, ...]], int] | None = None
+        # The single-column vectorized layer (see class docstring): distinct key value -> its bucket, as
+        # two parallel Arrow arrays, capped at _MAX_KEY_CACHE so index_in's per-batch set build is bounded.
+        self._seen_keys: pa.Array | None = None
+        self._seen_buckets: pa.Array | None = None
+        self._distinct_bucketer_fn: Callable[[pa.Array], pa.Array] | None = None
+        # Turned off for good once the cache caps and keys still keep missing it: a near-unique-key stream
+        # gets no cache hits, so index_in is pure overhead and the plain per-batch loop is cheaper.
+        self._vectorize = True
 
     def _bucket(self, key: tuple[object, ...], num_downstream: int) -> int:
         raise NotImplementedError
@@ -198,6 +229,63 @@ class _KeyedPartitioner(Partitioner):
 
             self._bucket_of_fn = bucket_of
         return self._bucket_of_fn
+
+    def _distinct_bucketer(self, num_downstream: int) -> Callable[[pa.Array], pa.Array]:
+        """Map a batch's *distinct* key values (the ``dictionary`` of a ``dictionary_encode``) to their
+        owning-instance ``int32`` buckets, reusing a process-lifetime cache so ``_bucket`` runs once per
+        distinct key *ever seen*, not once per batch it appears in — the single-column routing win.
+
+        Recurring keys resolve with ``pc.index_in`` + ``pc.take`` (no Python). A key not in the cache is
+        bucketed inline (``bucket_of``) and scattered back with ``pc.replace_with_mask``; it is appended to
+        the cache only while under ``_MAX_KEY_CACHE``. Once the cache is full and keys still keep missing it
+        the cardinality has outgrown the cache, so ``index_in`` earns nothing — the bucketer then flips
+        ``_vectorize`` off and reverts to the plain per-batch loop, so a near-unique-key stream is never
+        made *slower* than before. A null key never matches ``index_in`` (Arrow does not match
+        null-to-null), so it is bucketed directly — the same ``bucket_of((None,))`` the per-batch loop
+        computed, kept co-located like any other key.
+        """
+        if self._distinct_bucketer_fn is None:
+            bucket_of = self._bucket_of(num_downstream)
+
+            def bucketer(distinct: pa.Array) -> pa.Array:
+                if not self._vectorize:  # cardinality outgrew the cache — the plain loop is cheaper
+                    return pa.array([bucket_of((v,)) for v in distinct.to_pylist()], pa.int32())
+                hits = (
+                    None
+                    if self._seen_keys is None
+                    else pc.index_in(distinct, value_set=self._seen_keys)
+                )
+                non_null = pc.is_valid(distinct)
+                # A distinct value needs a fresh Python bucket only if it is a non-null key not yet cached.
+                missing = non_null if hits is None else pc.and_(non_null, pc.is_null(hits))
+                buckets = (
+                    pa.nulls(len(distinct), pa.int32())
+                    if hits is None
+                    else pc.take(self._seen_buckets, hits)
+                )
+                if pc.any(missing).as_py():
+                    fresh = distinct.filter(missing)
+                    fresh_buckets = pa.array(
+                        [bucket_of((v,)) for v in fresh.to_pylist()], pa.int32()
+                    )
+                    buckets = pc.replace_with_mask(buckets, missing, fresh_buckets)
+                    if self._seen_keys is None:
+                        self._seen_keys, self._seen_buckets = fresh, fresh_buckets
+                    elif len(self._seen_keys) < _MAX_KEY_CACHE:  # bounded growth
+                        self._seen_keys = pa.concat_arrays([self._seen_keys, fresh])
+                        self._seen_buckets = pa.concat_arrays([self._seen_buckets, fresh_buckets])
+                    else:
+                        # Cache is full yet keys still miss it: cardinality exceeds the cap, so index_in
+                        # stops paying off. Fall back to the plain per-batch loop from the next batch on.
+                        self._vectorize = False
+                if pc.any(pc.is_null(distinct)).as_py():
+                    buckets = pc.if_else(
+                        pc.is_null(distinct), pa.scalar(bucket_of((None,)), pa.int32()), buckets
+                    )
+                return buckets
+
+            self._distinct_bucketer_fn = bucketer
+        return self._distinct_bucketer_fn
 
 
 class Forward(Partitioner):
@@ -249,8 +337,15 @@ class HashPartitioner(_KeyedPartitioner):
                 batch, self._key_columns
             )  # fail fast on a bad key type even at parallelism 1
             return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
+        distinct_bucketer = (
+            self._distinct_bucketer(num_downstream) if len(self._key_columns) == 1 else None
+        )
         return _route_keyed(
-            batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
+            batch,
+            num_downstream,
+            self._key_columns,
+            self._bucket_of(num_downstream),
+            distinct_bucketer,
         )
 
 
@@ -288,8 +383,15 @@ class KeyGroupPartitioner(_KeyedPartitioner):
                 batch, self._key_columns
             )  # fail fast on a bad key type even at parallelism 1
             return [(0, batch)]  # one owner: every row to instance 0, no bucketing needed
+        distinct_bucketer = (
+            self._distinct_bucketer(num_downstream) if len(self._key_columns) == 1 else None
+        )
         return _route_keyed(
-            batch, num_downstream, self._key_columns, self._bucket_of(num_downstream)
+            batch,
+            num_downstream,
+            self._key_columns,
+            self._bucket_of(num_downstream),
+            distinct_bucketer,
         )
 
 
