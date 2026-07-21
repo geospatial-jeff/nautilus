@@ -64,6 +64,11 @@ starts from evidence, not a cold read.
   `partition.py`; Linux x86_64 WSL2 box):** `bench-keyed` at 2M rows / batch 4096 / 10k keys
   **3.42M → 9.77M rows/s = 2.9×**. Near-unique keys (keys = rows, 1M rows): **0.97M → 1.00M rows/s**,
   within noise — the cap + fallback holding the pathological high-cardinality case to no regression.
+- **Live-cluster (distributed shuffle):** on EKS — 4× `c6in.8xlarge`, one daemon each, 20M rows at
+  parallelism 4 — a same-session before → after gave **cross-node** `bench-keyed` **1.29M → 3.64M rows/s
+  = 2.83×** (`bench-join` 1.83×, `bench-skew` 1.25×), identical output. The routing runs on the sender
+  before serialization, so it lands on the real distributed path too; the network itself adds only ~1–2%
+  (intra- vs cross-node), so the serialize/socket boundary — not the wire — is what remains.
 - **Correctness:** structural digest byte-identical before → after at both cardinalities (`2bba…922c`
   low-card, `1c04…6db1` high-card); `nautilus bench-check` reports no `OUTPUT-CHANGED` across every
   benchmark; a new byte-identical routing fuzz (`test_route_persistent_cache_survives_the_cap_under_fuzz`,
