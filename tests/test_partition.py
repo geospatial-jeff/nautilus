@@ -262,6 +262,33 @@ def test_route_matches_per_row_reference_byte_identical_under_fuzz() -> None:
         )
 
 
+def test_route_persistent_cache_survives_the_cap_under_fuzz(monkeypatch) -> None:
+    # The single-column route memoizes key->instance across batches in a capped Arrow cache. Route many
+    # batches through ONE partitioner with the cap forced tiny, so the cache fills and most keys overflow
+    # it: an overflow key is bucketed inline (never memoized) and must still route byte-identically to the
+    # per-row reference. This pins the graceful degradation that keeps a near-unique-key stream from
+    # turning routing into an unbounded set rebuild — without dropping or misrouting a single key.
+    from nautilus.runtime import partition as partition_mod
+
+    monkeypatch.setattr(partition_mod, "_MAX_KEY_CACHE", 4)  # tiny cap: cardinality far exceeds it
+    rng = random.Random(4242)
+    for kind, typ in [("str", pa.string()), ("int", pa.int64()), ("bytes", pa.binary())]:
+        p = HashPartitioner(["key"])  # ONE partitioner: its cache persists across every batch below
+        for _ in range(40):
+            n = rng.randint(1, 40)
+            card = rng.randint(1, 30)  # > cap, so keys keep overflowing the frozen cache
+
+            def mk(card=card, kind=kind):
+                r = rng.randrange(card)
+                return f"k{r}" if kind == "str" else r if kind == "int" else f"b{r}".encode()
+
+            vals = [None if rng.random() < 0.2 else mk() for _ in range(n)]
+            b = batch(rid=list(range(n)), key=pa.array(vals, typ))
+            assert _route_rid_map(p, b, 5) == _reference_rid_map(
+                b, 5, ("key",), lambda k: stable_bucket(k, 5)
+            ), (kind, vals)
+
+
 def test_route_multi_column_high_cardinality_overflow_guard() -> None:
     # Three near-unique columns: the naive mixed-radix product (card0*card1*card2) is large, so this
     # exercises the per-fold re-encode that keeps the combo id within [0, num_rows). Must still match.

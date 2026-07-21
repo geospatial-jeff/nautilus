@@ -47,6 +47,36 @@ starts from evidence, not a cold read.
 
 ---
 
+## 2026-07-20 — Keyed-shuffle routing: 2.9× via a cached vectorized key→instance map
+
+- **Commit:** `5083cf9`.
+- **Change:** `_KeyedPartitioner._distinct_bucketer` (`runtime/partition.py`) — the single-key-column
+  keyed shuffle. Routing bucketed each batch's distinct keys with a Python comprehension
+  (`[bucket_of((v,)) for v in enc.dictionary.to_pylist()]`) *every batch*, so even with the per-key hash
+  memoized a run paid one Python iteration per distinct-key-per-batch (~16M over a 20M-row run) — the
+  `partition.route_micros` that measured ~80% of wall on a distributed run. It now keeps `(seen key, its
+  bucket)` as two parallel Arrow arrays and resolves a batch's recurring keys with `pc.index_in` +
+  `pc.take` — no Python in steady state; only a genuinely new key hits `bucket_of`. The cache is capped
+  (`_MAX_KEY_CACHE`); once it fills while keys still miss it (cardinality > cap) the bucketer flips off and
+  reverts to the plain per-batch loop, so a near-unique-key stream is never made slower. A null key, which
+  `index_in` won't match, is bucketed directly (the same `bucket_of((None,))` the loop computed).
+- **Impact (median of 5 trials, in-process parallelism 4, in-memory shuffle; before = the change's parent
+  `partition.py`; Linux x86_64 WSL2 box):** `bench-keyed` at 2M rows / batch 4096 / 10k keys
+  **3.42M → 9.77M rows/s = 2.9×**. Near-unique keys (keys = rows, 1M rows): **0.97M → 1.00M rows/s**,
+  within noise — the cap + fallback holding the pathological high-cardinality case to no regression.
+- **Live-cluster (distributed shuffle):** on EKS — 4× `c6in.8xlarge`, one daemon each, 20M rows at
+  parallelism 4 — a same-session before → after gave **cross-node** `bench-keyed` **1.29M → 3.64M rows/s
+  = 2.83×** (`bench-join` 1.83×, `bench-skew` 1.25×), identical output. The routing runs on the sender
+  before serialization, so it lands on the real distributed path too; the network itself adds only ~1–2%
+  (intra- vs cross-node), so the serialize/socket boundary — not the wire — is what remains.
+- **Correctness:** structural digest byte-identical before → after at both cardinalities (`2bba…922c`
+  low-card, `1c04…6db1` high-card); `nautilus bench-check` reports no `OUTPUT-CHANGED` across every
+  benchmark; a new byte-identical routing fuzz (`test_route_persistent_cache_survives_the_cap_under_fuzz`,
+  a tiny cap forcing the overflow + disabled paths) plus the existing per-row-reference oracle stay green;
+  full `pytest` green (763 passed).
+
+---
+
 ## 2026-07-20 — HashJoin geometric runs: 1.6× on stream-stream joins, O(n²) → O(n log n)
 
 - **Commit:** `a3643a1`.

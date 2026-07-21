@@ -42,18 +42,19 @@ same way on the same hardware, so the factors compare directly). Values are rows
 
 | Placement | bench-keyed | bench-skew | bench-join |
 |---|---:|---:|---:|
-| In-process — one process, in-memory shuffle | 1.6M | 3.1M | 2.5M |
-| Distributed intra-node — 4 daemons, one host, loopback | 1.3M | 2.4M | 1.8M |
-| Distributed cross-node — 4 daemons, four hosts, pod network | 1.2M | 2.2M | 1.7M |
+| In-process — one process, in-memory shuffle | 5.6M | 4.2M | 6.0M |
+| Distributed intra-node — 4 daemons, one host, loopback | 3.7M | 2.9M | 3.5M |
+| Distributed cross-node — 4 daemons, four hosts, pod network | 3.6M | 2.9M | 3.4M |
 
-- **Distribution is cheap — about 1.2–1.4× slower than in-process.** Across processes the shuffle's rows
-  serialize to Arrow IPC and cross a TCP socket under credit-based flow control instead of moving as
-  in-memory batches; that process boundary, not the network, is the cost. Spreading the daemons onto
-  separate hosts (intra-node → cross-node) adds only a further 3–6%.
+- **The network is nearly free; the process boundary is the cost.** Distributing the shuffle costs about
+  1.5× vs in-process (up to ~1.8× for the join) — across processes the rows serialize to Arrow IPC and
+  cross a TCP socket under credit-based flow control instead of moving as in-memory batches. But spreading
+  those daemons from one host onto separate hosts (intra-node → cross-node) adds only ~1–2%, within
+  run-to-run noise: once you have paid to serialize and socket the shuffle, the wire itself barely shows.
 - **The shuffle dominates, not the distribution.** Every row here redistributes by key and lands in
-  per-key state, which is why all three sit at 1–3M rows/s; the same pipelines at parallelism 1 — no
+  per-key state, which is why all three sit at 3–6M rows/s; the same pipelines at parallelism 1 — no
   shuffle at all — run at 10–40M rows/s on the same hardware. The shuffle is the cost you pay first;
-  distributing it adds only a little more.
+  distributing it adds far less.
 
 The result is identical across placements — same row counts, same shuffled bytes, only the throughput
 moves. Reproduce with the deployment's own harness (single representative runs on the live cluster, not
