@@ -1,0 +1,21 @@
+# Headless service: gives each StatefulSet daemon pod a stable DNS name
+# (nautilus-worker-N.nautilus-workers) the coordinator dials on the control port. The shuffle's data edges
+# do NOT go through this service — a daemon binds a fresh ephemeral data port per job and advertises its
+# pod IP, so peers connect pod-to-pod directly (which is what carries the cross-node cost we measure).
+apiVersion: v1
+kind: Service
+metadata:
+  name: nautilus-workers
+  labels:
+    app.kubernetes.io/name: nautilus
+    app.kubernetes.io/component: worker
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true # pod DNS resolves during rendezvous, before the readiness probe passes
+  selector:
+    app.kubernetes.io/name: nautilus
+    app.kubernetes.io/component: worker
+  ports:
+    - name: control
+      port: 9000
+      targetPort: control

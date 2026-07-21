@@ -50,6 +50,7 @@ nav:
   - Getting started: getting-started.md
   - Examples: examples.md
   - Dashboard: dashboard.md
+  - Deployment: deployment.md
   - Concepts: design.md
   - Reference:
       - DSL: dsl-reference.md

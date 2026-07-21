@@ -1,0 +1,58 @@
+# A one-shot coordinator run, for a manual "does the cluster work" smoke test. Apply it AFTER the daemons
+# are Ready (the bench harness, bench.py, generates its own parameterized version of this for the sweep):
+#   kubectl apply -k overlays/cross-node && kubectl -n nautilus-bench rollout status statefulset/nautilus-worker
+#   kubectl apply -f coordinator-job.yaml
+#   kubectl -n nautilus-bench logs -f job/nautilus-coordinator
+# It dials the 4 daemons' control ports by their stable StatefulSet DNS and runs a keyed count at
+# parallelism 4, so the source->count edge is a real 4x4 keyed shuffle across the daemons.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nautilus-coordinator
+  namespace: nautilus-bench
+  labels:
+    app.kubernetes.io/name: nautilus
+    app.kubernetes.io/component: coordinator
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nautilus
+        app.kubernetes.io/component: coordinator
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: coordinator
+          image: nautilus:latest # set to the same image the daemons run
+          args:
+            - run
+            - bench-keyed
+            - --parallelism
+            - "4"
+            - --daemons
+            - nautilus-worker-0.nautilus-workers:9000,nautilus-worker-1.nautilus-workers:9000,nautilus-worker-2.nautilus-workers:9000,nautilus-worker-3.nautilus-workers:9000
+            - --telemetry
+            - full
+            - --show
+            - summary
+          env:
+            - name: NAUTILUS_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nautilus-cluster-secret
+                  key: secret
+            - name: NAUTILUS_BENCH_ROWS
+              value: "20000000"
+            - name: NAUTILUS_BENCH_BATCH
+              value: "4096"
+            - name: NAUTILUS_BENCH_KEYS
+              value: "10000"
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
